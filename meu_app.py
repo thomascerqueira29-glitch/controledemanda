@@ -6,6 +6,7 @@ from folium.plugins import MarkerCluster
 import plotly.express as px
 import numpy as np
 import os
+import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
@@ -173,7 +174,6 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        # Cards de Produtividade
         for i in range(0, len(resumo_levantadores), 4):
             chunk = resumo_levantadores.iloc[i:i+4]
             cols = st.columns(4)
@@ -218,7 +218,6 @@ if menu_selecionado == 'Painel Executivo':
                     else:
                         st.button("✅ Ok", key=f"btn_ok_{lev_nome}", disabled=True)
 
-        # Gráficos Analíticos
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2, col_g3 = st.columns(3)
         
@@ -254,11 +253,9 @@ if menu_selecionado == 'Painel Executivo':
                                        hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
             st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
 
-        # Mapa com Cache e Largura Responsiva
         st.markdown("### 🗺️ Mapa de Distribuição Geográfica (Com Visão de Satélite)")
         
-        @st.cache_resource(show_spinner="Renderizando cartografia...")
-        def construir_mapa_otimizado(df_eq, df_nt, criticos_tuple):
+        def construir_mapa(df_eq, df_nt, criticos_tuple):
             mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
             
             folium.TileLayer(
@@ -315,7 +312,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        mapa_pronto = construir_mapa_otimizado(df_equipes_db, df_notas_calc, tuple(levantadores_criticos))
+        mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos))
         st_folium(mapa_pronto, use_container_width=True, height=550, returned_objects=[])
 
 # --- VISÃO 2: FILTROS E GOVERNANÇA (STATEFULNESS APLICADO) ---
@@ -372,6 +369,18 @@ elif menu_selecionado == 'Busca e Governança':
 
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     
+    # REINTEGRAÇÃO DO BOTÃO DE EXPORTAR PARA EXCEL
+    if len(df_filtrado) > 0:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_filtrado.to_excel(writer, index=False, sheet_name='Filtrado')
+        st.download_button(
+            label="📥 Exportar Dados Filtrados para Excel", 
+            data=buffer.getvalue(),
+            file_name="relatorio_nip_filtrado.xlsx", 
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
     st.markdown("---")
     st.markdown("### 📊 Gestão e Edição em Lote")
     st.caption("Altere as células diretamente na tabela abaixo e clique em Salvar Alterações.")
@@ -383,13 +392,24 @@ elif menu_selecionado == 'Busca e Governança':
         key="editor_notas"
     )
 
-    if st.button("💾 Salvar Alterações na Base", type="primary"):
-        indices_originais = df_editado.index
-        df_notas_db.loc[indices_originais] = df_editado
-        
-        if save_notas_to_db(df_notas_db):
-            st.success("Banco de Dados Atualizado com Sucesso!")
-            st.rerun()
+    col_btn1, col_btn2 = st.columns([8, 2])
+    with col_btn1:
+        if st.button("💾 Salvar Alterações na Base", type="primary"):
+            indices_originais = df_editado.index
+            df_notas_db.loc[indices_originais] = df_editado
+            if save_notas_to_db(df_notas_db):
+                st.success("Banco de Dados Atualizado com Sucesso!")
+                st.rerun()
+                
+    # REINTEGRAÇÃO DA ZONA DE PERIGO (LIMPEZA TOTAL DO BANCO)
+    with col_btn2:
+        with st.expander("⚠️ ÁREA DE PERIGO"):
+            confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
+            if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
+                df_empty = pd.DataFrame(columns=df_notas_db.columns)
+                if save_notas_to_db(df_empty):
+                    st.success("Banco de dados de obras totalmente limpo!")
+                    st.rerun()
 
 # --- VISÃO 3: CARGA DE LOTES E CONTRATO DE DADOS (PANDERA) ---
 elif menu_selecionado == 'Carga de Lotes':
