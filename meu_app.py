@@ -22,29 +22,29 @@ DB_PATH = 'controle_torre_nip.db'
 if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = False
 
-# Controle de Navegação Automática do Menu
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
+
+# Definição estrita dos status elegíveis para produtividade
+STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
 
 # Memória de Filtros (Statefulness)
 if 'filtros_salvos' not in st.session_state:
     st.session_state.filtros_salvos = {
         'lev': 'TODOS', 'reg': 'TODOS', 'mun': 'TODOS',
-        'lig': 'TODOS', 'sap': 'TODOS', 'list': 'TODOS'
+        'lig': 'TODOS', 'sap': 'TODOS', 'list': [] # Lista vazia significa "TODOS"
     }
 
-# FUNÇÃO DE CALLBACK: Navegação + Injeção de Filtros
+# FUNÇÃO DE CALLBACK: Navegação + Injeção de Filtros Específicos
 def filtrar_levantador_governanca(nome_lev):
     st.session_state.filtros_salvos['lev'] = nome_lev
     st.session_state.filtros_salvos['reg'] = 'TODOS'
     st.session_state.filtros_salvos['mun'] = 'TODOS'
     st.session_state.filtros_salvos['lig'] = 'TODOS'
     st.session_state.filtros_salvos['sap'] = 'TODOS'
-    st.session_state.filtros_salvos['list'] = 'TODOS'
-    st.session_state.menu_idx = 1  # Índice 1 = Aba Busca e Governança
-
-# Definição estrita dos status elegíveis para produtividade real
-STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
+    # Aplica EXATAMENTE a lógica de produtividade na tabela
+    st.session_state.filtros_salvos['list'] = STATUS_PRODUTIVIDADE.copy() 
+    st.session_state.menu_idx = 1  
 
 def normalizar_texto(series):
     s = series.astype(str).str.upper().str.strip()
@@ -125,6 +125,9 @@ def auto_assign_levantador(df_notas, df_equipes):
         if col not in df_notas.columns:
             df_notas[col] = ""
             
+    # Padronização forçada para garantir que a lógica e os filtros funcionem 100%
+    df_notas['STATUS LIST'] = df_notas['STATUS LIST'].astype(str).str.upper().str.strip()
+            
     return df_notas
 
 df_notas_db, df_equipes_db = load_data_from_db()
@@ -143,12 +146,9 @@ df_notas_calc['Longitude'] = df_notas_calc['MUNICIPIO'].map(mapa_lon)
 
 municipios_por_levantador = df_equipes_db.groupby('Levantador')['Município'].nunique().reset_index()
 municipios_por_levantador.columns = ['Levantador', 'Qtd_Municipios']
-mapa_qtd_municipios = municipios_por_levantador.set_index('Levantador')['Qtd_Municipios'].to_dict()
 
-df_total_geral_por_lev = df_notas_calc['LEVANTADOR'].value_counts().reset_index()
-df_total_geral_por_lev.columns = ['Levantador', 'Quantidade_Total_Obras']
-
-cond_list_real = normalizar_texto(df_notas_calc['STATUS LIST']).isin(STATUS_PRODUTIVIDADE)
+# Isola APENAS as obras elegíveis para as metas
+cond_list_real = df_notas_calc['STATUS LIST'].isin(STATUS_PRODUTIVIDADE)
 df_filtrado_status = df_notas_calc[cond_list_real]
 contagem_produtividade = df_filtrado_status['LEVANTADOR'].value_counts().reset_index()
 contagem_produtividade.columns = ['Levantador', 'Total_Obras_Real']
@@ -157,10 +157,7 @@ todos_levantadores = [l for l in df_equipes_db['Levantador'].dropna().unique() i
 
 resumo_levantadores = pd.DataFrame({'Levantador': todos_levantadores})
 resumo_levantadores = pd.merge(resumo_levantadores, contagem_produtividade, on='Levantador', how='left').fillna(0)
-resumo_levantadores = pd.merge(resumo_levantadores, df_total_geral_por_lev, on='Levantador', how='left').fillna(0)
-
 resumo_levantadores['Total_Obras_Real'] = resumo_levantadores['Total_Obras_Real'].astype(int)
-resumo_levantadores['Quantidade_Total_Obras'] = resumo_levantadores['Quantidade_Total_Obras'].astype(int)
 
 mapa_lev_equipe = df_equipes_db.dropna(subset=['Levantador', 'Equipe']).drop_duplicates(subset=['Levantador']).set_index('Levantador')['Equipe'].to_dict()
 resumo_levantadores['Equipe'] = resumo_levantadores['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
@@ -183,7 +180,6 @@ with st.sidebar:
         sac.MenuItem(opcoes_menu[2], icon='cloud-upload-fill'),
     ], index=st.session_state.menu_idx, format_func='title', size='md')
     
-    # Sincroniza o estado de memória caso o usuário clique manualmente no menu lateral
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
@@ -200,7 +196,6 @@ if menu_selecionado == 'Painel Executivo':
             for idx, (_, row) in enumerate(chunk.iterrows()):
                 lev_nome = row['Levantador']
                 qtd_obras_reais = row['Total_Obras_Real']
-                qtd_total_obras = row['Quantidade_Total_Obras']
                 eq_nome = row['Equipe']
                 is_critico = lev_nome in levantadores_criticos
                 
@@ -211,23 +206,24 @@ if menu_selecionado == 'Painel Executivo':
                 with cols[idx]:
                     st.markdown(
                         f"""
-                        <div style='padding: 12px; border-radius: 6px; background-color: {bg_hex}; border-left: 6px solid {cor_hex}; margin-bottom: 5px; height: 140px; display: flex; flex-direction: column; justify-content: space-between;'>
+                        <div style='padding: 12px; border-radius: 6px; background-color: {bg_hex}; border-left: 6px solid {cor_hex}; margin-bottom: 5px; height: 130px; display: flex; flex-direction: column; justify-content: space-between;'>
                             <div>
                                 <strong style='font-size: 14px; color: #111;'>{lev_nome}</strong><br>
                                 <span style='font-size: 12px; color: #555;'>Equipe: {eq_nome}</span><br>
-                                <span style='font-size: 12px; color: #555;'>Quantidade total de obras: {qtd_total_obras}</span>
                             </div>
-                            <div style='font-size: 13px; font-weight: bold; color: {cor_hex}; margin-top: auto;'>Obras reais {qtd_obras_reais} / 45</div>
+                            <div style='font-size: 13px; color: #333; margin-top: auto;'>
+                                Demandas Produtivas Ativas:<br>
+                                <span style='font-size: 16px; font-weight: bold; color: {cor_hex};'>{qtd_obras_reais} / 45</span>
+                            </div>
                         </div>
                         """, unsafe_allow_html=True
                     )
                     
-                    # DIVISÃO DE BOTÕES E INTEGRAÇÃO DO CALLBACK
                     b1, b2 = st.columns([1.3, 1])
                     with b1:
                         if is_critico:
                             if st.button(f"⚡ +{saldo_necessario} Reais", key=f"btn_atrib_{lev_nome}"):
-                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (normalizar_texto(df_notas_db['STATUS LIST']).isin(STATUS_PRODUTIVIDADE))
+                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
                                 obras_livres = df_notas_db[cond_livres_reais].index
                                 
                                 if len(obras_livres) == 0:
@@ -246,7 +242,6 @@ if menu_selecionado == 'Painel Executivo':
                         st.button("🔍 Ver Obras", on_click=filtrar_levantador_governanca, args=(lev_nome,), key=f"btn_ver_{lev_nome}")
 
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
-        
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
@@ -326,7 +321,7 @@ if menu_selecionado == 'Painel Executivo':
         mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos))
         st_folium(mapa_pronto, use_container_width=True, height=550, returned_objects=[])
 
-# --- VISÃO 2: FILTROS E GOVERNANÇA (STATEFULNESS APLICADO) ---
+# --- VISÃO 2: FILTROS E GOVERNANÇA ---
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
     
@@ -364,10 +359,11 @@ elif menu_selecionado == 'Busca e Governança':
         filtro_sap = st.selectbox("Filtrar por Status SAP:", op_sap, index=idx_sap)
         st.session_state.filtros_salvos['sap'] = filtro_sap
 
-    op_list = ["TODOS"] + sorted([str(x) for x in df_notas_db['STATUS LIST'].dropna().astype(str).unique() if str(x).strip() != ""])
-    idx_list = op_list.index(st.session_state.filtros_salvos['list']) if st.session_state.filtros_salvos['list'] in op_list else 0
+    # Atualizado para Multiselect (Múltipla Escolha)
+    op_list = sorted([str(x) for x in df_notas_db['STATUS LIST'].dropna().unique() if str(x).strip() != ""])
+    default_list = [x for x in st.session_state.filtros_salvos['list'] if x in op_list]
     with col_f6:
-        filtro_list = st.selectbox("Filtrar por Status List:", op_list, index=idx_list)
+        filtro_list = st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, default=default_list)
         st.session_state.filtros_salvos['list'] = filtro_list
 
     df_filtrado = df_notas_db.copy()
@@ -376,7 +372,8 @@ elif menu_selecionado == 'Busca e Governança':
     if st.session_state.filtros_salvos['mun'] != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.filtros_salvos['mun']]
     if st.session_state.filtros_salvos['lig'] != "TODOS": df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.filtros_salvos['lig']]
     if st.session_state.filtros_salvos['sap'] != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.filtros_salvos['sap']]
-    if st.session_state.filtros_salvos['list'] != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].astype(str) == st.session_state.filtros_salvos['list']]
+    if len(st.session_state.filtros_salvos['list']) > 0: 
+        df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.filtros_salvos['list'])]
 
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     
@@ -420,7 +417,7 @@ elif menu_selecionado == 'Busca e Governança':
                     st.success("Banco de dados de obras totalmente limpo!")
                     st.rerun()
 
-# --- VISÃO 3: CARGA DE LOTES E CONTRATO DE DADOS (PANDERA) ---
+# --- VISÃO 3: CARGA DE LOTES ---
 elif menu_selecionado == 'Carga de Lotes':
     st.markdown("### 📤 Módulo de Importação de Lotes com Validação Strict")
     st.caption("Arraste o arquivo original. O sistema recusará dados corrompidos ou fora do padrão estabelecido.")
