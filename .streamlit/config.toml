@@ -1,15 +1,18 @@
 [theme]
+# Força o modo claro (Branco) para todos os usuários
+base = "light"
+
 # Cor principal (Botões ativos e detalhes) - Azul elétrico moderno
 primaryColor = "#007bff"
 
-# Fundo geral do painel (Chumbo escuro profundo)
-backgroundColor = "#0e1117"
+# Fundo geral do painel (Branco absoluto)
+backgroundColor = "#FFFFFF"
 
-# Fundo dos cards e containers (Levemente mais claro para criar relevo)
-secondaryBackgroundColor = "#1a1c23"
+# Fundo dos cards e containers (Cinza bem clarinho para criar relevo)
+secondaryBackgroundColor = "#F0F2F6"
 
-# Cor do texto
-textColor = "#e0e0e0"
+# Cor do texto (Cinza escuro para leitura confortável)
+textColor = "#262730"
 
 # Fonte
 font = "sans serif"
