@@ -219,7 +219,9 @@ if menu_selecionado == 'Painel Executivo':
                         st.button("✅ Ok", key=f"btn_ok_{lev_nome}", disabled=True)
 
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
-        col_g1, col_g2, col_g3 = st.columns(3)
+        
+        # Ajuste de Layout: 2 Colunas para os gráficos restantes
+        col_g1, col_g2 = st.columns(2)
         
         with col_g1:
             fig_rosca_mun = px.pie(municipios_por_levantador, names='Levantador', values='Qtd_Municipios', 
@@ -228,23 +230,6 @@ if menu_selecionado == 'Painel Executivo':
             st.plotly_chart(fig_rosca_mun, use_container_width=True)
             
         with col_g2:
-            df_bar_melted = resumo_levantadores.melt(
-                id_vars=['Levantador'], 
-                value_vars=['Total_Obras_Real', 'Quantidade_Total_Obras'], 
-                var_name='Métrica', 
-                value_name='Quantidade'
-            )
-            df_bar_melted['Métrica'] = df_bar_melted['Métrica'].replace({
-                'Total_Obras_Real': 'Obras Reais Atribuídas',
-                'Quantidade_Total_Obras': 'Quantidade Total de Obras'
-            })
-            fig_bar_compare = px.bar(df_bar_melted, x='Levantador', y='Quantidade', color='Métrica',
-                                     barmode='group', title="Volume de Obras: Reais Atribuídas x Total Disponível",
-                                     color_discrete_sequence=['#5CB85C', '#1A4F7C'])
-            fig_bar_compare.update_layout(xaxis_tickangle=-45, margin=dict(b=100))
-            st.plotly_chart(fig_bar_compare, use_container_width=True)
-            
-        with col_g3:
             df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == 'SEM LEVANTADOR']
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index()
             df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
@@ -369,7 +354,6 @@ elif menu_selecionado == 'Busca e Governança':
 
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     
-    # REINTEGRAÇÃO DO BOTÃO DE EXPORTAR PARA EXCEL
     if len(df_filtrado) > 0:
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -401,7 +385,6 @@ elif menu_selecionado == 'Busca e Governança':
                 st.success("Banco de Dados Atualizado com Sucesso!")
                 st.rerun()
                 
-    # REINTEGRAÇÃO DA ZONA DE PERIGO (LIMPEZA TOTAL DO BANCO)
     with col_btn2:
         with st.expander("⚠️ ÁREA DE PERIGO"):
             confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
