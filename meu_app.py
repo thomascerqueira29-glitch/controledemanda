@@ -15,12 +15,16 @@ import streamlit_antd_components as sac
 st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️")
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE ESTADO E BANCO DE DADOS
+# CONFIGURAÇÕES DE ESTADO, BANCO DE DADOS E NAVEGAÇÃO
 # -----------------------------------------------------------------------------
 DB_PATH = 'controle_torre_nip.db'
 
 if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = False
+
+# Controle de Navegação Automática do Menu
+if 'menu_idx' not in st.session_state:
+    st.session_state.menu_idx = 0
 
 # Memória de Filtros (Statefulness)
 if 'filtros_salvos' not in st.session_state:
@@ -28,6 +32,16 @@ if 'filtros_salvos' not in st.session_state:
         'lev': 'TODOS', 'reg': 'TODOS', 'mun': 'TODOS',
         'lig': 'TODOS', 'sap': 'TODOS', 'list': 'TODOS'
     }
+
+# FUNÇÃO DE CALLBACK: Navegação + Injeção de Filtros
+def filtrar_levantador_governanca(nome_lev):
+    st.session_state.filtros_salvos['lev'] = nome_lev
+    st.session_state.filtros_salvos['reg'] = 'TODOS'
+    st.session_state.filtros_salvos['mun'] = 'TODOS'
+    st.session_state.filtros_salvos['lig'] = 'TODOS'
+    st.session_state.filtros_salvos['sap'] = 'TODOS'
+    st.session_state.filtros_salvos['list'] = 'TODOS'
+    st.session_state.menu_idx = 1  # Índice 1 = Aba Busca e Governança
 
 # Definição estrita dos status elegíveis para produtividade real
 STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
@@ -161,11 +175,17 @@ with st.sidebar:
     st.caption("Ecossistema de Governança")
     st.markdown("---")
     
+    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Carga de Lotes']
+    
     menu_selecionado = sac.menu([
-        sac.MenuItem('Painel Executivo', icon='pie-chart-fill'),
-        sac.MenuItem('Busca e Governança', icon='sliders'),
-        sac.MenuItem('Carga de Lotes', icon='cloud-upload-fill'),
-    ], index=0, format_func='title', size='md')
+        sac.MenuItem(opcoes_menu[0], icon='pie-chart-fill'),
+        sac.MenuItem(opcoes_menu[1], icon='sliders'),
+        sac.MenuItem(opcoes_menu[2], icon='cloud-upload-fill'),
+    ], index=st.session_state.menu_idx, format_func='title', size='md')
+    
+    # Sincroniza o estado de memória caso o usuário clique manualmente no menu lateral
+    if menu_selecionado in opcoes_menu:
+        st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
 # --- VISÃO 1: PAINEL EXECUTIVO E MAPAS ---
 if menu_selecionado == 'Painel Executivo':
@@ -201,26 +221,32 @@ if menu_selecionado == 'Painel Executivo':
                         </div>
                         """, unsafe_allow_html=True
                     )
-                    if is_critico:
-                        if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Reais", key=f"btn_atrib_{lev_nome}"):
-                            cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (normalizar_texto(df_notas_db['STATUS LIST']).isin(STATUS_PRODUTIVIDADE))
-                            obras_livres = df_notas_db[cond_livres_reais].index
+                    
+                    # DIVISÃO DE BOTÕES E INTEGRAÇÃO DO CALLBACK
+                    b1, b2 = st.columns([1.3, 1])
+                    with b1:
+                        if is_critico:
+                            if st.button(f"⚡ +{saldo_necessario} Reais", key=f"btn_atrib_{lev_nome}"):
+                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (normalizar_texto(df_notas_db['STATUS LIST']).isin(STATUS_PRODUTIVIDADE))
+                                obras_livres = df_notas_db[cond_livres_reais].index
+                                
+                                if len(obras_livres) == 0:
+                                    st.error("Sem demandas livres.")
+                                else:
+                                    qtd_atribuir = min(saldo_necessario, len(obras_livres))
+                                    indices_para_mudar = obras_livres[:qtd_atribuir]
+                                    df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_nome
+                                    if save_notas_to_db(df_notas_db):
+                                        st.success(f"{qtd_atribuir} obras vinculadas a {lev_nome}.")
+                                        st.rerun()
+                        else:
+                            st.button("✅ Bateu a Meta", key=f"btn_ok_{lev_nome}", disabled=True)
                             
-                            if len(obras_livres) == 0:
-                                st.error("Não há demandas livres em aberto no STATUS LIST elegível para balanceamento.")
-                            else:
-                                qtd_atribuir = min(saldo_necessario, len(obras_livres))
-                                indices_para_mudar = obras_livres[:qtd_atribuir]
-                                df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_nome
-                                if save_notas_to_db(df_notas_db):
-                                    st.success(f"Sucesso! {qtd_atribuir} demandas reais vinculadas a {lev_nome}.")
-                                    st.rerun()
-                    else:
-                        st.button("✅ Ok", key=f"btn_ok_{lev_nome}", disabled=True)
+                    with b2:
+                        st.button("🔍 Ver Obras", on_click=filtrar_levantador_governanca, args=(lev_nome,), key=f"btn_ver_{lev_nome}")
 
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         
-        # Ajuste de Layout: 2 Colunas para os gráficos restantes
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
