@@ -117,7 +117,6 @@ def auto_assign_levantador(df_notas, df_equipes):
         df_notas.loc[mask_sem_levantador, 'MUNICIPIO'].map(mapa_levantadores).fillna('SEM LEVANTADOR')
     )
     
-    # Mantive a coluna DATA DE VENCIMENTO para você ir preenchendo no data editor
     for col in ['STATUS LIST', 'DATA DE DESPACHO CAMPO', 'STATUS SISCO', 'DATA DE VENCIMENTO']:
         if col not in df_notas.columns:
             df_notas[col] = ""
@@ -184,9 +183,10 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        for i in range(0, len(resumo_levantadores), 4):
-            chunk = resumo_levantadores.iloc[i:i+4]
-            cols = st.columns(4)
+        # AJUSTE 1: Colunas dos cards alteradas de 4 para 5
+        for i in range(0, len(resumo_levantadores), 5):
+            chunk = resumo_levantadores.iloc[i:i+5]
+            cols = st.columns(5)
             for idx, (_, row) in enumerate(chunk.iterrows()):
                 lev_nome = row['Levantador']
                 qtd_obras_reais = row['Total_Obras_Real']
@@ -236,12 +236,15 @@ if menu_selecionado == 'Painel Executivo':
                         st.button("🔍 Ver Obras", on_click=filtrar_levantador_governanca, args=(lev_nome,), key=f"btn_ver_{lev_nome}")
 
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
-        col_g1, col_g2 = st.columns(2)
+        
+        # AJUSTE 2: Margens invisíveis e redirecionamento da legenda dos gráficos
+        espaco_esq, col_g1, col_g2, espaco_dir = st.columns([0.5, 4, 4, 0.5])
         
         with col_g1:
             fig_rosca_mun = px.pie(municipios_por_levantador, names='Levantador', values='Qtd_Municipios', 
                                    title="Quantidade Total de Municípios por Levantador",
                                    hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe)
+            fig_rosca_mun.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
             st.plotly_chart(fig_rosca_mun, use_container_width=True)
             
         with col_g2:
@@ -251,6 +254,7 @@ if menu_selecionado == 'Painel Executivo':
             fig_rosca_sem_lev = px.pie(df_sem_lev_reg, names='Regional', values='Quantidade_Sem_Atribuicao',
                                        title="Obras Sem Levantador Atribuído por Regional",
                                        hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            fig_rosca_sem_lev.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
             st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
 
         st.markdown("---")
@@ -313,8 +317,9 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
+        # AJUSTE 3: Altura do mapa aumentada de 550 para 750
         mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos))
-        st_folium(mapa_pronto, use_container_width=True, height=550, returned_objects=[])
+        st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
 # --- VISÃO 2: FILTROS E GOVERNANÇA ---
 elif menu_selecionado == 'Busca e Governança':
