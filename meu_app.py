@@ -51,15 +51,15 @@ if 'ui_sap' not in st.session_state: st.session_state.ui_sap = 'TODOS'
 if 'ui_list' not in st.session_state: st.session_state.ui_list = []
 
 def filtrar_levantador_governanca(nome_lev):
-    # Ao clicar na lupa, seta as memórias nativas e limpa os outros filtros
+    # Ao clicar na lupa, seta o levantador e filtra APENAS os status produtivos
     st.session_state.ui_lev = nome_lev
     st.session_state.ui_reg = 'TODOS'
     st.session_state.ui_mun = 'TODOS'
     st.session_state.ui_lig = 'TODOS'
     st.session_state.ui_sap = 'TODOS'
-    st.session_state.ui_list = [] # Vazio = Mostrar TUDO do levantador
+    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() # Mostra APENAS a fila ativa
     st.session_state.menu_idx = 1
-    st.toast(f"Buscando todas as demandas de {nome_lev}...", icon="🔍")
+    st.toast(f"Buscando demandas ativas de {nome_lev}...", icon="🔍")
 
 # --- MOTOR DE ALTA PERFORMANCE 1: VETORIZAÇÃO MATEMÁTICA ---
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
@@ -497,7 +497,7 @@ if menu_selecionado == 'Painel Executivo':
                 try:
                     lat_val = float(row.get('Latitude', np.nan))
                     lon_val = float(row.get('Longitude', np.nan))
-                    # Usando pd.notna para blindar erros (Correção NameError math)
+                    # Usando pd.notna para blindar erros
                     if pd.notna(lat_val) and pd.notna(lon_val):
                         lev = str(row['Levantador'])
                         if lev in todos_levantadores:
