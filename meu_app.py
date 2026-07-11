@@ -117,7 +117,7 @@ def auto_assign_levantador(df_notas, df_equipes):
         df_notas.loc[mask_sem_levantador, 'MUNICIPIO'].map(mapa_levantadores).fillna('SEM LEVANTADOR')
     )
     
-    # Injeta a coluna DATA DE VENCIMENTO automaticamente se ela não existir no BD antigo
+    # Mantive a coluna DATA DE VENCIMENTO para você ir preenchendo no data editor
     for col in ['STATUS LIST', 'DATA DE DESPACHO CAMPO', 'STATUS SISCO', 'DATA DE VENCIMENTO']:
         if col not in df_notas.columns:
             df_notas[col] = ""
@@ -129,62 +129,8 @@ df_notas_db, df_equipes_db = load_data_from_db()
 df_notas_db = auto_assign_levantador(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# 2. PROCESSAMENTO, MÉTRICAS ANALÍTICAS E CÁLCULO DE SLA
+# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS
 # -----------------------------------------------------------------------------
-# --- FUNÇÃO DE INTELIGÊNCIA: SLA E VENCIMENTOS ---
-def classificar_prazo(row):
-    tipo = str(row.get('TIPO LIGACAO', '')).strip().upper()
-    hoje = pd.Timestamp.now().normalize()
-    
-    grupo_1 = ['ASC', 'UNI', 'UNO']
-    grupo_2 = ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR'] 
-    grupo_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-    grupo_4 = ['NIV']
-    
-    # Regra do Cronograma Manual
-    if tipo in grupo_crono:
-        val_venc = row.get('DATA DE VENCIMENTO')
-        if pd.isna(val_venc) or str(val_venc).strip() in ['', 'NAN', 'NAT', 'NONE']:
-            return "Sem Data"
-        dt_venc = pd.to_datetime(val_venc, errors='coerce', dayfirst=True)
-        if pd.isna(dt_venc): return "Sem Data"
-        dt_venc = dt_venc.normalize()
-        
-        diff = (dt_venc - hoje).days
-        if diff < 0: return "Vencida"
-        elif diff <= 3: return "Vencimento Próximo"
-        else: return "No Prazo"
-        
-    # Regra das Datas de Despacho Automáticas
-    else:
-        val_desp = row.get('DATA DE DESPACHO CAMPO')
-        if pd.isna(val_desp) or str(val_desp).strip() in ['', 'NAN', 'NAT', 'NONE']:
-            return "Sem Data"
-        dt_desp = pd.to_datetime(val_desp, errors='coerce', dayfirst=True)
-        if pd.isna(dt_desp): return "Sem Data"
-        dt_desp = dt_desp.normalize()
-        
-        dias_corridos = (hoje - dt_desp).days
-        if dias_corridos < 0: dias_corridos = 0
-        
-        if tipo in grupo_1:
-            if dias_corridos <= 10: return "No Prazo"
-            elif dias_corridos <= 15: return "Vencimento Próximo"
-            else: return "Vencida"
-        elif tipo in grupo_2:
-            if dias_corridos <= 16: return "No Prazo"
-            elif dias_corridos <= 24: return "Vencimento Próximo"
-            else: return "Vencida"
-        elif tipo in grupo_4:
-            if dias_corridos <= 5: return "No Prazo"
-            elif dias_corridos <= 8: return "Vencimento Próximo"
-            else: return "Vencida"
-        else:
-            # Fallback (Garante cobertura)
-            if dias_corridos <= 10: return "No Prazo"
-            elif dias_corridos <= 15: return "Vencimento Próximo"
-            else: return "Vencida"
-
 df_coords = df_equipes_db.dropna(subset=['Município', 'Latitude', 'Longitude']).drop_duplicates(subset=['Município'])
 mapa_lat = pd.to_numeric(df_coords.set_index('Município')['Latitude'], errors='coerce').to_dict()
 mapa_lon = pd.to_numeric(df_coords.set_index('Município')['Longitude'], errors='coerce').to_dict()
@@ -192,9 +138,6 @@ mapa_lon = pd.to_numeric(df_coords.set_index('Município')['Longitude'], errors=
 df_notas_calc = df_notas_db.copy()
 df_notas_calc['Latitude'] = df_notas_calc['MUNICIPIO'].map(mapa_lat)
 df_notas_calc['Longitude'] = df_notas_calc['MUNICIPIO'].map(mapa_lon)
-
-# Aplica a inteligência de Prazos em todo o DataFrame
-df_notas_calc['Status SLA'] = df_notas_calc.apply(classificar_prazo, axis=1)
 
 municipios_por_levantador = df_equipes_db.groupby('Levantador')['Município'].nunique().reset_index()
 municipios_por_levantador.columns = ['Levantador', 'Qtd_Municipios']
@@ -309,33 +252,6 @@ if menu_selecionado == 'Painel Executivo':
                                        title="Obras Sem Levantador Atribuído por Regional",
                                        hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
             st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
-
-        # NOVO GRÁFICO: SLA POR REGIONAL
-        st.markdown("---")
-        st.markdown("### ⏳ Acompanhamento de Prazos (SLA) por Regional")
-        
-        df_sla = df_notas_calc.groupby(['REGIONAL', 'Status SLA']).size().reset_index(name='Quantidade')
-        if not df_sla.empty:
-            cores_sla = {
-                "No Prazo": "#5CB85C",
-                "Vencimento Próximo": "#F0AD4E",
-                "Vencida": "#D9534F",
-                "Sem Data": "#999999"
-            }
-            fig_sla = px.bar(
-                df_sla, 
-                x='REGIONAL', 
-                y='Quantidade', 
-                color='Status SLA',
-                color_discrete_map=cores_sla,
-                barmode='stack',
-                text='Quantidade'
-            )
-            fig_sla.update_traces(textposition='inside', textfont_color='white')
-            fig_sla.update_layout(yaxis_title="Quantidade de Obras", xaxis_title="Regional")
-            st.plotly_chart(fig_sla, use_container_width=True)
-        else:
-            st.info("Não há dados suficientes para gerar o gráfico de SLA.")
 
         st.markdown("---")
         st.markdown("### 🗺️ Mapa de Distribuição Geográfica (Com Visão de Satélite)")
