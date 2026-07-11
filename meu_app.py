@@ -10,17 +10,20 @@ import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
-import math
 import tempfile
 import geopandas as gpd
 import zipfile
 
-# Habilita o suporte a KML no fiona/geopandas
+# Habilita o suporte a KML no fiona/geopandas (Compatibilidade Universal)
 try:
     import fiona
-    fiona.drvsupport.supported_drivers['KML'] = 'rw'
-    fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
-except:
+    try:
+        fiona.drvsupport.supported_drivers['KML'] = 'rw'
+        fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
+    except AttributeError:
+        fiona.supported_drivers['KML'] = 'rw'
+        fiona.supported_drivers['LIBKML'] = 'rw'
+except Exception:
     pass
 
 # Configuração de Layout e Identidade Visual Corporativa
@@ -168,7 +171,6 @@ def save_notas_to_db(df_notas_atualizado):
         df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         conn.close()
         
-        # --- LIMPEZA DO DUPLO CACHE PARA ATUALIZAÇÃO IMEDIATA ---
         get_processed_data.clear()
         process_analytical_data.clear()
         return True
@@ -437,7 +439,6 @@ if menu_selecionado == 'Painel Executivo':
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
         
-        # UPLOADER AGORA ACEITA KMZ TAMBÉM
         camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml, .kmz)", type=['geojson', 'kml', 'kmz'])
         caminho_camada_temp = None
         
@@ -446,16 +447,18 @@ if menu_selecionado == 'Painel Executivo':
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
                 tmp.write(camada_upload.getvalue())
                 caminho_camada_temp = tmp.name
-                
-            # Descompactação em Memória de KMZ para KML
+            
+            # --- DESCOMPACTADOR DE KMZ EM MEMÓRIA ---
             if extensao == 'kmz':
                 try:
                     with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
-                        kml_filename = [name for name in kmz.namelist() if name.lower().endswith('.kml')][0]
-                        extracted_path = kmz.extract(kml_filename, path=tempfile.gettempdir())
-                        caminho_camada_temp = extracted_path # Altera a rota para o KML extraído
+                        kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
+                        if kml_files:
+                            caminho_camada_temp = kmz.extract(kml_files[0], path=tempfile.gettempdir())
+                        else:
+                            st.error("O arquivo KMZ não contém um KML válido em sua raiz.")
                 except Exception as e:
-                    st.error(f"Erro ao extrair arquivo KMZ: {e}")
+                    st.error(f"Falha ao abrir pacote KMZ: {e}")
         
         def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
             mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -467,25 +470,43 @@ if menu_selecionado == 'Painel Executivo':
             folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
             
             if arquivo_espacial:
+                import fiona
                 try:
-                    gdf = gpd.read_file(arquivo_espacial)
+                    # Leitor Robusto de Múltiplas Camadas (Essencial para KMLs Elétricos)
+                    camadas = fiona.listlayers(arquivo_espacial)
+                    gdfs = []
                     
-                    # --- OTIMIZAÇÃO DE VÉRTICES GEOMÉTRICOS (MAPA FLUIDO) ---
-                    # Reduz até 80% do peso do arquivo fundindo linhas retas curtas
-                    # tolerance = 0.0001 graus equivale a cerca de 11 metros de precisão
-                    gdf['geometry'] = gdf['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
-                    
-                    folium.GeoJson(
-                        gdf,
-                        name="Camada de Rede (Otimizada)",
-                        style_function=lambda feature: {
-                            'color': '#ff9900', 
-                            'weight': 2.5, # Linha ligeiramente mais fina para aliviar o navegador
-                            'fillOpacity': 0.2
-                        }
-                    ).add_to(mapa)
+                    for camada in camadas:
+                        try:
+                            gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
+                            if not gdf_temp.empty:
+                                gdfs.append(gdf_temp)
+                        except Exception:
+                            continue
+                            
+                    if gdfs:
+                        gdf_final = pd.concat(gdfs, ignore_index=True)
+                        
+                        # --- OTIMIZAÇÃO GEOMÉTRICA (Deixa o mapa levíssimo) ---
+                        gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
+                        
+                        folium.GeoJson(
+                            gdf_final,
+                            name="Camada de Rede (Otimizada)",
+                            style_function=lambda feature: {
+                                'color': '#ff9900', 
+                                'weight': 2.5,
+                                'fillOpacity': 0.2
+                            }
+                        ).add_to(mapa)
+                        
+                        # --- AUTO ZOOM (Centraliza no arquivo desenhado) ---
+                        bounds = gdf_final.total_bounds # [lon_min, lat_min, lon_max, lat_max]
+                        mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+                    else:
+                        st.warning("O arquivo carregado está vazio ou não possui geometria visível.")
                 except Exception as e:
-                    st.error(f"Não foi possível carregar a camada espacial: {e}")
+                    st.error(f"Erro ao processar o arquivo geográfico: {e}")
 
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
             fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
@@ -544,7 +565,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        with st.spinner("Processando e otimizando geometria. Renderizando mapa espacial..."):
+        with st.spinner("Decodificando arquivo KMZ e otimizando geometria. Renderizando mapa..."):
             mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
