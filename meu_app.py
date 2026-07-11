@@ -437,7 +437,7 @@ if menu_selecionado == 'Painel Executivo':
             st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
 
         # -----------------------------------------------------------------------------
-        # MAPA GEORREFERENCIADO (COM SVG CIRCLE-MARKERS LEVES)
+        # MAPA GEORREFERENCIADO (COM LEITOR DINÂMICO DE KMZ/KML)
         # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -522,6 +522,8 @@ if menu_selecionado == 'Painel Executivo':
                         try:
                             gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
                             if not gdf_temp.empty:
+                                # Captura o nome da pasta do KML para ajudar na identificação
+                                gdf_temp['Layer_Name'] = camada
                                 gdfs.append(gdf_temp)
                         except Exception:
                             continue
@@ -530,51 +532,64 @@ if menu_selecionado == 'Painel Executivo':
                         gdf_final = pd.concat(gdfs, ignore_index=True)
                         gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
                         
-                        # --- SEPARAÇÃO INTELIGENTE DE GEOMETRIAS PARA ALTA PERFORMANCE ---
                         gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
                         gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
                         
-                        # 1. Renderiza Linhas (Cabos/Redes)
                         if not gdf_lines.empty:
                             folium.GeoJson(
                                 gdf_lines,
                                 name="Rede Elétrica (Linhas)",
                                 style_function=lambda feature: {
-                                    'color': '#1A4F7C', # Azul Padrão
+                                    'color': '#1A4F7C', 
                                     'weight': 2.5,
                                     'fillOpacity': 0.2
                                 }
                             ).add_to(mapa)
                             
-                        # 2. Renderiza Pontos (Postes e Transformadores) de forma Ultra Leve (SVG nativo do navegador)
+                        # --- MOTOR DE SIMBOLOGIA INTELIGENTE PARA PONTOS ---
                         if not gdf_points.empty:
+                            # Preenche colunas vazias para não gerar erros no Popup
+                            for col in ['Name', 'Description', 'Layer_Name']:
+                                if col not in gdf_points.columns:
+                                    gdf_points[col] = ''
+                                    
                             def get_point_style(feature):
-                                nome = str(feature['properties'].get('Name', '')).lower()
-                                if 'poste' in nome:
+                                props = feature.get('properties', {})
+                                # Varre o Nome, a Descrição e a Pasta do KML para achar o tipo de equipamento
+                                busca = str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))
+                                busca = busca.lower()
+                                
+                                if 'poste' in busca:
                                     cor = '#808080' # Cinza
-                                    raio = 3
-                                elif 'transformador' in nome or 'trafo' in nome:
+                                    raio = 2.5
+                                elif 'transformador' in busca or 'trafo' in busca or 'subestação' in busca or 'subestacao' in busca:
                                     cor = '#28a745' # Verde
-                                    raio = 5
+                                    raio = 5.0
+                                elif 'chave' in busca or 'seccionador' in busca or 'fusivel' in busca:
+                                    cor = '#ffc107' # Amarelo
+                                    raio = 4.0
+                                elif 'medidor' in busca or 'consumidor' in busca or 'cliente' in busca:
+                                    cor = '#17a2b8' # Ciano
+                                    raio = 2.5
                                 else:
-                                    cor = '#ff9900' # Laranja para outros itens não mapeados
-                                    raio = 3
+                                    cor = '#dc3545' # Vermelho para outros elementos não identificados
+                                    raio = 2.5
                                     
                                 return {
                                     'fillColor': cor,
                                     'color': cor,
                                     'weight': 1,
-                                    'fillOpacity': 0.8,
+                                    'fillOpacity': 0.9,
                                     'radius': raio
                                 }
 
-                            # Converte os pinos pesados em círculos perfeitos gerados na tela do usuário
+                            # Converte os marcadores pesados em círculos vetoriais leves
                             folium.GeoJson(
                                 gdf_points,
                                 name="Equipamentos (Pontos)",
                                 marker=folium.CircleMarker(), 
                                 style_function=get_point_style,
-                                tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Equipamento:']) if 'Name' in gdf_points.columns else None
+                                popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
                             ).add_to(mapa)
                         
                         bounds = gdf_final.total_bounds
@@ -641,7 +656,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        with st.spinner("Decodificando arquivo KMZ e renderizando simbologia leve. Aguarde..."):
+        with st.spinner("Decodificando arquivo KMZ e renderizando simbologia inteligente. Aguarde..."):
             mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
