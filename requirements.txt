@@ -1,0 +1,10 @@
+streamlit
+pandas
+folium
+streamlit-folium
+plotly
+numpy
+pandera
+streamlit-antd-components
+geopandas
+fiona
