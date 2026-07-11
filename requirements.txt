@@ -1,11 +1,10 @@
 streamlit
-pandas
-numpy
 folium
 streamlit-folium
-plotly
-pandera
-streamlit-antd-components
-openpyxl
+requests
+playwright
+numpy
+ezdxf
 geopandas
-fiona
+shapely
+streamlit-geolocation
