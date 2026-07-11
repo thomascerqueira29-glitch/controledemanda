@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-import pydeck as pdk
+import folium
+from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster
 import plotly.express as px
 import numpy as np
 import os
@@ -11,7 +13,6 @@ import streamlit_antd_components as sac
 import tempfile
 import geopandas as gpd
 import zipfile
-import math
 
 # Habilita o suporte a KML no fiona/geopandas (Compatibilidade Universal)
 try:
@@ -70,39 +71,6 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return R * c
     except Exception:
         return pd.Series(99999, index=lat2_series.index)
-
-# --- MOTOR GEOMÉTRICO PARA PYDECK ---
-def extract_line_coords(geom):
-    """Extrai coordenadas de LineStrings para o formato nativo do PyDeck."""
-    if geom is None or geom.is_empty:
-        return []
-    if geom.geom_type == 'LineString':
-        return list(geom.coords)
-    elif geom.geom_type == 'MultiLineString':
-        coords = []
-        for line in geom.geoms:
-            coords.extend(list(line.coords))
-        return coords
-    return []
-
-def assign_symbology(row):
-    """
-    Motor de Simbologia Dinâmica.
-    Retorna uma tupla (Cor RGBA, Raio em Metros).
-    """
-    busca = str(row.get('Name', '')) + " " + str(row.get('Description', '')) + " " + str(row.get('Layer_Name', ''))
-    busca = busca.lower()
-    
-    if 'poste' in busca:
-        return [128, 128, 128, 200], 3  # Cinza
-    elif 'transformador' in busca or 'trafo' in busca or 'subestação' in busca or 'subestacao' in busca:
-        return [40, 167, 69, 230], 8    # Verde
-    elif 'chave' in busca or 'seccionador' in busca or 'fusivel' in busca:
-        return [255, 193, 7, 230], 5    # Amarelo
-    elif 'medidor' in busca or 'consumidor' in busca or 'cliente' in busca:
-        return [23, 162, 184, 230], 3   # Ciano
-    else:
-        return [220, 53, 69, 230], 3    # Vermelho para elementos desconhecidos
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -472,7 +440,7 @@ if menu_selecionado == 'Painel Executivo':
         # MAPA GEORREFERENCIADO (COM LEITOR DINÂMICO DE KMZ/KML)
         # -----------------------------------------------------------------------------
         st.markdown("---")
-        st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas (Aceleração WebGL)")
+        st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
 
         with st.expander("⚙️ Filtros e Controles do Mapa", expanded=True):
             col_m1, col_m2, col_m3 = st.columns(3)
@@ -535,9 +503,14 @@ if menu_selecionado == 'Painel Executivo':
         if filtro_map_mun != "TODOS" and 'Município' in df_eq_mapa_view:
             df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Município'].astype(str).str.upper() == filtro_map_mun.upper()]
 
-        def construir_mapa_pydeck(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
-            layers = []
-            bounds = [-48.0, -9.0, -41.0, -1.0] 
+        def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
+            mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
+            
+            folium.TileLayer(
+                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                attr='Esri', name='Visão de Satélite', overlay=False, control=True
+            ).add_to(mapa)
+            folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
             
             if arquivo_espacial:
                 import fiona
@@ -549,6 +522,7 @@ if menu_selecionado == 'Painel Executivo':
                         try:
                             gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
                             if not gdf_temp.empty:
+                                # Captura o nome da pasta do KML para ajudar na identificação
                                 gdf_temp['Layer_Name'] = camada
                                 gdfs.append(gdf_temp)
                         except Exception:
@@ -558,57 +532,93 @@ if menu_selecionado == 'Painel Executivo':
                         gdf_final = pd.concat(gdfs, ignore_index=True)
                         gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
                         
-                        tb = gdf_final.total_bounds
-                        bounds = [tb[0], tb[1], tb[2], tb[3]]
+                        gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
+                        gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
                         
-                        gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString'])].copy()
                         if not gdf_lines.empty:
-                            gdf_lines['path'] = gdf_lines['geometry'].apply(extract_line_coords)
-                            gdf_lines = gdf_lines[gdf_lines['path'].map(len) > 0]
-                            gdf_lines['tooltip_text'] = "Rede: " + gdf_lines['Layer_Name'].fillna('Desconhecida')
+                            folium.GeoJson(
+                                gdf_lines,
+                                name="Rede Elétrica (Linhas)",
+                                style_function=lambda feature: {
+                                    'color': '#1A4F7C', 
+                                    'weight': 2.5,
+                                    'fillOpacity': 0.2
+                                }
+                            ).add_to(mapa)
                             
-                            layer_linhas = pdk.Layer(
-                                "PathLayer",
-                                data=gdf_lines,
-                                get_path="path",
-                                get_color=[26, 79, 124, 180], 
-                                width_scale=1,
-                                width_min_pixels=2,
-                                get_width=3,
-                                pickable=True,
-                                auto_highlight=True
-                            )
-                            layers.append(layer_linhas)
-                        
-                        gdf_points = gdf_final[gdf_final.geometry.type == 'Point'].copy()
+                        # --- MOTOR DE SIMBOLOGIA INTELIGENTE PARA PONTOS ---
                         if not gdf_points.empty:
-                            gdf_points['lon'] = gdf_points.geometry.x
-                            gdf_points['lat'] = gdf_points.geometry.y
-                            
+                            # Preenche colunas vazias para não gerar erros no Popup
                             for col in ['Name', 'Description', 'Layer_Name']:
                                 if col not in gdf_points.columns:
                                     gdf_points[col] = ''
                                     
-                            symb_results = gdf_points.apply(assign_symbology, axis=1)
-                            gdf_points['color'] = symb_results.apply(lambda x: x[0])
-                            gdf_points['radius'] = symb_results.apply(lambda x: x[1])
-                            gdf_points['tooltip_text'] = "Equipamento: " + gdf_points['Name'].fillna('')
-                            
-                            layer_pontos = pdk.Layer(
-                                "ScatterplotLayer",
-                                data=gdf_points,
-                                get_position=['lon', 'lat'],
-                                get_color='color',
-                                get_radius='radius',
-                                radius_min_pixels=3,
-                                radius_max_pixels=10,
-                                pickable=True,
-                                auto_highlight=True
-                            )
-                            layers.append(layer_pontos)
-                            
+                            def get_point_style(feature):
+                                props = feature.get('properties', {})
+                                # Varre o Nome, a Descrição e a Pasta do KML para achar o tipo de equipamento
+                                busca = str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))
+                                busca = busca.lower()
+                                
+                                if 'poste' in busca:
+                                    cor = '#808080' # Cinza
+                                    raio = 2.5
+                                elif 'transformador' in busca or 'trafo' in busca or 'subestação' in busca or 'subestacao' in busca:
+                                    cor = '#28a745' # Verde
+                                    raio = 5.0
+                                elif 'chave' in busca or 'seccionador' in busca or 'fusivel' in busca:
+                                    cor = '#ffc107' # Amarelo
+                                    raio = 4.0
+                                elif 'medidor' in busca or 'consumidor' in busca or 'cliente' in busca:
+                                    cor = '#17a2b8' # Ciano
+                                    raio = 2.5
+                                else:
+                                    cor = '#dc3545' # Vermelho para outros elementos não identificados
+                                    raio = 2.5
+                                    
+                                return {
+                                    'fillColor': cor,
+                                    'color': cor,
+                                    'weight': 1,
+                                    'fillOpacity': 0.9,
+                                    'radius': raio
+                                }
+
+                            # Converte os marcadores pesados em círculos vetoriais leves
+                            folium.GeoJson(
+                                gdf_points,
+                                name="Equipamentos (Pontos)",
+                                marker=folium.CircleMarker(), 
+                                style_function=get_point_style,
+                                popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
+                            ).add_to(mapa)
+                        
+                        bounds = gdf_final.total_bounds
+                        mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+                    else:
+                        st.warning("O arquivo carregado está vazio ou não possui geometria visível.")
                 except Exception as e:
-                    st.error(f"Erro ao processar malha espacial de alta densidade: {e}")
+                    st.error(f"Erro ao processar o arquivo geográfico: {e}")
+
+            fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
+            fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
+            cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
+            
+            records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
+            for row in records_equipes:
+                try:
+                    lat_val = float(row.get('Latitude', np.nan))
+                    lon_val = float(row.get('Longitude', np.nan))
+                    if pd.notna(lat_val) and pd.notna(lon_val):
+                        lev = str(row['Levantador'])
+                        if lev in todos_levantadores:
+                            cor_pino = 'red' if lev in criticos_tuple else 'green'
+                            folium.Marker(
+                                location=[lat_val, lon_val],
+                                icon=folium.Icon(color=cor_pino, icon='user', prefix='fa'),
+                                tooltip=f"Levantador: {lev}"
+                            ).add_to(fg_equipes)
+                except (ValueError, TypeError):
+                    pass 
 
             df_notas_mapa = df_nt.copy()
             df_notas_mapa['Lat_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lat_Mapa'), errors='coerce')
@@ -616,64 +626,39 @@ if menu_selecionado == 'Painel Executivo':
             df_notas_mapa = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
             
             if not df_notas_mapa.empty:
-                df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.005, len(df_notas_mapa))
-                df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.005, len(df_notas_mapa))
+                df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
+                df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
                 
-                def assign_obra_color(lev):
-                    if str(lev) == 'SEM LEVANTADOR': return [240, 173, 78, 220]
-                    if str(lev) in criticos_tuple: return [217, 83, 79, 220]
-                    return [92, 184, 92, 220]
+                records_obras = df_notas_mapa.to_dict('records')
+                for row in records_obras:
+                    html_mini_card = f"""
+                    <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
+                        <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
+                        <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
+                            <b>PROTOCOLO:</b> {row.get('PROTOCOLO', '')}<br>
+                            <b>MUNICIPIO:</b> {row.get('MUNICIPIO', '')}<br>
+                            <b>LEVANTADOR:</b> {row.get('LEVANTADOR', '')}<br>
+                        </div>
+                    </div>
+                    """
+                    lev_obra = str(row.get('LEVANTADOR', 'SEM LEVANTADOR'))
+                    cor_marcador = 'orange' if lev_obra == 'SEM LEVANTADOR' else ('red' if lev_obra in criticos_tuple else 'blue')
                     
-                df_notas_mapa['color'] = df_notas_mapa['LEVANTADOR'].apply(assign_obra_color)
-                df_notas_mapa['tooltip_text'] = "Demanda: " + df_notas_mapa['PROTOCOLO'].astype(str) + " | Resp: " + df_notas_mapa['LEVANTADOR'].astype(str)
-                
-                layer_obras = pdk.Layer(
-                    "ScatterplotLayer",
-                    data=df_notas_mapa,
-                    get_position=['lon_jitter', 'lat_jitter'],
-                    get_color='color',
-                    get_radius=500,
-                    radius_min_pixels=6,
-                    radius_max_pixels=25,
-                    pickable=True,
-                    auto_highlight=True
-                )
-                layers.append(layer_obras)
-                
-                if not arquivo_espacial:
-                    bounds = [
-                        df_notas_mapa['lon_jitter'].min(), df_notas_mapa['lat_jitter'].min(),
-                        df_notas_mapa['lon_jitter'].max(), df_notas_mapa['lat_jitter'].max()
-                    ]
+                    folium.Marker(
+                        location=[row['lat_jitter'], row['lon_jitter']], 
+                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'),
+                        popup=folium.Popup(html_mini_card, max_width=310)
+                    ).add_to(cluster_obras)
 
-            center_lon = (bounds[0] + bounds[2]) / 2
-            center_lat = (bounds[1] + bounds[3]) / 2
+            fg_equipes.add_to(mapa)
+            fg_obras.add_to(mapa)
+            folium.LayerControl().add_to(mapa)
             
-            lon_diff = bounds[2] - bounds[0]
-            zoom = max(5.0, min(14.0, 11.5 - (math.log2(lon_diff) if lon_diff > 0 else 0)))
+            return mapa
 
-            view_state = pdk.ViewState(
-                longitude=center_lon,
-                latitude=center_lat,
-                zoom=zoom,
-                pitch=25
-            )
-
-            mapa_deck = pdk.Deck(
-                layers=layers,
-                initial_view_state=view_state,
-                map_style=pdk.map_styles.SATELLITE,
-                tooltip={
-                    "html": "<div style='font-family: Arial, sans-serif; font-size: 13px;'><b>{tooltip_text}</b></div>",
-                    "style": {"backgroundColor": "#1A4F7C", "color": "white", "borderRadius": "4px"}
-                }
-            )
-            
-            return mapa_deck
-
-        with st.spinner("Processando polígonos no hardware gráfico (WebGL) via PyDeck. Aguarde..."):
-            mapa_deck_pronto = construir_mapa_pydeck(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
-            st.pydeck_chart(mapa_deck_pronto, use_container_width=True)
+        with st.spinner("Decodificando arquivo KMZ e renderizando simbologia inteligente. Aguarde..."):
+            mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
+            st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
 # --- VISÃO 2: FILTROS E GOVERNANÇA ---
 elif menu_selecionado == 'Busca e Governança':
