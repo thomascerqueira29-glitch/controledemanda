@@ -436,10 +436,34 @@ if menu_selecionado == 'Painel Executivo':
         else:
             st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
 
+        # -----------------------------------------------------------------------------
+        # MAPA GEORREFERENCIADO COM FILTROS INDEPENDENTES E UPLOAD DE REDE
+        # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
-        
-        camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml, .kmz)", type=['geojson', 'kml', 'kmz'])
+
+        with st.expander("⚙️ Filtros e Controles do Mapa", expanded=True):
+            col_m1, col_m2, col_m3 = st.columns(3)
+            
+            op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('LEVANTADOR', pd.Series()).dropna().unique()])
+            filtro_map_lev = col_m1.selectbox("Levantador:", op_map_lev, key='map_lev')
+
+            op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('REGIONAL', pd.Series()).dropna().unique()])
+            filtro_map_reg = col_m2.selectbox("Regional:", op_map_reg, key='map_reg')
+
+            op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('MUNICIPIO', pd.Series()).dropna().unique()])
+            filtro_map_mun = col_m3.selectbox("Município:", op_map_mun, key='map_mun')
+
+            col_m4, col_m5 = st.columns(2)
+            op_map_sap = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('STATUS SAP', pd.Series()).dropna().unique()])
+            filtro_map_sap = col_m4.selectbox("Status SAP:", op_map_sap, key='map_sap')
+
+            op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+            filtro_map_list = col_m5.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
+            
+            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+            camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml, .kmz)", type=['geojson', 'kml', 'kmz'])
+            
         caminho_camada_temp = None
         
         if camada_upload is not None:
@@ -448,7 +472,6 @@ if menu_selecionado == 'Painel Executivo':
                 tmp.write(camada_upload.getvalue())
                 caminho_camada_temp = tmp.name
             
-            # --- DESCOMPACTADOR DE KMZ EM MEMÓRIA ---
             if extensao == 'kmz':
                 try:
                     with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
@@ -460,6 +483,27 @@ if menu_selecionado == 'Painel Executivo':
                 except Exception as e:
                     st.error(f"Falha ao abrir pacote KMZ: {e}")
         
+        # --- APLICAÇÃO DOS FILTROS DO MAPA ---
+        df_notas_mapa_view = df_notas_calc.copy()
+        if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view:
+            df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
+        if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view:
+            df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
+        if filtro_map_mun != "TODOS" and 'MUNICIPIO' in df_notas_mapa_view:
+            df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['MUNICIPIO'] == filtro_map_mun]
+        if filtro_map_sap != "TODOS" and 'STATUS SAP' in df_notas_mapa_view:
+            df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS SAP'] == filtro_map_sap]
+        if len(filtro_map_list) > 0 and 'STATUS LIST' in df_notas_mapa_view:
+            df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS LIST'].isin(filtro_map_list)]
+
+        df_eq_mapa_view = df_equipes_db.copy()
+        if filtro_map_lev != "TODOS" and 'Levantador' in df_eq_mapa_view:
+            df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Levantador'].astype(str).str.upper() == filtro_map_lev.upper()]
+        if filtro_map_reg != "TODOS" and 'Regional' in df_eq_mapa_view:
+            df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Regional'].astype(str).str.upper() == filtro_map_reg.upper()]
+        if filtro_map_mun != "TODOS" and 'Município' in df_eq_mapa_view:
+            df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Município'].astype(str).str.upper() == filtro_map_mun.upper()]
+
         def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
             mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
             
@@ -472,7 +516,6 @@ if menu_selecionado == 'Painel Executivo':
             if arquivo_espacial:
                 import fiona
                 try:
-                    # Leitor Robusto de Múltiplas Camadas (Essencial para KMLs Elétricos)
                     camadas = fiona.listlayers(arquivo_espacial)
                     gdfs = []
                     
@@ -486,8 +529,6 @@ if menu_selecionado == 'Painel Executivo':
                             
                     if gdfs:
                         gdf_final = pd.concat(gdfs, ignore_index=True)
-                        
-                        # --- OTIMIZAÇÃO GEOMÉTRICA (Deixa o mapa levíssimo) ---
                         gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
                         
                         folium.GeoJson(
@@ -500,8 +541,7 @@ if menu_selecionado == 'Painel Executivo':
                             }
                         ).add_to(mapa)
                         
-                        # --- AUTO ZOOM (Centraliza no arquivo desenhado) ---
-                        bounds = gdf_final.total_bounds # [lon_min, lat_min, lon_max, lat_max]
+                        bounds = gdf_final.total_bounds
                         mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
                     else:
                         st.warning("O arquivo carregado está vazio ou não possui geometria visível.")
@@ -565,8 +605,8 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        with st.spinner("Decodificando arquivo KMZ e otimizando geometria. Renderizando mapa..."):
-            mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos), caminho_camada_temp)
+        with st.spinner("Decodificando arquivo KMZ, aplicando filtros e otimizando geometria. Renderizando mapa..."):
+            mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
 # --- VISÃO 2: FILTROS E GOVERNANÇA ---
