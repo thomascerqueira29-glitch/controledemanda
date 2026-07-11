@@ -52,16 +52,19 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.menu_idx = 1
     st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
 
-# Função Matemática Vetorizada de Haversine (Muito mais rápido que apply)
-def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
-    R = 6371.0 
-    lat1_rad, lon1_rad = np.radians(lat1), np.radians(lon1)
-    lat2_rad, lon2_rad = np.radians(lat2_series), np.radians(lon2_series)
-    dlat = lat2_rad - lat1_rad
-    dlon = lon2_rad - lon1_rad
-    a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    return R * c
+# Função Matemática de Distância
+def safe_haversine(lat1, lon1, lat2, lon2):
+    try:
+        R = 6371.0 
+        lat1_rad, lon1_rad = math.radians(float(lat1)), math.radians(float(lon1))
+        lat2_rad, lon2_rad = math.radians(float(lat2)), math.radians(float(lon2))
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+    except:
+        return 99999
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -155,9 +158,7 @@ def save_notas_to_db(df_notas_atualizado):
         conn = get_db_connection()
         df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         conn.close()
-        # Limpa os Caches para garantir a atualização em tempo real
         get_processed_data.clear()
-        process_analytical_data.clear()
         return True
     except Exception as e:
         st.error(f"Falha de gravação no banco de dados: {e}")
@@ -166,9 +167,8 @@ def save_notas_to_db(df_notas_atualizado):
 df_notas_db, df_equipes_db = get_processed_data()
 
 # -----------------------------------------------------------------------------
-# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS (CACHED PARA ALTA PERFORMANCE)
+# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS (Sem Cache para evitar hash errors)
 # -----------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
     df_coords = df_equipes_db.dropna(subset=['Município', 'Latitude', 'Longitude']).drop_duplicates(subset=['Município'])
     mapa_lat = pd.to_numeric(df_coords.set_index('Município')['Latitude'], errors='coerce').to_dict()
@@ -267,20 +267,18 @@ if menu_selecionado == 'Painel Executivo':
                                 if len(df_livres) == 0:
                                     st.error("Sem demandas livres.")
                                 else:
-                                    with st.spinner(f"Processando vetorização espacial para {lev_nome}..."):
+                                    with st.spinner(f"Processando roteamento para {lev_nome}..."):
                                         try:
                                             tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_nome].iloc[0]
-                                            tech_lat = float(tech_coords['Latitude'])
-                                            tech_lon = float(tech_coords['Longitude'])
+                                            tech_lat = tech_coords['Latitude']
+                                            tech_lon = tech_coords['Longitude']
                                             
-                                            df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
-                                            df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
+                                            df_livres['Lat_Mapa'] = df_livres['MUNICIPIO'].map(mapa_lat)
+                                            df_livres['Lon_Mapa'] = df_livres['MUNICIPIO'].map(mapa_lon)
                                             
-                                            # Operação Vetorizada de Distância Extremamente Rápida
-                                            df_livres['Distancia_KM'] = vectorized_haversine(
-                                                tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa']
-                                            ).fillna(99999)
-                                            
+                                            df_livres['Distancia_KM'] = df_livres.apply(
+                                                lambda r: safe_haversine(tech_lat, tech_lon, r['Lat_Mapa'], r['Lon_Mapa']), axis=1
+                                            )
                                             df_livres = df_livres.sort_values('Distancia_KM')
                                         except Exception:
                                             pass
@@ -320,7 +318,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
 
         # -----------------------------------------------------------------------------
-        # GRÁFICO DE SLA AUTOMÁTICO VETORIZADO (ALTA PERFORMANCE)
+        # GRÁFICO DE SLA AUTOMÁTICO (FUNÇÃO BLINDADA CONTRA ERROS)
         # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### ⏳ Monitoramento de SLA por Regional (Regra de Negócio)")
@@ -328,62 +326,64 @@ if menu_selecionado == 'Painel Executivo':
         
         df_sla = df_notas_calc.copy()
         
-        # Otimização: Uso do NumPy para substituir o apply(axis=1) na regra de negócio
-        tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
-        
-        g1 = ['ASC', 'UNI', 'UNO']
-        g2 = ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
-        g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-        g_niv = ['NIV']
-        
-        hoje = pd.Timestamp.today().normalize()
-        
-        df_sla['DATA DE VENCIMENTO_DT'] = pd.to_datetime(df_sla['DATA DE VENCIMENTO'], dayfirst=True, errors='coerce')
-        df_sla['DATA CRIAÇAO SISCO_DT'] = pd.to_datetime(df_sla['DATA CRIAÇAO SISCO'], dayfirst=True, errors='coerce')
-        
-        dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
-        idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
+        # Função blindada para evitar erros de tipagem com dados sujos
+        def classificar_sla_seguro(row):
+            tipo = str(row.get('TIPO LIGACAO', '')).strip().upper()
+            
+            g1 = ['ASC', 'UNI', 'UNO']
+            g2 = ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP'] 
+            g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
+            g_niv = ['NIV']
+            
+            hoje = pd.Timestamp.today().normalize()
+            
+            # CRONOGRAMA
+            if tipo in g_crono:
+                venc_str = str(row.get('DATA DE VENCIMENTO', '')).strip()
+                if venc_str in ['nan', 'None', '', '<NA>', 'NaT']:
+                    return 'Sem Cronograma'
+                try:
+                    dt_venc = pd.to_datetime(venc_str, dayfirst=True)
+                    dias = (dt_venc - hoje).days
+                    if dias < 0: return 'Vencida'
+                    elif 0 <= dias <= 3: return 'Vencimento Próximo'
+                    else: return 'No Prazo'
+                except:
+                    return 'Data Inválida'
+                    
+            # DATAS AUTOMÁTICAS
+            cria_str = str(row.get('DATA CRIAÇAO SISCO', '')).strip()
+            if cria_str in ['nan', 'None', '', '<NA>', 'NaT']:
+                return 'Sem Data de Criação'
+                
+            try:
+                dt_cria = pd.to_datetime(cria_str, dayfirst=True)
+                idade = (hoje - dt_cria).days
+                
+                if tipo in g1:
+                    if idade <= 10: return 'No Prazo'
+                    elif idade <= 15: return 'Vencimento Próximo'
+                    else: return 'Vencida'
+                elif tipo in g2:
+                    if idade <= 16: return 'No Prazo'
+                    elif idade <= 24: return 'Vencimento Próximo'
+                    else: return 'Vencida'
+                elif tipo in g_niv:
+                    if idade <= 5: return 'No Prazo'
+                    elif idade <= 8: return 'Vencimento Próximo'
+                    else: return 'Vencida'
+                else:
+                    # Margem de segurança caso haja tipo não mapeado
+                    if idade <= 15: return 'No Prazo'
+                    elif idade <= 20: return 'Vencimento Próximo'
+                    else: return 'Vencida'
+            except:
+                return 'Data Inválida'
 
-        # Construindo Máscaras Lógicas
-        cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
-        cond_crono_v = cond_crono & (dias_para_vencer < 0)
-        cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
-        cond_crono_np = cond_crono & (dias_para_vencer > 3)
-
-        cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
-        
-        cond_g1 = tipo.isin(g1) & cond_base_dt
-        cond_g1_np = cond_g1 & (idade_dias <= 10)
-        cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
-        cond_g1_v  = cond_g1 & (idade_dias > 15)
-
-        cond_g2 = tipo.isin(g2) & cond_base_dt
-        cond_g2_np = cond_g2 & (idade_dias <= 16)
-        cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
-        cond_g2_v  = cond_g2 & (idade_dias > 24)
-
-        cond_niv = tipo.isin(g_niv) & cond_base_dt
-        cond_niv_np = cond_niv & (idade_dias <= 5)
-        cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
-        cond_niv_v  = cond_niv & (idade_dias > 8)
-
-        cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
-        cond_def_np = cond_default & (idade_dias <= 15)
-        cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
-        cond_def_v  = cond_default & (idade_dias > 20)
-
-        # Compilando o resultado (Vetorizado e extremamente rápido)
-        df_sla['Status_SLA'] = np.select(
-            [
-                cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
-                cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
-                cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
-            ],
-            ['Vencida', 'Vencimento Próximo', 'No Prazo'],
-            default='Sem Data/Inválida'
-        )
-
+        # Aplica a função de forma segura linha a linha
+        df_sla['Status_SLA'] = df_sla.apply(classificar_sla_seguro, axis=1)
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
+        
         df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
@@ -778,10 +778,17 @@ elif menu_selecionado == 'Simulador de Alocação':
             except:
                 return ''
                 
-        styled_proj = df_proj.style.map(
-            lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
-            subset=['Gap Restante']
-        ).map(colorir_cobertura, subset=['Cobertura %'])
+        # Fallback de compatibilidade para Pandas antigos
+        try:
+            styled_proj = df_proj.style.map(
+                lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
+                subset=['Gap Restante']
+            ).map(colorir_cobertura, subset=['Cobertura %'])
+        except AttributeError:
+            styled_proj = df_proj.style.applymap(
+                lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
+                subset=['Gap Restante']
+            ).applymap(colorir_cobertura, subset=['Cobertura %'])
 
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
@@ -834,5 +841,10 @@ elif menu_selecionado == 'Simulador de Alocação':
                 return 'color: #D9534F; font-weight: bold;'
         return ''
 
-    styled_impacto = df_impacto.style.map(style_variacao, subset=['Variação'])
+    # Fallback de compatibilidade para Pandas antigos
+    try:
+        styled_impacto = df_impacto.style.map(style_variacao, subset=['Variação'])
+    except AttributeError:
+        styled_impacto = df_impacto.style.applymap(style_variacao, subset=['Variação'])
+        
     st.dataframe(styled_impacto, use_container_width=True, hide_index=True)
