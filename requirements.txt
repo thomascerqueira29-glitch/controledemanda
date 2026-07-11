@@ -7,3 +7,5 @@ plotly
 pandera
 streamlit-antd-components
 openpyxl
+Plaintext
+geopandas
