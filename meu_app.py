@@ -667,33 +667,39 @@ elif menu_selecionado == 'Busca e Governança':
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
-    if st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
+    if 'ui_lev' not in st.session_state: st.session_state.ui_lev = 'TODOS'
+    elif st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
     with col_f1:
         st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
 
     op_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('REGIONAL', pd.Series()).dropna().unique()])
-    if st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
+    if 'ui_reg' not in st.session_state: st.session_state.ui_reg = 'TODOS'
+    elif st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
     with col_f2:
         st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
 
     op_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('MUNICIPIO', pd.Series()).dropna().unique()])
-    if st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
+    if 'ui_mun' not in st.session_state: st.session_state.ui_mun = 'TODOS'
+    elif st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
     with col_f3:
         st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
 
     op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
-    if st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
+    if 'ui_lig' not in st.session_state: st.session_state.ui_lig = 'TODOS'
+    elif st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
     with col_f4:
         st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
 
     col_f5, col_f6 = st.columns(2)
     
     op_sap = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('STATUS SAP', pd.Series()).dropna().unique()])
-    if st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
+    if 'ui_sap' not in st.session_state: st.session_state.ui_sap = 'TODOS'
+    elif st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
     with col_f5:
         st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
     op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+    if 'ui_list' not in st.session_state: st.session_state.ui_list = []
     st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
     with col_f6:
         st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
