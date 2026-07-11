@@ -10,6 +10,15 @@ import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
+import math
+import tempfile
+import geopandas as gpd
+
+try:
+    import fiona
+    fiona.drvsupport.supported_drivers['KML'] = 'rw'
+except:
+    pass
 
 # Configuração de Layout e Identidade Visual Corporativa
 st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️")
@@ -48,6 +57,17 @@ def normalizar_texto(series):
         r'[ÁÀÃÂ]': 'A', r'[ÉÈÊ]': 'E', r'[ÍÌ]': 'I',
         r'[ÓÒÕÔ]': 'O', r'[ÚÙ]': 'U', r'Ç': 'C'
     }, regex=True)
+
+# Algoritmo de Haversine para cálculo de distância geográfica
+def haversine(lat1, lon1, lat2, lon2):
+    R = 6371.0 # Raio da Terra em km
+    lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+    lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -183,7 +203,6 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        # AJUSTE 1: Colunas dos cards alteradas de 4 para 5
         for i in range(0, len(resumo_levantadores), 5):
             chunk = resumo_levantadores.iloc[i:i+5]
             cols = st.columns(5)
@@ -216,18 +235,37 @@ if menu_selecionado == 'Painel Executivo':
                     b1, b2 = st.columns([1.3, 1])
                     with b1:
                         if is_critico:
+                            # ATRIBUIÇÃO INTELIGENTE POR PROXIMIDADE GEOGRÁFICA (HAVERSINE)
                             if st.button(f"⚡ +{saldo_necessario} Reais", key=f"btn_atrib_{lev_nome}"):
                                 cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
-                                obras_livres = df_notas_db[cond_livres_reais].index
+                                df_livres = df_notas_db[cond_livres_reais].copy()
                                 
-                                if len(obras_livres) == 0:
+                                if len(df_livres) == 0:
                                     st.error("Sem demandas livres.")
                                 else:
-                                    qtd_atribuir = min(saldo_necessario, len(obras_livres))
-                                    indices_para_mudar = obras_livres[:qtd_atribuir]
+                                    try:
+                                        tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_nome].iloc[0]
+                                        tech_lat = float(tech_coords['Latitude'])
+                                        tech_lon = float(tech_coords['Longitude'])
+                                        
+                                        df_livres['Latitude'] = df_livres['MUNICIPIO'].map(mapa_lat)
+                                        df_livres['Longitude'] = df_livres['MUNICIPIO'].map(mapa_lon)
+                                        
+                                        # Calcula a distância da base do técnico até todas as obras livres
+                                        df_livres['Distancia_KM'] = df_livres.apply(
+                                            lambda r: haversine(tech_lat, tech_lon, float(r['Latitude']), float(r['Longitude'])) 
+                                            if pd.notna(r['Latitude']) and pd.notna(r['Longitude']) else 99999, axis=1
+                                        )
+                                        df_livres = df_livres.sort_values('Distancia_KM')
+                                    except Exception as e:
+                                        # Fallback se o técnico não tiver coordenada cadastrada
+                                        pass
+
+                                    qtd_atribuir = min(saldo_necessario, len(df_livres))
+                                    indices_para_mudar = df_livres.head(qtd_atribuir).index
                                     df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_nome
                                     if save_notas_to_db(df_notas_db):
-                                        st.success(f"{qtd_atribuir} obras vinculadas a {lev_nome}.")
+                                        st.success(f"{qtd_atribuir} obras MAIS PRÓXIMAS vinculadas a {lev_nome}.")
                                         st.rerun()
                         else:
                             st.button("✅ Bateu a Meta", key=f"btn_ok_{lev_nome}", disabled=True)
@@ -236,8 +274,6 @@ if menu_selecionado == 'Painel Executivo':
                         st.button("🔍 Ver Obras", on_click=filtrar_levantador_governanca, args=(lev_nome,), key=f"btn_ver_{lev_nome}")
 
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
-        
-        # AJUSTE 2: Margens invisíveis e redirecionamento da legenda dos gráficos
         espaco_esq, col_g1, col_g2, espaco_dir = st.columns([0.5, 4, 4, 0.5])
         
         with col_g1:
@@ -258,9 +294,19 @@ if menu_selecionado == 'Painel Executivo':
             st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
 
         st.markdown("---")
-        st.markdown("### 🗺️ Mapa de Distribuição Geográfica (Com Visão de Satélite)")
+        st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
         
-        def construir_mapa(df_eq, df_nt, criticos_tuple):
+        # MÓDULO DE UPLOAD DE KML / GEOJSON
+        camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml)", type=['geojson', 'kml'])
+        caminho_camada_temp = None
+        
+        if camada_upload is not None:
+            extensao = camada_upload.name.split('.')[-1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
+                tmp.write(camada_upload.getvalue())
+                caminho_camada_temp = tmp.name
+        
+        def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
             mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
             
             folium.TileLayer(
@@ -269,6 +315,22 @@ if menu_selecionado == 'Painel Executivo':
             ).add_to(mapa)
             folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
             
+            # ADICIONA A CAMADA DA REDE DE DISTRIBUIÇÃO NO MAPA
+            if arquivo_espacial:
+                try:
+                    gdf = gpd.read_file(arquivo_espacial)
+                    folium.GeoJson(
+                        gdf,
+                        name="Camada de Rede (Polígonos/Linhas)",
+                        style_function=lambda feature: {
+                            'color': '#ff9900', # Laranja elétrico
+                            'weight': 3,
+                            'fillOpacity': 0.2
+                        }
+                    ).add_to(mapa)
+                except Exception as e:
+                    st.error("Erro ao desenhar a camada no mapa. Verifique a estrutura do KML/GeoJSON.")
+
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
             fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
             cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
@@ -317,8 +379,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        # AJUSTE 3: Altura do mapa aumentada de 550 para 750
-        mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos))
+        mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos), caminho_camada_temp)
         st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
 # --- VISÃO 2: FILTROS E GOVERNANÇA ---
