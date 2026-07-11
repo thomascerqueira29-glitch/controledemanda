@@ -10,6 +10,7 @@ import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
+import math
 import tempfile
 import geopandas as gpd
 
@@ -34,23 +35,31 @@ if 'db_initialized' not in st.session_state:
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
-STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
+# Status Produtivos blindados contra variações de digitação
+STATUS_PRODUTIVIDADE = [
+    "CORRECAO DE LEVANTAMENTO", "CORREÇÃO DE LEVANTAMENTO", 
+    "EM LEVANTAMENTO", 
+    "PRE ANALISE", "PRÉ ANÁLISE"
+]
 
-if 'filtros_salvos' not in st.session_state:
-    st.session_state.filtros_salvos = {
-        'lev': 'TODOS', 'reg': 'TODOS', 'mun': 'TODOS',
-        'lig': 'TODOS', 'sap': 'TODOS', 'list': [] 
-    }
+# Inicialização Nativa dos Filtros na Memória (Sincronização Perfeita)
+if 'ui_lev' not in st.session_state: st.session_state.ui_lev = 'TODOS'
+if 'ui_reg' not in st.session_state: st.session_state.ui_reg = 'TODOS'
+if 'ui_mun' not in st.session_state: st.session_state.ui_mun = 'TODOS'
+if 'ui_lig' not in st.session_state: st.session_state.ui_lig = 'TODOS'
+if 'ui_sap' not in st.session_state: st.session_state.ui_sap = 'TODOS'
+if 'ui_list' not in st.session_state: st.session_state.ui_list = []
 
 def filtrar_levantador_governanca(nome_lev):
-    st.session_state.filtros_salvos['lev'] = nome_lev
-    st.session_state.filtros_salvos['reg'] = 'TODOS'
-    st.session_state.filtros_salvos['mun'] = 'TODOS'
-    st.session_state.filtros_salvos['lig'] = 'TODOS'
-    st.session_state.filtros_salvos['sap'] = 'TODOS'
-    st.session_state.filtros_salvos['list'] = STATUS_PRODUTIVIDADE.copy() 
+    # Ao clicar na lupa, seta as memórias nativas e limpa os outros filtros
+    st.session_state.ui_lev = nome_lev
+    st.session_state.ui_reg = 'TODOS'
+    st.session_state.ui_mun = 'TODOS'
+    st.session_state.ui_lig = 'TODOS'
+    st.session_state.ui_sap = 'TODOS'
+    st.session_state.ui_list = [] # Vazio = Mostrar TUDO do levantador
     st.session_state.menu_idx = 1
-    st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
+    st.toast(f"Buscando todas as demandas de {nome_lev}...", icon="🔍")
 
 # --- MOTOR DE ALTA PERFORMANCE 1: VETORIZAÇÃO MATEMÁTICA ---
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
@@ -65,6 +74,19 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return R * c
     except Exception:
         return pd.Series(99999, index=lat2_series.index)
+
+def safe_haversine(lat1, lon1, lat2, lon2):
+    try:
+        R = 6371.0 
+        lat1_rad, lon1_rad = math.radians(float(lat1)), math.radians(float(lon1))
+        lat2_rad, lon2_rad = math.radians(float(lat2)), math.radians(float(lon2))
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        return R * c
+    except:
+        return 99999
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -165,7 +187,6 @@ def save_notas_to_db(df_notas_atualizado):
         df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         conn.close()
         
-        # --- LIMPEZA DO DUPLO CACHE PARA ATUALIZAÇÃO IMEDIATA ---
         get_processed_data.clear()
         process_analytical_data.clear()
         return True
@@ -275,7 +296,6 @@ if menu_selecionado == 'Painel Executivo':
                                 if len(df_livres) == 0:
                                     st.error("Sem demandas livres.")
                                 else:
-                                    # Feedback Visual e Roteamento Vetorizado Expresso
                                     with st.spinner(f"Calculando rotas otimizadas para {lev_nome}..."):
                                         try:
                                             tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_nome].iloc[0]
@@ -477,7 +497,8 @@ if menu_selecionado == 'Painel Executivo':
                 try:
                     lat_val = float(row.get('Latitude', np.nan))
                     lon_val = float(row.get('Longitude', np.nan))
-                    if not math.isnan(lat_val) and not math.isnan(lon_val):
+                    # Usando pd.notna para blindar erros (Correção NameError math)
+                    if pd.notna(lat_val) and pd.notna(lon_val):
                         lev = str(row['Levantador'])
                         if lev in todos_levantadores:
                             cor_pino = 'red' if lev in criticos_tuple else 'green'
@@ -535,52 +556,54 @@ elif menu_selecionado == 'Busca e Governança':
     
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
+    # Validação e Sincronização Nativa de Filtros
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
-    idx_lev = op_lev.index(st.session_state.filtros_salvos['lev']) if st.session_state.filtros_salvos['lev'] in op_lev else 0
+    if st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
     with col_f1:
-        filtro_lev = st.selectbox("Filtrar por Levantador:", op_lev, index=idx_lev)
-        st.session_state.filtros_salvos['lev'] = filtro_lev
+        st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
 
     op_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('REGIONAL', pd.Series()).dropna().unique()])
-    idx_reg = op_reg.index(st.session_state.filtros_salvos['reg']) if st.session_state.filtros_salvos['reg'] in op_reg else 0
+    if st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
     with col_f2:
-        filtro_reg = st.selectbox("Filtrar por Regional:", op_reg, index=idx_reg)
-        st.session_state.filtros_salvos['reg'] = filtro_reg
+        st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
 
     op_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('MUNICIPIO', pd.Series()).dropna().unique()])
-    idx_mun = op_mun.index(st.session_state.filtros_salvos['mun']) if st.session_state.filtros_salvos['mun'] in op_mun else 0
+    if st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
     with col_f3:
-        filtro_mun = st.selectbox("Filtrar por Município:", op_mun, index=idx_mun)
-        st.session_state.filtros_salvos['mun'] = filtro_mun
+        st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
 
     op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
-    idx_lig = op_lig.index(st.session_state.filtros_salvos['lig']) if st.session_state.filtros_salvos['lig'] in op_lig else 0
+    if st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
     with col_f4:
-        filtro_lig = st.selectbox("Filtrar por Tipo Ligação:", op_lig, index=idx_lig)
-        st.session_state.filtros_salvos['lig'] = filtro_lig
+        st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
 
     col_f5, col_f6 = st.columns(2)
     
     op_sap = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('STATUS SAP', pd.Series()).dropna().unique()])
-    idx_sap = op_sap.index(st.session_state.filtros_salvos['sap']) if st.session_state.filtros_salvos['sap'] in op_sap else 0
+    if st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
     with col_f5:
-        filtro_sap = st.selectbox("Filtrar por Status SAP:", op_sap, index=idx_sap)
-        st.session_state.filtros_salvos['sap'] = filtro_sap
+        st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
     op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
-    default_list = [x for x in st.session_state.filtros_salvos['list'] if x in op_list]
+    # Limpa valores órfãos da memória do multiselect
+    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
     with col_f6:
-        filtro_list = st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, default=default_list)
-        st.session_state.filtros_salvos['list'] = filtro_list
+        st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
 
+    # Aplicação dos Filtros
     df_filtrado = df_notas_db.copy()
-    if st.session_state.filtros_salvos['lev'] != "TODOS" and 'LEVANTADOR' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.filtros_salvos['lev']]
-    if st.session_state.filtros_salvos['reg'] != "TODOS" and 'REGIONAL' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.filtros_salvos['reg']]
-    if st.session_state.filtros_salvos['mun'] != "TODOS" and 'MUNICIPIO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.filtros_salvos['mun']]
-    if st.session_state.filtros_salvos['lig'] != "TODOS" and 'TIPO LIGACAO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.filtros_salvos['lig']]
-    if st.session_state.filtros_salvos['sap'] != "TODOS" and 'STATUS SAP' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.filtros_salvos['sap']]
-    if len(st.session_state.filtros_salvos['list']) > 0 and 'STATUS LIST' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.filtros_salvos['list'])]
+    if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
+    if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
+    if st.session_state.ui_mun != "TODOS" and 'MUNICIPIO' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.ui_mun]
+    if st.session_state.ui_lig != "TODOS" and 'TIPO LIGACAO' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.ui_lig]
+    if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
+    if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: 
+        df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
 
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     
