@@ -437,7 +437,7 @@ if menu_selecionado == 'Painel Executivo':
             st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
 
         # -----------------------------------------------------------------------------
-        # MAPA GEORREFERENCIADO COM FILTROS INDEPENDENTES E UPLOAD DE REDE
+        # MAPA GEORREFERENCIADO (COM SVG CIRCLE-MARKERS LEVES)
         # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -483,7 +483,6 @@ if menu_selecionado == 'Painel Executivo':
                 except Exception as e:
                     st.error(f"Falha ao abrir pacote KMZ: {e}")
         
-        # --- APLICAÇÃO DOS FILTROS DO MAPA ---
         df_notas_mapa_view = df_notas_calc.copy()
         if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view:
             df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
@@ -531,15 +530,52 @@ if menu_selecionado == 'Painel Executivo':
                         gdf_final = pd.concat(gdfs, ignore_index=True)
                         gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
                         
-                        folium.GeoJson(
-                            gdf_final,
-                            name="Camada de Rede (Otimizada)",
-                            style_function=lambda feature: {
-                                'color': '#ff9900', 
-                                'weight': 2.5,
-                                'fillOpacity': 0.2
-                            }
-                        ).add_to(mapa)
+                        # --- SEPARAÇÃO INTELIGENTE DE GEOMETRIAS PARA ALTA PERFORMANCE ---
+                        gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
+                        gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
+                        
+                        # 1. Renderiza Linhas (Cabos/Redes)
+                        if not gdf_lines.empty:
+                            folium.GeoJson(
+                                gdf_lines,
+                                name="Rede Elétrica (Linhas)",
+                                style_function=lambda feature: {
+                                    'color': '#1A4F7C', # Azul Padrão
+                                    'weight': 2.5,
+                                    'fillOpacity': 0.2
+                                }
+                            ).add_to(mapa)
+                            
+                        # 2. Renderiza Pontos (Postes e Transformadores) de forma Ultra Leve (SVG nativo do navegador)
+                        if not gdf_points.empty:
+                            def get_point_style(feature):
+                                nome = str(feature['properties'].get('Name', '')).lower()
+                                if 'poste' in nome:
+                                    cor = '#808080' # Cinza
+                                    raio = 3
+                                elif 'transformador' in nome or 'trafo' in nome:
+                                    cor = '#28a745' # Verde
+                                    raio = 5
+                                else:
+                                    cor = '#ff9900' # Laranja para outros itens não mapeados
+                                    raio = 3
+                                    
+                                return {
+                                    'fillColor': cor,
+                                    'color': cor,
+                                    'weight': 1,
+                                    'fillOpacity': 0.8,
+                                    'radius': raio
+                                }
+
+                            # Converte os pinos pesados em círculos perfeitos gerados na tela do usuário
+                            folium.GeoJson(
+                                gdf_points,
+                                name="Equipamentos (Pontos)",
+                                marker=folium.CircleMarker(), 
+                                style_function=get_point_style,
+                                tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Equipamento:']) if 'Name' in gdf_points.columns else None
+                            ).add_to(mapa)
                         
                         bounds = gdf_final.total_bounds
                         mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
@@ -605,7 +641,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        with st.spinner("Decodificando arquivo KMZ, aplicando filtros e otimizando geometria. Renderizando mapa..."):
+        with st.spinner("Decodificando arquivo KMZ e renderizando simbologia leve. Aguarde..."):
             mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
