@@ -13,11 +13,13 @@ import streamlit_antd_components as sac
 import math
 import tempfile
 import geopandas as gpd
+import zipfile
 
 # Habilita o suporte a KML no fiona/geopandas
 try:
     import fiona
     fiona.drvsupport.supported_drivers['KML'] = 'rw'
+    fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
 except:
     pass
 
@@ -35,31 +37,23 @@ if 'db_initialized' not in st.session_state:
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
-# Status Produtivos blindados contra variações de digitação
-STATUS_PRODUTIVIDADE = [
-    "CORRECAO DE LEVANTAMENTO", "CORREÇÃO DE LEVANTAMENTO", 
-    "EM LEVANTAMENTO", 
-    "PRE ANALISE", "PRÉ ANÁLISE"
-]
+STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
 
-# Inicialização Nativa dos Filtros na Memória (Sincronização Perfeita)
-if 'ui_lev' not in st.session_state: st.session_state.ui_lev = 'TODOS'
-if 'ui_reg' not in st.session_state: st.session_state.ui_reg = 'TODOS'
-if 'ui_mun' not in st.session_state: st.session_state.ui_mun = 'TODOS'
-if 'ui_lig' not in st.session_state: st.session_state.ui_lig = 'TODOS'
-if 'ui_sap' not in st.session_state: st.session_state.ui_sap = 'TODOS'
-if 'ui_list' not in st.session_state: st.session_state.ui_list = []
+if 'filtros_salvos' not in st.session_state:
+    st.session_state.filtros_salvos = {
+        'lev': 'TODOS', 'reg': 'TODOS', 'mun': 'TODOS',
+        'lig': 'TODOS', 'sap': 'TODOS', 'list': [] 
+    }
 
 def filtrar_levantador_governanca(nome_lev):
-    # Ao clicar na lupa, seta o levantador e filtra APENAS os status produtivos
-    st.session_state.ui_lev = nome_lev
-    st.session_state.ui_reg = 'TODOS'
-    st.session_state.ui_mun = 'TODOS'
-    st.session_state.ui_lig = 'TODOS'
-    st.session_state.ui_sap = 'TODOS'
-    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() # Mostra APENAS a fila ativa
+    st.session_state.filtros_salvos['lev'] = nome_lev
+    st.session_state.filtros_salvos['reg'] = 'TODOS'
+    st.session_state.filtros_salvos['mun'] = 'TODOS'
+    st.session_state.filtros_salvos['lig'] = 'TODOS'
+    st.session_state.filtros_salvos['sap'] = 'TODOS'
+    st.session_state.filtros_salvos['list'] = STATUS_PRODUTIVIDADE.copy() 
     st.session_state.menu_idx = 1
-    st.toast(f"Buscando demandas ativas de {nome_lev}...", icon="🔍")
+    st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
 
 # --- MOTOR DE ALTA PERFORMANCE 1: VETORIZAÇÃO MATEMÁTICA ---
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
@@ -74,19 +68,6 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return R * c
     except Exception:
         return pd.Series(99999, index=lat2_series.index)
-
-def safe_haversine(lat1, lon1, lat2, lon2):
-    try:
-        R = 6371.0 
-        lat1_rad, lon1_rad = math.radians(float(lat1)), math.radians(float(lon1))
-        lat2_rad, lon2_rad = math.radians(float(lat2)), math.radians(float(lon2))
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        return R * c
-    except:
-        return 99999
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -187,6 +168,7 @@ def save_notas_to_db(df_notas_atualizado):
         df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         conn.close()
         
+        # --- LIMPEZA DO DUPLO CACHE PARA ATUALIZAÇÃO IMEDIATA ---
         get_processed_data.clear()
         process_analytical_data.clear()
         return True
@@ -455,14 +437,25 @@ if menu_selecionado == 'Painel Executivo':
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
         
-        camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml)", type=['geojson', 'kml'])
+        # UPLOADER AGORA ACEITA KMZ TAMBÉM
+        camada_upload = st.file_uploader("Sobrepor Camada de Rede (Formatos suportados: .geojson, .kml, .kmz)", type=['geojson', 'kml', 'kmz'])
         caminho_camada_temp = None
         
         if camada_upload is not None:
-            extensao = camada_upload.name.split('.')[-1]
+            extensao = camada_upload.name.split('.')[-1].lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
                 tmp.write(camada_upload.getvalue())
                 caminho_camada_temp = tmp.name
+                
+            # Descompactação em Memória de KMZ para KML
+            if extensao == 'kmz':
+                try:
+                    with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
+                        kml_filename = [name for name in kmz.namelist() if name.lower().endswith('.kml')][0]
+                        extracted_path = kmz.extract(kml_filename, path=tempfile.gettempdir())
+                        caminho_camada_temp = extracted_path # Altera a rota para o KML extraído
+                except Exception as e:
+                    st.error(f"Erro ao extrair arquivo KMZ: {e}")
         
         def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
             mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -476,17 +469,23 @@ if menu_selecionado == 'Painel Executivo':
             if arquivo_espacial:
                 try:
                     gdf = gpd.read_file(arquivo_espacial)
+                    
+                    # --- OTIMIZAÇÃO DE VÉRTICES GEOMÉTRICOS (MAPA FLUIDO) ---
+                    # Reduz até 80% do peso do arquivo fundindo linhas retas curtas
+                    # tolerance = 0.0001 graus equivale a cerca de 11 metros de precisão
+                    gdf['geometry'] = gdf['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
+                    
                     folium.GeoJson(
                         gdf,
-                        name="Camada de Rede (Polígonos/Linhas)",
+                        name="Camada de Rede (Otimizada)",
                         style_function=lambda feature: {
                             'color': '#ff9900', 
-                            'weight': 3,
+                            'weight': 2.5, # Linha ligeiramente mais fina para aliviar o navegador
                             'fillOpacity': 0.2
                         }
                     ).add_to(mapa)
-                except Exception:
-                    pass
+                except Exception as e:
+                    st.error(f"Não foi possível carregar a camada espacial: {e}")
 
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
             fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
@@ -497,7 +496,6 @@ if menu_selecionado == 'Painel Executivo':
                 try:
                     lat_val = float(row.get('Latitude', np.nan))
                     lon_val = float(row.get('Longitude', np.nan))
-                    # Usando pd.notna para blindar erros
                     if pd.notna(lat_val) and pd.notna(lon_val):
                         lev = str(row['Levantador'])
                         if lev in todos_levantadores:
@@ -546,7 +544,7 @@ if menu_selecionado == 'Painel Executivo':
             
             return mapa
 
-        with st.spinner("Renderizando mapa espacial..."):
+        with st.spinner("Processando e otimizando geometria. Renderizando mapa espacial..."):
             mapa_pronto = construir_mapa(df_equipes_db, df_notas_calc, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
@@ -556,7 +554,6 @@ elif menu_selecionado == 'Busca e Governança':
     
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
-    # Validação e Sincronização Nativa de Filtros
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
     if st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
     with col_f1:
@@ -585,12 +582,10 @@ elif menu_selecionado == 'Busca e Governança':
         st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
     op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
-    # Limpa valores órfãos da memória do multiselect
     st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
     with col_f6:
         st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
 
-    # Aplicação dos Filtros
     df_filtrado = df_notas_db.copy()
     if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: 
         df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
