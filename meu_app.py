@@ -10,7 +10,6 @@ import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
-import math
 import tempfile
 import geopandas as gpd
 
@@ -90,6 +89,12 @@ def init_database():
         if os.path.exists('NOTAS.xlsx'):
             df_legacy = pd.read_excel('NOTAS.xlsx')
             df_legacy = df_legacy.fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+            
+            for col in colunas_template_oficial:
+                if col not in df_legacy.columns:
+                    df_legacy[col] = ""
+                    
+            df_legacy = df_legacy[colunas_template_oficial]
             df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
         else:
             df_empty = pd.DataFrame(columns=colunas_template_oficial)
@@ -280,7 +285,6 @@ if menu_selecionado == 'Painel Executivo':
                                             df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
                                             df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
                                             
-                                            # Chamada da função ultra rápida do NumPy
                                             df_livres['Distancia_KM'] = vectorized_haversine(
                                                 tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa']
                                             )
@@ -305,7 +309,6 @@ if menu_selecionado == 'Painel Executivo':
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         espaco_esq, col_g1, col_g2, espaco_dir = st.columns([0.5, 4, 4, 0.5])
         
-        # BLINDAGEM CONTRA GRÁFICOS VAZIOS (Para evitar Zero-Size Array Plotly Error)
         with col_g1:
             if not municipios_por_levantador.empty and municipios_por_levantador['Qtd_Municipios'].sum() > 0:
                 try:
@@ -321,7 +324,6 @@ if menu_selecionado == 'Painel Executivo':
             df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == 'SEM LEVANTADOR']
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
             if not df_sem_lev_reg.empty:
-                # Renomeando ANTES de qualquer validação/uso
                 df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
                 if df_sem_lev_reg['Quantidade_Sem_Atribuicao'].sum() > 0:
                     try:
@@ -342,7 +344,6 @@ if menu_selecionado == 'Painel Executivo':
         
         df_sla = df_notas_calc.copy()
         
-        # Vetorização Matemática Extrema para SLA
         tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
         
         g1 = ['ASC', 'UNI', 'UNO']
@@ -352,14 +353,12 @@ if menu_selecionado == 'Painel Executivo':
         
         hoje = pd.Timestamp.today().normalize()
         
-        # Tratamento unificado de datas nulas (Impedindo quebra do dashboard)
         df_sla['DATA DE VENCIMENTO_DT'] = pd.to_datetime(df_sla['DATA DE VENCIMENTO'], dayfirst=True, errors='coerce')
         df_sla['DATA CRIAÇAO SISCO_DT'] = pd.to_datetime(df_sla['DATA CRIAÇAO SISCO'], dayfirst=True, errors='coerce')
         
         dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
         idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
 
-        # Construindo Máscaras Lógicas Inteligentes
         cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
         cond_crono_v = cond_crono & (dias_para_vencer < 0)
         cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
@@ -387,7 +386,6 @@ if menu_selecionado == 'Painel Executivo':
         cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
         cond_def_v  = cond_default & (idade_dias > 20)
 
-        # Compilando o resultado (Vetorizado usando np.select)
         df_sla['Status_SLA'] = np.select(
             [
                 cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
@@ -400,7 +398,6 @@ if menu_selecionado == 'Painel Executivo':
 
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
         
-        # Filtra para o gráfico apenas os que possuem status definido
         df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
@@ -689,7 +686,6 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     df_eq_sim = df_equipes_db.copy()
     
-    # Tratamento para evitar que regionais em branco quebrem agrupamentos
     df_eq_sim['Regional'] = df_eq_sim['Regional'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
     df_eq_sim['Regional'] = df_eq_sim['Regional'].astype(str).str.upper()
     df_eq_sim['Levantador'] = df_eq_sim['Levantador'].astype(str).str.upper()
@@ -801,7 +797,6 @@ elif menu_selecionado == 'Simulador de Alocação':
             except:
                 return ''
                 
-        # Compatibilidade segura com Pandas antigas
         try:
             styled_proj = df_proj.style.map(
                 lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
@@ -815,7 +810,6 @@ elif menu_selecionado == 'Simulador de Alocação':
 
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
-    # BLINDAGEM DO GRÁFICO DO SIMULADOR
     with col_proj_chart:
         df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
         df_chart = df_edited[df_edited['Gap Restante'] > 0]
