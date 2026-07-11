@@ -53,19 +53,19 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.menu_idx = 1
     st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
 
-# Função Matemática de Distância Segura
-def safe_haversine(lat1, lon1, lat2, lon2):
+# --- MOTOR DE ALTA PERFORMANCE 1: VETORIZAÇÃO MATEMÁTICA ---
+def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
     try:
         R = 6371.0 
-        lat1_rad, lon1_rad = math.radians(float(lat1)), math.radians(float(lon1))
-        lat2_rad, lon2_rad = math.radians(float(lat2)), math.radians(float(lon2))
+        lat1_rad, lon1_rad = np.radians(float(lat1)), np.radians(float(lon1))
+        lat2_rad, lon2_rad = np.radians(lat2_series.astype(float)), np.radians(lon2_series.astype(float))
         dlat = lat2_rad - lat1_rad
         dlon = lon2_rad - lon1_rad
-        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
         return R * c
-    except:
-        return 99999
+    except Exception:
+        return pd.Series(99999, index=lat2_series.index)
 
 # -----------------------------------------------------------------------------
 # 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
@@ -159,7 +159,10 @@ def save_notas_to_db(df_notas_atualizado):
         conn = get_db_connection()
         df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         conn.close()
+        
+        # --- LIMPEZA DO DUPLO CACHE PARA ATUALIZAÇÃO IMEDIATA ---
         get_processed_data.clear()
+        process_analytical_data.clear()
         return True
     except Exception as e:
         st.error(f"Falha de gravação no banco de dados: {e}")
@@ -167,9 +170,8 @@ def save_notas_to_db(df_notas_atualizado):
 
 df_notas_db, df_equipes_db = get_processed_data()
 
-# -----------------------------------------------------------------------------
-# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS
-# -----------------------------------------------------------------------------
+# --- MOTOR DE ALTA PERFORMANCE 2: DUPLO CACHE ESTRATÉGICO ---
+@st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
     df_coords = df_equipes_db.dropna(subset=['Município', 'Latitude', 'Longitude']).drop_duplicates(subset=['Município'])
     mapa_lat = pd.to_numeric(df_coords.set_index('Município')['Latitude'], errors='coerce').to_dict()
@@ -268,17 +270,19 @@ if menu_selecionado == 'Painel Executivo':
                                 if len(df_livres) == 0:
                                     st.error("Sem demandas livres.")
                                 else:
-                                    with st.spinner(f"Processando roteamento para {lev_nome}..."):
+                                    # Feedback Visual e Roteamento Vetorizado Expresso
+                                    with st.spinner(f"Calculando rotas otimizadas para {lev_nome}..."):
                                         try:
                                             tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_nome].iloc[0]
                                             tech_lat = tech_coords['Latitude']
                                             tech_lon = tech_coords['Longitude']
                                             
-                                            df_livres['Lat_Mapa'] = df_livres['MUNICIPIO'].map(mapa_lat)
-                                            df_livres['Lon_Mapa'] = df_livres['MUNICIPIO'].map(mapa_lon)
+                                            df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
+                                            df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
                                             
-                                            df_livres['Distancia_KM'] = df_livres.apply(
-                                                lambda r: safe_haversine(tech_lat, tech_lon, r['Lat_Mapa'], r['Lon_Mapa']), axis=1
+                                            # Chamada da função ultra rápida do NumPy
+                                            df_livres['Distancia_KM'] = vectorized_haversine(
+                                                tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa']
                                             )
                                             df_livres = df_livres.sort_values('Distancia_KM')
                                         except Exception:
@@ -289,6 +293,7 @@ if menu_selecionado == 'Painel Executivo':
                                         df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_nome
                                         
                                         if save_notas_to_db(df_notas_db):
+                                            st.toast("Rotas designadas com sucesso!", icon="✅")
                                             st.success(f"{qtd_atribuir} obras MAIS PRÓXIMAS vinculadas a {lev_nome}.")
                                             st.rerun()
                         else:
@@ -300,7 +305,7 @@ if menu_selecionado == 'Painel Executivo':
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         espaco_esq, col_g1, col_g2, espaco_dir = st.columns([0.5, 4, 4, 0.5])
         
-        # BLINDAGEM DO PLOTLY PARA EVITAR ERROS DE MATRIZ VAZIA
+        # BLINDAGEM CONTRA GRÁFICOS VAZIOS (Para evitar Zero-Size Array Plotly Error)
         with col_g1:
             if not municipios_por_levantador.empty and municipios_por_levantador['Qtd_Municipios'].sum() > 0:
                 try:
@@ -316,6 +321,7 @@ if menu_selecionado == 'Painel Executivo':
             df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == 'SEM LEVANTADOR']
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
             if not df_sem_lev_reg.empty:
+                # Renomeando ANTES de qualquer validação/uso
                 df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
                 if df_sem_lev_reg['Quantidade_Sem_Atribuicao'].sum() > 0:
                     try:
@@ -328,7 +334,7 @@ if menu_selecionado == 'Painel Executivo':
                         st.info("Gráfico de Regionais indisponível.")
 
         # -----------------------------------------------------------------------------
-        # GRÁFICO DE SLA (COM BLINDAGEM DE ERROS)
+        # GRÁFICO DE SLA VETORIZADO E BLINDADO
         # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### ⏳ Monitoramento de SLA por Regional (Regra de Negócio)")
@@ -336,62 +342,70 @@ if menu_selecionado == 'Painel Executivo':
         
         df_sla = df_notas_calc.copy()
         
-        def classificar_sla_seguro(row):
-            tipo = str(row.get('TIPO LIGACAO', '')).strip().upper()
-            
-            g1 = ['ASC', 'UNI', 'UNO']
-            g2 = ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP'] 
-            g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-            g_niv = ['NIV']
-            
-            hoje = pd.Timestamp.today().normalize()
-            
-            if tipo in g_crono:
-                venc_str = str(row.get('DATA DE VENCIMENTO', '')).strip()
-                if venc_str in ['nan', 'None', '', '<NA>', 'NaT']: return 'Sem Cronograma'
-                try:
-                    dt_venc = pd.to_datetime(venc_str, dayfirst=True)
-                    dias = (dt_venc - hoje).days
-                    if dias < 0: return 'Vencida'
-                    elif 0 <= dias <= 3: return 'Vencimento Próximo'
-                    else: return 'No Prazo'
-                except:
-                    return 'Data Inválida'
-                    
-            cria_str = str(row.get('DATA CRIAÇAO SISCO', '')).strip()
-            if cria_str in ['nan', 'None', '', '<NA>', 'NaT']: return 'Sem Data de Criação'
-                
-            try:
-                dt_cria = pd.to_datetime(cria_str, dayfirst=True)
-                idade = (hoje - dt_cria).days
-                
-                if tipo in g1:
-                    if idade <= 10: return 'No Prazo'
-                    elif idade <= 15: return 'Vencimento Próximo'
-                    else: return 'Vencida'
-                elif tipo in g2:
-                    if idade <= 16: return 'No Prazo'
-                    elif idade <= 24: return 'Vencimento Próximo'
-                    else: return 'Vencida'
-                elif tipo in g_niv:
-                    if idade <= 5: return 'No Prazo'
-                    elif idade <= 8: return 'Vencimento Próximo'
-                    else: return 'Vencida'
-                else:
-                    if idade <= 15: return 'No Prazo'
-                    elif idade <= 20: return 'Vencimento Próximo'
-                    else: return 'Vencida'
-            except:
-                return 'Data Inválida'
+        # Vetorização Matemática Extrema para SLA
+        tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
+        
+        g1 = ['ASC', 'UNI', 'UNO']
+        g2 = ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
+        g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
+        g_niv = ['NIV']
+        
+        hoje = pd.Timestamp.today().normalize()
+        
+        # Tratamento unificado de datas nulas (Impedindo quebra do dashboard)
+        df_sla['DATA DE VENCIMENTO_DT'] = pd.to_datetime(df_sla['DATA DE VENCIMENTO'], dayfirst=True, errors='coerce')
+        df_sla['DATA CRIAÇAO SISCO_DT'] = pd.to_datetime(df_sla['DATA CRIAÇAO SISCO'], dayfirst=True, errors='coerce')
+        
+        dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
+        idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
 
-        df_sla['Status_SLA'] = df_sla.apply(classificar_sla_seguro, axis=1)
+        # Construindo Máscaras Lógicas Inteligentes
+        cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
+        cond_crono_v = cond_crono & (dias_para_vencer < 0)
+        cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
+        cond_crono_np = cond_crono & (dias_para_vencer > 3)
+
+        cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
+        
+        cond_g1 = tipo.isin(g1) & cond_base_dt
+        cond_g1_np = cond_g1 & (idade_dias <= 10)
+        cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
+        cond_g1_v  = cond_g1 & (idade_dias > 15)
+
+        cond_g2 = tipo.isin(g2) & cond_base_dt
+        cond_g2_np = cond_g2 & (idade_dias <= 16)
+        cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
+        cond_g2_v  = cond_g2 & (idade_dias > 24)
+
+        cond_niv = tipo.isin(g_niv) & cond_base_dt
+        cond_niv_np = cond_niv & (idade_dias <= 5)
+        cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
+        cond_niv_v  = cond_niv & (idade_dias > 8)
+
+        cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
+        cond_def_np = cond_default & (idade_dias <= 15)
+        cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
+        cond_def_v  = cond_default & (idade_dias > 20)
+
+        # Compilando o resultado (Vetorizado usando np.select)
+        df_sla['Status_SLA'] = np.select(
+            [
+                cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
+                cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
+                cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
+            ],
+            ['Vencida', 'Vencimento Próximo', 'No Prazo'],
+            default='Sem Data/Inválida'
+        )
+
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
         
+        # Filtra para o gráfico apenas os que possuem status definido
         df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
             df_group = df_sla_chart.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Quantidade')
-            if not df_group.empty:
+            if not df_group.empty and df_group['Quantidade'].sum() > 0:
                 try:
                     ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
                     df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
@@ -414,8 +428,8 @@ if menu_selecionado == 'Painel Executivo':
                     fig_sla.update_traces(textposition='auto', textfont_size=14)
                     fig_sla.update_layout(xaxis_title="Regional", yaxis_title="Volume de Obras", legend_title="Legenda SLA")
                     st.plotly_chart(fig_sla, use_container_width=True)
-                except Exception as e:
-                    st.warning(f"O gráfico de SLA não pôde ser renderizado no momento.")
+                except Exception:
+                    st.warning("O gráfico de SLA não pôde ser renderizado no momento.")
             else:
                  st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
         else:
@@ -603,6 +617,7 @@ elif menu_selecionado == 'Busca e Governança':
                 df_notas_db.loc[indices_originais] = df_editado
                 if save_notas_to_db(df_notas_db):
                     st.success("Banco de Dados Atualizado com Sucesso!")
+                    st.toast("Dados salvos e painel atualizado!", icon="✅")
                     st.rerun()
                 
     with col_btn2:
@@ -652,6 +667,7 @@ elif menu_selecionado == 'Carga de Lotes':
                     with st.spinner("Injetando carga de lotes no banco..."):
                         df_final = pd.concat([df_notas_db, df_temp_processado], ignore_index=True)
                         if save_notas_to_db(df_final):
+                            st.toast("Lote processado e inserido!", icon="✅")
                             st.success(f"Sucesso! {len(df_temp_processado)} novas demandas validadas e injetadas.")
                             st.rerun()
                         
@@ -785,6 +801,7 @@ elif menu_selecionado == 'Simulador de Alocação':
             except:
                 return ''
                 
+        # Compatibilidade segura com Pandas antigas
         try:
             styled_proj = df_proj.style.map(
                 lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
@@ -798,7 +815,7 @@ elif menu_selecionado == 'Simulador de Alocação':
 
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
-    # BLINDAGEM DO GRÁFICO DO SIMULADOR DE ALOCAÇÃO
+    # BLINDAGEM DO GRÁFICO DO SIMULADOR
     with col_proj_chart:
         df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
         df_chart = df_edited[df_edited['Gap Restante'] > 0]
