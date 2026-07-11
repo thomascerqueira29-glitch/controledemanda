@@ -10,6 +10,7 @@ import io
 import sqlite3
 import pandera as pa
 import streamlit_antd_components as sac
+import math
 import tempfile
 import geopandas as gpd
 
@@ -52,7 +53,7 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.menu_idx = 1
     st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
 
-# Função Matemática de Distância
+# Função Matemática de Distância Segura
 def safe_haversine(lat1, lon1, lat2, lon2):
     try:
         R = 6371.0 
@@ -167,7 +168,7 @@ def save_notas_to_db(df_notas_atualizado):
 df_notas_db, df_equipes_db = get_processed_data()
 
 # -----------------------------------------------------------------------------
-# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS (Sem Cache para evitar hash errors)
+# 2. PROCESSAMENTO E MÉTRICAS ANALÍTICAS
 # -----------------------------------------------------------------------------
 def process_analytical_data(df_notas_db, df_equipes_db):
     df_coords = df_equipes_db.dropna(subset=['Município', 'Latitude', 'Longitude']).drop_duplicates(subset=['Município'])
@@ -299,26 +300,35 @@ if menu_selecionado == 'Painel Executivo':
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         espaco_esq, col_g1, col_g2, espaco_dir = st.columns([0.5, 4, 4, 0.5])
         
+        # BLINDAGEM DO PLOTLY PARA EVITAR ERROS DE MATRIZ VAZIA
         with col_g1:
-            fig_rosca_mun = px.pie(municipios_por_levantador, names='Levantador', values='Qtd_Municipios', 
-                                   title="Quantidade Total de Municípios por Levantador",
-                                   hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe)
-            fig_rosca_mun.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
-            st.plotly_chart(fig_rosca_mun, use_container_width=True)
+            if not municipios_por_levantador.empty and municipios_por_levantador['Qtd_Municipios'].sum() > 0:
+                try:
+                    fig_rosca_mun = px.pie(municipios_por_levantador, names='Levantador', values='Qtd_Municipios', 
+                                           title="Quantidade Total de Municípios por Levantador",
+                                           hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe)
+                    fig_rosca_mun.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
+                    st.plotly_chart(fig_rosca_mun, use_container_width=True)
+                except Exception:
+                    st.info("Gráfico de municípios indisponível no momento.")
             
         with col_g2:
             df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == 'SEM LEVANTADOR']
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
             if not df_sem_lev_reg.empty:
                 df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
-                fig_rosca_sem_lev = px.pie(df_sem_lev_reg, names='Regional', values='Quantidade_Sem_Atribuicao',
-                                           title="Obras Sem Levantador Atribuído por Regional",
-                                           hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-                fig_rosca_sem_lev.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
-                st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
+                if df_sem_lev_reg['Quantidade_Sem_Atribuicao'].sum() > 0:
+                    try:
+                        fig_rosca_sem_lev = px.pie(df_sem_lev_reg, names='Regional', values='Quantidade_Sem_Atribuicao',
+                                                   title="Obras Sem Levantador Atribuído por Regional",
+                                                   hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+                        fig_rosca_sem_lev.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
+                        st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
+                    except Exception:
+                        st.info("Gráfico de Regionais indisponível.")
 
         # -----------------------------------------------------------------------------
-        # GRÁFICO DE SLA AUTOMÁTICO (FUNÇÃO BLINDADA CONTRA ERROS)
+        # GRÁFICO DE SLA (COM BLINDAGEM DE ERROS)
         # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### ⏳ Monitoramento de SLA por Regional (Regra de Negócio)")
@@ -326,7 +336,6 @@ if menu_selecionado == 'Painel Executivo':
         
         df_sla = df_notas_calc.copy()
         
-        # Função blindada para evitar erros de tipagem com dados sujos
         def classificar_sla_seguro(row):
             tipo = str(row.get('TIPO LIGACAO', '')).strip().upper()
             
@@ -337,11 +346,9 @@ if menu_selecionado == 'Painel Executivo':
             
             hoje = pd.Timestamp.today().normalize()
             
-            # CRONOGRAMA
             if tipo in g_crono:
                 venc_str = str(row.get('DATA DE VENCIMENTO', '')).strip()
-                if venc_str in ['nan', 'None', '', '<NA>', 'NaT']:
-                    return 'Sem Cronograma'
+                if venc_str in ['nan', 'None', '', '<NA>', 'NaT']: return 'Sem Cronograma'
                 try:
                     dt_venc = pd.to_datetime(venc_str, dayfirst=True)
                     dias = (dt_venc - hoje).days
@@ -351,10 +358,8 @@ if menu_selecionado == 'Painel Executivo':
                 except:
                     return 'Data Inválida'
                     
-            # DATAS AUTOMÁTICAS
             cria_str = str(row.get('DATA CRIAÇAO SISCO', '')).strip()
-            if cria_str in ['nan', 'None', '', '<NA>', 'NaT']:
-                return 'Sem Data de Criação'
+            if cria_str in ['nan', 'None', '', '<NA>', 'NaT']: return 'Sem Data de Criação'
                 
             try:
                 dt_cria = pd.to_datetime(cria_str, dayfirst=True)
@@ -373,14 +378,12 @@ if menu_selecionado == 'Painel Executivo':
                     elif idade <= 8: return 'Vencimento Próximo'
                     else: return 'Vencida'
                 else:
-                    # Margem de segurança caso haja tipo não mapeado
                     if idade <= 15: return 'No Prazo'
                     elif idade <= 20: return 'Vencimento Próximo'
                     else: return 'Vencida'
             except:
                 return 'Data Inválida'
 
-        # Aplica a função de forma segura linha a linha
         df_sla['Status_SLA'] = df_sla.apply(classificar_sla_seguro, axis=1)
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
         
@@ -388,29 +391,33 @@ if menu_selecionado == 'Painel Executivo':
         
         if not df_sla_chart.empty:
             df_group = df_sla_chart.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Quantidade')
-            
-            ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
-            df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
-            df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
-            
-            fig_sla = px.bar(
-                df_group,
-                x='REGIONAL',
-                y='Quantidade',
-                color='Status_SLA',
-                title="Status Operacional de SLA por Regional",
-                text='Quantidade',
-                barmode='group',
-                color_discrete_map={
-                    'No Prazo': '#5CB85C',
-                    'Vencimento Próximo': '#F0AD4E',
-                    'Vencida': '#D9534F'
-                }
-            )
-            fig_sla.update_traces(textposition='auto', textfont_size=14)
-            fig_sla.update_layout(xaxis_title="Regional", yaxis_title="Volume de Obras", legend_title="Legenda SLA")
-            
-            st.plotly_chart(fig_sla, use_container_width=True)
+            if not df_group.empty:
+                try:
+                    ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
+                    df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
+                    df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
+                    
+                    fig_sla = px.bar(
+                        df_group,
+                        x='REGIONAL',
+                        y='Quantidade',
+                        color='Status_SLA',
+                        title="Status Operacional de SLA por Regional",
+                        text='Quantidade',
+                        barmode='group',
+                        color_discrete_map={
+                            'No Prazo': '#5CB85C',
+                            'Vencimento Próximo': '#F0AD4E',
+                            'Vencida': '#D9534F'
+                        }
+                    )
+                    fig_sla.update_traces(textposition='auto', textfont_size=14)
+                    fig_sla.update_layout(xaxis_title="Regional", yaxis_title="Volume de Obras", legend_title="Legenda SLA")
+                    st.plotly_chart(fig_sla, use_container_width=True)
+                except Exception as e:
+                    st.warning(f"O gráfico de SLA não pôde ser renderizado no momento.")
+            else:
+                 st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
         else:
             st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
 
@@ -665,6 +672,9 @@ elif menu_selecionado == 'Simulador de Alocação':
     """, unsafe_allow_html=True)
 
     df_eq_sim = df_equipes_db.copy()
+    
+    # Tratamento para evitar que regionais em branco quebrem agrupamentos
+    df_eq_sim['Regional'] = df_eq_sim['Regional'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
     df_eq_sim['Regional'] = df_eq_sim['Regional'].astype(str).str.upper()
     df_eq_sim['Levantador'] = df_eq_sim['Levantador'].astype(str).str.upper()
 
@@ -769,16 +779,12 @@ elif menu_selecionado == 'Simulador de Alocação':
         def colorir_cobertura(val):
             try:
                 percentual = float(val.replace('%', ''))
-                if percentual < 50.0:
-                    return 'background-color: #F8D7DA; color: #721C24; font-weight: bold;'
-                elif percentual < 100.0:
-                    return 'background-color: #FFF3CD; color: #856404; font-weight: bold;'
-                else:
-                    return 'background-color: #D4EDDA; color: #155724; font-weight: bold;'
+                if percentual < 50.0: return 'background-color: #F8D7DA; color: #721C24; font-weight: bold;'
+                elif percentual < 100.0: return 'background-color: #FFF3CD; color: #856404; font-weight: bold;'
+                else: return 'background-color: #D4EDDA; color: #155724; font-weight: bold;'
             except:
                 return ''
                 
-        # Fallback de compatibilidade para Pandas antigos
         try:
             styled_proj = df_proj.style.map(
                 lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
@@ -792,27 +798,25 @@ elif menu_selecionado == 'Simulador de Alocação':
 
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
+    # BLINDAGEM DO GRÁFICO DO SIMULADOR DE ALOCAÇÃO
     with col_proj_chart:
+        df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
         df_chart = df_edited[df_edited['Gap Restante'] > 0]
         
-        if not df_chart.empty:
-            fig_rosca = px.pie(
-                df_chart, 
-                names='Regional', 
-                values='Gap Restante', 
-                hole=0.55,
-                title="Gap de Cobertura por Regional"
-            )
-            fig_rosca.update_traces(
-                textinfo='percent', 
-                hoverinfo='label+value',
-                marker=dict(line=dict(color='#000000', width=1))
-            )
-            fig_rosca.update_layout(
-                margin=dict(t=40, b=0, l=0, r=0),
-                legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5)
-            )
-            st.plotly_chart(fig_rosca, use_container_width=True, config={'displayModeBar': False})
+        if not df_chart.empty and df_chart['Gap Restante'].sum() > 0:
+            try:
+                fig_rosca = px.pie(
+                    df_chart, 
+                    names='Regional', 
+                    values='Gap Restante', 
+                    hole=0.55,
+                    title="Gap de Cobertura por Regional"
+                )
+                fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
+                fig_rosca.update_layout(margin=dict(t=40, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
+                st.plotly_chart(fig_rosca, use_container_width=True, config={'displayModeBar': False})
+            except Exception:
+                st.warning("O gráfico de Gap não pôde ser renderizado no momento.")
         else:
             st.success("✅ 100% de Cobertura Atingida! Nenhum município sem levantador nas projeções.")
 
@@ -829,19 +833,13 @@ elif menu_selecionado == 'Simulador de Alocação':
     
     def style_variacao(v):
         if isinstance(v, str):
-            if v.startswith('+') or v == '0' or v == '0.0%':
-                return 'color: #5CB85C; font-weight: bold;'
-            elif v.startswith('-'):
-                return 'color: #D9534F; font-weight: bold;'
-        
+            if v.startswith('+') or v == '0' or v == '0.0%': return 'color: #5CB85C; font-weight: bold;'
+            elif v.startswith('-'): return 'color: #D9534F; font-weight: bold;'
         if isinstance(v, (int, float)):
-            if v >= 0:
-                return 'color: #5CB85C; font-weight: bold;'
-            else:
-                return 'color: #D9534F; font-weight: bold;'
+            if v >= 0: return 'color: #5CB85C; font-weight: bold;'
+            else: return 'color: #D9534F; font-weight: bold;'
         return ''
 
-    # Fallback de compatibilidade para Pandas antigos
     try:
         styled_impacto = df_impacto.style.map(style_variacao, subset=['Variação'])
     except AttributeError:
