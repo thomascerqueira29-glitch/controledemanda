@@ -9,3 +9,4 @@ streamlit-antd-components
 geopandas
 fiona
 openpyxl
+pydeck
