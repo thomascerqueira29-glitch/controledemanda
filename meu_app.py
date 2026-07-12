@@ -357,12 +357,30 @@ if menu_selecionado == 'Painel Executivo':
         
         hoje = pd.Timestamp.today().normalize()
         
-        df_sla['DATA DE VENCIMENTO_DT'] = pd.to_datetime(df_sla['DATA DE VENCIMENTO'], dayfirst=True, errors='coerce')
-        df_sla['DATA CRIAÇAO SISCO_DT'] = pd.to_datetime(df_sla['DATA CRIAÇAO SISCO'], dayfirst=True, errors='coerce')
+        # 🚀 MOTOR BLINDADO DE LIMPEZA E PARSING DE DATAS 
+        # (Trata sujeiras do Excel, formatos do SAP e Nulos Mascarados)
+        def blindar_datas(serie):
+            # 1. Força string e limpa espaços residuais
+            s = serie.astype(str).str.strip()
+            # 2. Converte nulos mascarados para vazios
+            s = s.replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
+            # 3. Corrige formatos comumente extraídos do SAP/Proj+ (ex: 10.05.2024 -> 10/05/2024)
+            s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False)
+            # 4. Remove horas/minutos caso a base traga timestamp completo ("2024/05/10 14:00:00" -> "2024/05/10")
+            s = s.str.split(' ').str[0]
+            # 5. Executa a conversão ciente de que o dia vem primeiro (formato BR)
+            dt_parsed = pd.to_datetime(s, errors='coerce', dayfirst=True)
+            # 6. Remove timezone (fuso horário) para evitar erros de cálculo na subtração com o 'hoje'
+            return dt_parsed.dt.tz_localize(None)
+
+        # Aplica o motor nas datas principais
+        df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
+        df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
         
         dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
         idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
 
+        # Regras Cronograma
         cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
         cond_crono_v = cond_crono & (dias_para_vencer < 0)
         cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
@@ -370,26 +388,31 @@ if menu_selecionado == 'Painel Executivo':
 
         cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
         
+        # Regras Grupo 1
         cond_g1 = tipo.isin(g1) & cond_base_dt
         cond_g1_np = cond_g1 & (idade_dias <= 10)
         cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
         cond_g1_v  = cond_g1 & (idade_dias > 15)
 
+        # Regras Grupo 2
         cond_g2 = tipo.isin(g2) & cond_base_dt
         cond_g2_np = cond_g2 & (idade_dias <= 16)
         cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
         cond_g2_v  = cond_g2 & (idade_dias > 24)
 
+        # Regras NIV
         cond_niv = tipo.isin(g_niv) & cond_base_dt
         cond_niv_np = cond_niv & (idade_dias <= 5)
         cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
         cond_niv_v  = cond_niv & (idade_dias > 8)
 
+        # Regras Padrão (Fallback)
         cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
         cond_def_np = cond_default & (idade_dias <= 15)
         cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
         cond_def_v  = cond_default & (idade_dias > 20)
 
+        # Atribuição do Status
         df_sla['Status_SLA'] = np.select(
             [
                 cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
@@ -402,6 +425,7 @@ if menu_selecionado == 'Painel Executivo':
 
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
         
+        # Filtra apenas o que entrou nas réguas do SLA
         df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
@@ -429,12 +453,16 @@ if menu_selecionado == 'Painel Executivo':
                     fig_sla.update_traces(textposition='auto', textfont_size=14)
                     fig_sla.update_layout(xaxis_title="Regional", yaxis_title="Volume de Obras", legend_title="Legenda SLA")
                     st.plotly_chart(fig_sla, use_container_width=True)
-                except Exception:
-                    st.warning("O gráfico de SLA não pôde ser renderizado no momento.")
+                except Exception as e:
+                    st.warning(f"O gráfico de SLA não pôde ser renderizado no momento: {e}")
             else:
                  st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
         else:
-            st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
+            st.info("💡 Não há dados classificados com o SLA no momento. A base fornecida não possui datas válidas.")
+            # Diagnóstico visual em tela para o usuário final/dev
+            with st.expander("🛠️ Diagnóstico de Dados Incorretos (Auditoria)"):
+                st.write("Abaixo está uma amostra bruta da sua base para análise. Se estiver vazio ou preenchido com 'nan', será necessário atualizar a base em **Busca e Governança**:")
+                st.dataframe(df_sla[['PROTOCOLO', 'DATA CRIAÇAO SISCO', 'DATA DE VENCIMENTO', 'Status_SLA']].head(10), use_container_width=True)
 
         # -----------------------------------------------------------------------------
         # MAPA GEORREFERENCIADO (COM LEITOR DINÂMICO DE KMZ/KML)
