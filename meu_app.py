@@ -139,7 +139,8 @@ if st.session_state.usuario_logado is None:
                     else:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
-        st.info("💡 **Acesso Inicial:** \n\nAdmin: `THOMAS` | Senha: `admin123`\n\nVisitante: `VISITANTE` | Senha: `123`")
+        # TEXTO CORRIGIDO: Senhas removidas para segurança
+        st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
     st.stop() # Interrompe a renderização para usuários não logados
 
 # -----------------------------------------------------------------------------
@@ -688,7 +689,7 @@ if menu_selecionado == 'Painel Executivo':
             st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA
+# VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
@@ -779,7 +780,7 @@ elif menu_selecionado == 'Busca e Governança':
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# VISÃO 3: CARGA DE LOTES
+# VISÃO 3: CARGA DE LOTES (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
     if st.session_state.perfil_usuario != "ADMIN":
