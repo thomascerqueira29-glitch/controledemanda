@@ -15,6 +15,7 @@ import geopandas as gpd
 import zipfile
 import logging
 import shutil
+import html
 from datetime import datetime
 
 # -----------------------------------------------------------------------------
@@ -36,6 +37,42 @@ try:
         fiona.supported_drivers['LIBKML'] = 'rw'
 except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
+
+# -----------------------------------------------------------------------------
+# MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (IAM / RBAC)
+# -----------------------------------------------------------------------------
+if 'usuario_logado' not in st.session_state:
+    st.session_state.usuario_logado = None
+    st.session_state.perfil_usuario = None
+
+if st.session_state.usuario_logado is None:
+    st.markdown("<h2 style='text-align: center; margin-top: 80px; color: #1A4F7C;'>🔐 Portal Corporativo NIP</h2>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #666;'>Sistema de Governança de Redes de Distribuição</p>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        with st.form("login_form"):
+            st.markdown("#### Acesso Restrito")
+            username = st.text_input("Usuário").strip()
+            password = st.text_input("Senha", type="password")
+            submit = st.form_submit_button("Autenticar", type="primary", use_container_width=True)
+            
+            if submit:
+                # Credencial de Administração Mestre
+                if username.upper() == "MAK4R0V" and password == "admin123":
+                    st.session_state.usuario_logado = username.upper()
+                    st.session_state.perfil_usuario = "ADMIN"
+                    st.rerun()
+                # Credencial Limitada
+                elif username.upper() == "VISITANTE" and password == "123":
+                    st.session_state.usuario_logado = username.upper()
+                    st.session_state.perfil_usuario = "LEITURA"
+                    st.rerun()
+                else:
+                    st.error("Credenciais inválidas ou acesso revogado.")
+        
+        st.info("💡 **Acesso de Teste:** \n\nAdmin: `MAK4R0V` | Senha: `admin123`\n\nVisitante: `VISITANTE` | Senha: `123`")
+    st.stop() # Bloqueia a execução do resto do código se não autenticado
 
 # -----------------------------------------------------------------------------
 # CONFIGURAÇÕES DE ESTADO E NAVEGAÇÃO
@@ -69,119 +106,28 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE (CACHE, VETORIZAÇÃO E ENCAPSULAMENTO)
+# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS
 # -----------------------------------------------------------------------------
-def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
-    try:
-        R = 6371.0 
-        lat1_rad, lon1_rad = np.radians(float(lat1)), np.radians(float(lon1))
-        lat2_rad, lon2_rad = np.radians(lat2_series.astype(float)), np.radians(lon2_series.astype(float))
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
-        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-        return R * c
-    except (ValueError, TypeError) as e:
-        logging.error(f"Erro no cálculo de distância vetorial: {e}")
-        return pd.Series(99999, index=lat2_series.index)
+def registrar_auditoria(acao, detalhes):
+    """Grava as operações críticas na base de dados para garantir Accountability"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
+                          (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
+                           data_hora TEXT, acao TEXT, detalhes TEXT)''')
+        agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        usuario = st.session_state.usuario_logado
+        cursor.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
+                       (usuario, agora, acao, detalhes))
+        conn.commit()
 
-@st.cache_data(show_spinner=False)
-def processar_camada_espacial(arquivo_espacial):
-    gdf_lines = gpd.GeoDataFrame()
-    gdf_points = gpd.GeoDataFrame()
-    bounds = None
-    if not arquivo_espacial: return gdf_lines, gdf_points, bounds
-    import fiona
-    try:
-        camadas = fiona.listlayers(arquivo_espacial)
-        gdfs = []
-        for camada in camadas:
-            try:
-                gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
-                if not gdf_temp.empty:
-                    gdf_temp['Layer_Name'] = camada
-                    gdfs.append(gdf_temp)
-            except Exception: continue
-                
-        if gdfs:
-            gdf_final = pd.concat(gdfs, ignore_index=True)
-            gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
-            gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
-            gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
-            bounds = gdf_final.total_bounds
-    except Exception as e:
-        logging.error(f"Falha na extração de geometrias: {e}")
-    return gdf_lines, gdf_points, bounds
-
-@st.cache_data(show_spinner=False)
-def calcular_sla_vetorizado(df_notas_calc):
-    """Motor de cálculo de SLA isolado e cacheador"""
-    df_sla = df_notas_calc.copy()
-    tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
-    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
-    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-    g_niv = ['NIV']
-    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
-    
-    def blindar_datas(serie):
-        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
-        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
-
-    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
-    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
-    
-    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
-    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
-
-    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
-    cond_crono_v = cond_crono & (dias_para_vencer < 0)
-    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
-    cond_crono_np = cond_crono & (dias_para_vencer > 3)
-    
-    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
-    cond_g1 = tipo.isin(g1) & cond_base_dt
-    cond_g1_np = cond_g1 & (idade_dias <= 10)
-    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
-    cond_g1_v  = cond_g1 & (idade_dias > 15)
-    
-    cond_g2 = tipo.isin(g2) & cond_base_dt
-    cond_g2_np = cond_g2 & (idade_dias <= 16)
-    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
-    cond_g2_v  = cond_g2 & (idade_dias > 24)
-    
-    cond_niv = tipo.isin(g_niv) & cond_base_dt
-    cond_niv_np = cond_niv & (idade_dias <= 5)
-    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
-    cond_niv_v  = cond_niv & (idade_dias > 8)
-    
-    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
-    cond_def_np = cond_default & (idade_dias <= 15)
-    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
-    cond_def_v  = cond_default & (idade_dias > 20)
-
-    df_sla['Status_SLA'] = np.select(
-        [
-            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
-            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
-            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
-        ],
-        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
-    )
-    df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-    return df_sla
-
-# -----------------------------------------------------------------------------
-# ENGENHARIA DE DADOS, SEGURANÇA E CONEXÃO SQLITE
-# -----------------------------------------------------------------------------
 def realizar_backup_db():
-    """Soft Delete: Salva uma cópia física do DB antes de ações destrutivas."""
     os.makedirs("backups", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     bkp_path = f"backups/controle_torre_nip_bkp_{timestamp}.db"
     if os.path.exists(DB_PATH):
         shutil.copy2(DB_PATH, bkp_path)
-        logging.info(f"Backup preventivo realizado: {bkp_path}")
+        registrar_auditoria("BACKUP PREVENTIVO", f"Backup automático gerado em {bkp_path}")
     return bkp_path
 
 def init_database():
@@ -246,21 +192,20 @@ def get_processed_data():
         df_e = pd.read_sql("SELECT * FROM equipes", conn)
     return auto_assign_levantador(df_n, df_e), df_e
 
-def save_notas_to_db(df_notas_atualizado, backup=False):
-    """Operação Segura: Atomic Swap. Evita corrupção se acessado concorrentemente."""
+def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operação no Banco de Dados"):
+    """Operação Segura: Atomic Swap e Logging de Auditoria."""
     if backup:
         realizar_backup_db()
     try:
         df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
         with sqlite3.connect(DB_PATH) as conn:
-            # 1. Salva em tabela temporária
             df_notas_limpo.to_sql('notas_temp', conn, if_exists='replace', index=False)
-            # 2. Inicia transação atômica (milissegundos)
             conn.execute("BEGIN TRANSACTION;")
             conn.execute("DROP TABLE IF EXISTS notas;")
             conn.execute("ALTER TABLE notas_temp RENAME TO notas;")
             conn.commit()
             
+        registrar_auditoria(acao_auditoria, f"Tabela NOTAS atualizada. Volume final: {len(df_notas_limpo)} registros.")
         get_processed_data.clear()
         process_analytical_data.clear()
         calcular_sla_vetorizado.clear()
@@ -270,6 +215,106 @@ def save_notas_to_db(df_notas_atualizado, backup=False):
         return False
 
 df_notas_db, df_equipes_db = get_processed_data()
+
+# -----------------------------------------------------------------------------
+# MOTORES DE ALTA PERFORMANCE (CACHE E VETORIZAÇÃO)
+# -----------------------------------------------------------------------------
+def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
+    try:
+        R = 6371.0 
+        lat1_rad, lon1_rad = np.radians(float(lat1)), np.radians(float(lon1))
+        lat2_rad, lon2_rad = np.radians(lat2_series.astype(float)), np.radians(lon2_series.astype(float))
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
+        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
+        return R * c
+    except (ValueError, TypeError):
+        return pd.Series(99999, index=lat2_series.index)
+
+@st.cache_data(show_spinner=False)
+def processar_camada_espacial(arquivo_espacial):
+    gdf_lines = gpd.GeoDataFrame()
+    gdf_points = gpd.GeoDataFrame()
+    bounds = None
+    if not arquivo_espacial: return gdf_lines, gdf_points, bounds
+    import fiona
+    try:
+        camadas = fiona.listlayers(arquivo_espacial)
+        gdfs = []
+        for camada in camadas:
+            try:
+                gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
+                if not gdf_temp.empty:
+                    gdf_temp['Layer_Name'] = camada
+                    gdfs.append(gdf_temp)
+            except Exception: continue
+                
+        if gdfs:
+            gdf_final = pd.concat(gdfs, ignore_index=True)
+            gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
+            gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
+            gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
+            bounds = gdf_final.total_bounds
+    except Exception: pass
+    return gdf_lines, gdf_points, bounds
+
+@st.cache_data(show_spinner=False)
+def calcular_sla_vetorizado(df_notas_calc):
+    df_sla = df_notas_calc.copy()
+    tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
+    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
+    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
+    g_niv = ['NIV']
+    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
+    
+    def blindar_datas(serie):
+        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
+        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
+        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
+
+    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
+    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
+    
+    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
+    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
+
+    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
+    cond_crono_v = cond_crono & (dias_para_vencer < 0)
+    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
+    cond_crono_np = cond_crono & (dias_para_vencer > 3)
+    
+    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
+    cond_g1 = tipo.isin(g1) & cond_base_dt
+    cond_g1_np = cond_g1 & (idade_dias <= 10)
+    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
+    cond_g1_v  = cond_g1 & (idade_dias > 15)
+    
+    cond_g2 = tipo.isin(g2) & cond_base_dt
+    cond_g2_np = cond_g2 & (idade_dias <= 16)
+    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
+    cond_g2_v  = cond_g2 & (idade_dias > 24)
+    
+    cond_niv = tipo.isin(g_niv) & cond_base_dt
+    cond_niv_np = cond_niv & (idade_dias <= 5)
+    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
+    cond_niv_v  = cond_niv & (idade_dias > 8)
+    
+    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
+    cond_def_np = cond_default & (idade_dias <= 15)
+    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
+    cond_def_v  = cond_default & (idade_dias > 20)
+
+    df_sla['Status_SLA'] = np.select(
+        [
+            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
+            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
+            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
+        ],
+        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
+    )
+    df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
+    return df_sla
 
 @st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
@@ -303,11 +348,17 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL (MENU + FILTROS DE MAPA)
+# INTERFACE DE NAVEGAÇÃO LATERAL
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
-    st.caption("Ecossistema de Governança")
+    st.caption(f"Logado como: **{st.session_state.usuario_logado}** ({st.session_state.perfil_usuario})")
+    
+    if st.button("🚪 Sair", use_container_width=True):
+        st.session_state.usuario_logado = None
+        st.session_state.perfil_usuario = None
+        st.rerun()
+
     st.markdown("---")
     
     opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Carga de Lotes', 'Simulador de Alocação']
@@ -345,7 +396,6 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        # --- BLOCO 1: KPIs ---
         total_obras = int(resumo_levantadores['Total_Obras_Real'].sum())
         total_ativos = len(resumo_levantadores)
         total_criticos = len(levantadores_criticos)
@@ -358,27 +408,18 @@ if menu_selecionado == 'Painel Executivo':
         k4.markdown(kpi_card("Levantadores Críticos", total_criticos, "Abaixo de 45 obras", "#D9534F" if total_criticos > 0 else "#5CB85C"), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # --- BLOCO 2: DATA GRID E AÇÕES RÁPIDAS ---
         col_t1, col_t2 = st.columns([2.5, 1.5])
-        
         with col_t1:
             st.markdown("#### 📋 Desempenho e Alocação das Equipes")
             df_resumo_view = resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].copy()
             df_resumo_view = df_resumo_view.sort_values('Total_Obras_Real', ascending=False)
             
             st.dataframe(
-                df_resumo_view, 
-                use_container_width=True, 
-                hide_index=True, 
-                height=320,
+                df_resumo_view, use_container_width=True, hide_index=True, height=320,
                 column_config={
                     "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
                     "Equipe": st.column_config.TextColumn("Equipe SAP"),
-                    "Total_Obras_Real": st.column_config.ProgressColumn(
-                        "Obras Reais (Meta: 45)",
-                        help="Progresso de atribuição até a meta mínima de 45 obras.",
-                        format="%d", min_value=0, max_value=45
-                    )
+                    "Total_Obras_Real": st.column_config.ProgressColumn("Obras Reais (Meta: 45)", format="%d", min_value=0, max_value=45)
                 }
             )
             
@@ -394,36 +435,36 @@ if menu_selecionado == 'Painel Executivo':
                 
                 st.info(f"Obras Vinculadas Atualmente: **{obras_do_lev}**")
                 
-                if obras_do_lev < 45:
-                    if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Próximas", use_container_width=True, type="primary"):
-                        cond_livres_reais = (df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
-                        df_livres = df_notas_db[cond_livres_reais].copy()
-                        
-                        if len(df_livres) == 0: st.error("Fila vazia! Sem demandas livres no momento.")
-                        else:
-                            with st.spinner(f"Calculando rotas otimizadas para {lev_selecionado}..."):
-                                try:
+                if st.session_state.perfil_usuario == "ADMIN":
+                    if obras_do_lev < 45:
+                        if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Próximas", use_container_width=True, type="primary"):
+                            cond_livres_reais = (df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
+                            df_livres = df_notas_db[cond_livres_reais].copy()
+                            
+                            if len(df_livres) == 0: st.error("Fila vazia! Sem demandas livres no momento.")
+                            else:
+                                with st.spinner(f"Calculando rotas otimizadas para {lev_selecionado}..."):
                                     tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_selecionado].iloc[0]
-                                    tech_lat, tech_lon = tech_coords['Latitude'], tech_coords['Longitude']
                                     df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
                                     df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
-                                    df_livres['Distancia_KM'] = vectorized_haversine(tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
+                                    df_livres['Distancia_KM'] = vectorized_haversine(tech_coords['Latitude'], tech_coords['Longitude'], df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
                                     df_livres = df_livres.sort_values('Distancia_KM')
-                                except Exception: pass
 
-                                qtd_atribuir = min(saldo_necessario, len(df_livres))
-                                indices_para_mudar = df_livres.head(qtd_atribuir).index
-                                df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
-                                
-                                if save_notas_to_db(df_notas_db):
-                                    st.toast("Rotas designadas com sucesso!", icon="✅")
-                                    st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
-                                    st.rerun()
-                else: st.success("✅ Meta Atingida.")
+                                    qtd_atribuir = min(saldo_necessario, len(df_livres))
+                                    indices_para_mudar = df_livres.head(qtd_atribuir).index
+                                    df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
+                                    
+                                    if save_notas_to_db(df_notas_db, acao_auditoria=f"Atribuição Geo-otimizada: {qtd_atribuir} obras para {lev_selecionado}"):
+                                        st.toast("Rotas designadas com sucesso!", icon="✅")
+                                        st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
+                                        st.rerun()
+                    else: st.success("✅ Meta Atingida.")
+                else:
+                    st.warning("Acesso de edição restrito aos Coordenadores (Admin).")
+                    
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-        # --- BLOCO 3: GRÁFICOS TOP 15 ---
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2 = st.columns(2)
@@ -445,7 +486,6 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
-        # --- BLOCO 4: SLA MODULARIZADO ---
         df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
         df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
@@ -464,7 +504,6 @@ if menu_selecionado == 'Painel Executivo':
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
-        # --- BLOCO 5: MAPA HÍBRIDO (MARKERCLUSTER VS FASTMARKERCLUSTER) ---
         st.markdown("---")
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -480,7 +519,13 @@ if menu_selecionado == 'Painel Executivo':
                 try:
                     with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
                         kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
-                        if kml_files: caminho_camada_temp = kmz.extract(kml_files[0], path=tempfile.gettempdir())
+                        if kml_files: 
+                            # BLINDAGEM CONTRA ZIP SLIP (Extração segura via path.basename)
+                            kml_filename = os.path.basename(kml_files[0])
+                            safe_extract_path = os.path.join(tempfile.gettempdir(), kml_filename)
+                            with open(safe_extract_path, 'wb') as out_file:
+                                out_file.write(kmz.read(kml_files[0]))
+                            caminho_camada_temp = safe_extract_path
                 except Exception: pass
         
         df_notas_mapa_view = df_notas_calc.copy()
@@ -530,7 +575,7 @@ if menu_selecionado == 'Painel Executivo':
                     if pd.notna(lat_val) and pd.notna(lon_val):
                         lev = str(row['Levantador'])
                         if lev in todos_levantadores:
-                            folium.Marker(location=[lat_val, lon_val], icon=folium.Icon(color='red' if lev in criticos_tuple else 'green', icon='user', prefix='fa'), tooltip=f"Levantador: {lev}").add_to(fg_equipes)
+                            folium.Marker(location=[lat_val, lon_val], icon=folium.Icon(color='red' if lev in criticos_tuple else 'green', icon='user', prefix='fa'), tooltip=f"Levantador: {html.escape(lev)}").add_to(fg_equipes)
                 except (ValueError, TypeError): pass 
 
             df_notas_mapa = df_nt.copy()
@@ -542,7 +587,6 @@ if menu_selecionado == 'Painel Executivo':
                 df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
                 df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
                 
-                # Motor de Renderização Híbrido: Previne travamento em bases volumosas (>500 obras)
                 if len(df_notas_mapa) > 500:
                     obras_coords = df_notas_mapa[['lat_jitter', 'lon_jitter']].values.tolist()
                     FastMarkerCluster(data=obras_coords, name="🏗️ Demandas Ativas (Fast Cluster)").add_to(mapa)
@@ -550,13 +594,18 @@ if menu_selecionado == 'Painel Executivo':
                     fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
                     cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
                     for row in df_notas_mapa.to_dict('records'):
+                        # BLINDAGEM XSS: Uso de html.escape para neutralizar tags maliciosas
+                        safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
+                        safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
+                        safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
+                        
                         html_mini_card = f"""
                         <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
                             <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
                             <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
-                                <b>PROTOCOLO:</b> {row.get('PROTOCOLO', '')}<br>
-                                <b>MUNICIPIO:</b> {row.get('MUNICIPIO', '')}<br>
-                                <b>LEVANTADOR:</b> {row.get('LEVANTADOR', '')}<br>
+                                <b>PROTOCOLO:</b> {safe_protocolo}<br>
+                                <b>MUNICIPIO:</b> {safe_municipio}<br>
+                                <b>LEVANTADOR:</b> {safe_levantador}<br>
                             </div>
                         </div>
                         """
@@ -574,7 +623,7 @@ if menu_selecionado == 'Painel Executivo':
             st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA (LAYOUT E INTEGRIDADE MELHORADOS)
+# VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
@@ -630,15 +679,20 @@ elif menu_selecionado == 'Busca e Governança':
             st.download_button(label="📥 Exportar para Excel", data=buffer.getvalue(), file_name="relatorio_nip_filtrado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             
     with col_tool2:
-        btn_salvar = st.button("💾 Salvar Alterações", type="primary", use_container_width=True)
+        if st.session_state.perfil_usuario == "ADMIN":
+            btn_salvar = st.button("💾 Salvar Alterações", type="primary", use_container_width=True)
+        else:
+            st.button("💾 Apenas Leitura", disabled=True, use_container_width=True)
+            btn_salvar = False
         
     with col_tool3:
-        with st.expander("⚠️ ÁREA DE PERIGO (O BACKUP SERÁ GERADO AUTOMATICAMENTE)"):
-            confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
-            if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
-                if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns), backup=True):
-                    st.success("Banco limpo. Backup preventivo gerado com sucesso!")
-                    st.rerun()
+        if st.session_state.perfil_usuario == "ADMIN":
+            with st.expander("⚠️ ÁREA DE PERIGO (O BACKUP SERÁ GERADO AUTOMATICAMENTE)"):
+                confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
+                if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
+                    if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns), backup=True, acao_auditoria="Limpeza de Banco de Dados (APAGAR TUDO)"):
+                        st.success("Banco limpo. Backup preventivo gerado com sucesso!")
+                        st.rerun()
 
     config_colunas = {
         "ID SISCO": st.column_config.TextColumn("ID SISCO", disabled=True),
@@ -647,21 +701,28 @@ elif menu_selecionado == 'Busca e Governança':
         "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_list)
     }
 
-    df_editado = st.data_editor(df_filtrado_view, use_container_width=True, num_rows="dynamic", key="editor_notas", column_config=config_colunas)
+    # Desabilita a edição se não for admin
+    is_disabled = st.session_state.perfil_usuario != "ADMIN"
+    
+    df_editado = st.data_editor(df_filtrado_view, use_container_width=True, num_rows="dynamic", key="editor_notas", column_config=config_colunas, disabled=is_disabled)
 
     if btn_salvar:
         with st.spinner("Persistindo informações com swap atômico..."):
             indices_originais = df_editado.index
             df_notas_db.loc[indices_originais] = df_editado
-            if save_notas_to_db(df_notas_db, backup=False):
+            if save_notas_to_db(df_notas_db, backup=False, acao_auditoria="Edição em Lote via UI Governança"):
                 st.success("Banco de Dados Atualizado com Sucesso!")
                 st.toast("Dados salvos e painel atualizado!", icon="✅")
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# VISÃO 3: CARGA DE LOTES
+# VISÃO 3: CARGA DE LOTES (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
+    if st.session_state.perfil_usuario != "ADMIN":
+        st.error("Acesso Negado. Módulo restrito à Coordenação.")
+        st.stop()
+        
     st.markdown("### 📤 Módulo de Importação de Lotes com Validação Strict")
     schema_nip = pa.DataFrameSchema({
         "PROTOCOLO": pa.Column(pa.String, coerce=True, required=True),
@@ -691,7 +752,7 @@ elif menu_selecionado == 'Carga de Lotes':
                 if st.button("⚡ Confirmar Importação e Gravar no Banco de Dados SQLite"):
                     with st.spinner("Injetando carga de lotes no banco (Operação com Backup Automático)..."):
                         df_final = pd.concat([df_notas_db, df_temp_processado], ignore_index=True)
-                        if save_notas_to_db(df_final, backup=True):
+                        if save_notas_to_db(df_final, backup=True, acao_auditoria=f"Carga de Lote: {len(df_temp_processado)} novas demandas injetadas"):
                             st.toast("Lote processado e inserido!", icon="✅")
                             st.success(f"Sucesso! {len(df_temp_processado)} novas demandas validadas e injetadas.")
                             st.rerun()
