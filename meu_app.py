@@ -13,6 +13,17 @@ import streamlit_antd_components as sac
 import tempfile
 import geopandas as gpd
 import zipfile
+import logging
+
+# -----------------------------------------------------------------------------
+# CONSTANTES GLOBAIS E CONFIGURAÇÕES INICIAIS
+# -----------------------------------------------------------------------------
+DB_PATH = 'controle_torre_nip.db'
+SEM_LEVANTADOR = 'SEM LEVANTADOR'
+STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
+
+# Configuração de Layout
+st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️")
 
 # Habilita o suporte a KML no fiona/geopandas (Compatibilidade Universal)
 try:
@@ -21,26 +32,20 @@ try:
         fiona.drvsupport.supported_drivers['KML'] = 'rw'
         fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
     except AttributeError:
+        # Fallback para versões mais antigas do fiona
         fiona.supported_drivers['KML'] = 'rw'
         fiona.supported_drivers['LIBKML'] = 'rw'
-except Exception:
-    pass
-
-# Configuração de Layout e Identidade Visual Corporativa
-st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️")
+except ImportError:
+    logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE ESTADO, BANCO DE DADOS E NAVEGAÇÃO
+# CONFIGURAÇÕES DE ESTADO E NAVEGAÇÃO
 # -----------------------------------------------------------------------------
-DB_PATH = 'controle_torre_nip.db'
-
 if 'db_initialized' not in st.session_state:
     st.session_state.db_initialized = False
 
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
-
-STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
 
 if 'filtros_salvos' not in st.session_state:
     st.session_state.filtros_salvos = {
@@ -58,7 +63,29 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.menu_idx = 1
     st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
 
-# --- MOTOR DE ALTA PERFORMANCE 1: VETORIZAÇÃO MATEMÁTICA ---
+# -----------------------------------------------------------------------------
+# COMPONENTES DE UI (MODULARIZAÇÃO HTML/CSS)
+# -----------------------------------------------------------------------------
+def gerar_card_levantador(lev_nome, eq_nome, qtd_obras_reais, is_critico):
+    cor_hex = "#D9534F" if is_critico else "#5CB85C"
+    bg_hex = "rgba(217, 83, 79, 0.07)" if is_critico else "rgba(92, 184, 92, 0.07)"
+    
+    return f"""
+    <div style='padding: 12px; border-radius: 6px; background-color: {bg_hex}; border-left: 6px solid {cor_hex}; margin-bottom: 5px; height: 135px; display: flex; flex-direction: column; justify-content: space-between;'>
+        <div>
+            <strong style='font-size: 14px; color: #111;'>{lev_nome}</strong><br>
+            <span style='font-size: 11px; color: #555;'>Equipe: {eq_nome}</span><br>
+        </div>
+        <div style='font-size: 11px; color: #333; margin-top: auto;'>
+            <i>Apenas Obras Reais Atribuídas:</i><br>
+            <span style='font-size: 18px; font-weight: bold; color: {cor_hex};'>{qtd_obras_reais}</span> <span style='font-size: 12px;'>/ 45</span>
+        </div>
+    </div>
+    """
+
+# -----------------------------------------------------------------------------
+# MOTORES DE ALTA PERFORMANCE
+# -----------------------------------------------------------------------------
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
     try:
         R = 6371.0 
@@ -69,20 +96,55 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
         return R * c
-    except Exception:
+    except (ValueError, TypeError) as e:
+        logging.error(f"Erro no cálculo de distância vetorial: {e}")
         return pd.Series(99999, index=lat2_series.index)
 
-# -----------------------------------------------------------------------------
-# 1. ENGENHARIA DE DADOS E CONEXÃO SQLITE
-# -----------------------------------------------------------------------------
-def get_db_connection():
-    return sqlite3.connect(DB_PATH)
+@st.cache_data(show_spinner=False)
+def processar_camada_espacial(arquivo_espacial):
+    """
+    Motor de processamento geométrico com cache. 
+    Evita re-leitura do disco KML/KMZ a cada re-renderização do Streamlit.
+    """
+    gdf_lines = gpd.GeoDataFrame()
+    gdf_points = gpd.GeoDataFrame()
+    bounds = None
 
+    if not arquivo_espacial:
+        return gdf_lines, gdf_points, bounds
+
+    import fiona
+    try:
+        camadas = fiona.listlayers(arquivo_espacial)
+        gdfs = []
+        
+        for camada in camadas:
+            try:
+                gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
+                if not gdf_temp.empty:
+                    gdf_temp['Layer_Name'] = camada
+                    gdfs.append(gdf_temp)
+            except Exception as e:
+                logging.warning(f"Erro ao ler camada {camada}: {e}")
+                continue
+                
+        if gdfs:
+            gdf_final = pd.concat(gdfs, ignore_index=True)
+            gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
+            
+            gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
+            gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
+            bounds = gdf_final.total_bounds
+            
+    except Exception as e:
+        logging.error(f"Falha na extração de geometrias espaciais: {e}")
+        
+    return gdf_lines, gdf_points, bounds
+
+# -----------------------------------------------------------------------------
+# ENGENHARIA DE DADOS E CONEXÃO SQLITE
+# -----------------------------------------------------------------------------
 def init_database():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
-    
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
         'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
@@ -91,30 +153,31 @@ def init_database():
         'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
     ]
     
-    if not cursor.fetchone():
-        if os.path.exists('NOTAS.xlsx'):
-            df_legacy = pd.read_excel('NOTAS.xlsx')
-            df_legacy = df_legacy.fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
-            
-            for col in colunas_template_oficial:
-                if col not in df_legacy.columns:
-                    df_legacy[col] = ""
-                    
-            df_legacy = df_legacy[colunas_template_oficial]
-            df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
-        else:
-            df_empty = pd.DataFrame(columns=colunas_template_oficial)
-            df_empty.to_sql('notas', conn, if_exists='replace', index=False)
-            
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
-    if not cursor.fetchone():
-        if os.path.exists('EQUIPES.xlsx'):
-            df_eq_legacy = pd.read_excel('EQUIPES.xlsx')
-            df_eq_legacy.to_sql('equipes', conn, if_exists='replace', index=False)
-        else:
-            df_eq_empty = pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe'])
-            df_eq_empty.to_sql('equipes', conn, if_exists='replace', index=False)
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
+        if not cursor.fetchone():
+            if os.path.exists('NOTAS.xlsx'):
+                df_legacy = pd.read_excel('NOTAS.xlsx')
+                df_legacy = df_legacy.fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+                
+                for col in colunas_template_oficial:
+                    if col not in df_legacy.columns:
+                        df_legacy[col] = ""
+                        
+                df_legacy = df_legacy[colunas_template_oficial]
+                df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
+            else:
+                pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
+                
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
+        if not cursor.fetchone():
+            if os.path.exists('EQUIPES.xlsx'):
+                df_eq_legacy = pd.read_excel('EQUIPES.xlsx')
+                df_eq_legacy.to_sql('equipes', conn, if_exists='replace', index=False)
+            else:
+                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
+    
     st.session_state.db_initialized = True
 
 if not st.session_state.db_initialized:
@@ -129,19 +192,19 @@ def auto_assign_levantador(df_notas, df_equipes):
         df_notas['MUNICIPIO'] = df_notas['MUNICIPIO'].astype(str).str.upper().str.strip()
     
     if 'LEVANTADOR' not in df_notas.columns:
-        df_notas['LEVANTADOR'] = 'SEM LEVANTADOR'
+        df_notas['LEVANTADOR'] = SEM_LEVANTADOR
     else:
         df_notas['LEVANTADOR'] = df_notas['LEVANTADOR'].astype(str).str.upper().str.strip()
         
     mask_sem_levantador = (
-        df_notas['LEVANTADOR'].isna() | (df_notas['LEVANTADOR'] == 'SEM LEVANTADOR') | 
+        df_notas['LEVANTADOR'].isna() | (df_notas['LEVANTADOR'] == SEM_LEVANTADOR) | 
         (df_notas['LEVANTADOR'] == '') | (df_notas['LEVANTADOR'] == 'NAN') | 
         (df_notas['LEVANTADOR'] == 'NONE') | (df_notas['LEVANTADOR'] == '0')
     )
     
     if 'MUNICIPIO' in df_notas.columns:
         df_notas.loc[mask_sem_levantador, 'LEVANTADOR'] = (
-            df_notas.loc[mask_sem_levantador, 'MUNICIPIO'].map(mapa_levantadores).fillna('SEM LEVANTADOR')
+            df_notas.loc[mask_sem_levantador, 'MUNICIPIO'].map(mapa_levantadores).fillna(SEM_LEVANTADOR)
         )
     
     for col in ['STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 'STATUS SISCO', 'DATA CRIAÇAO SISCO', 'DATA DE VENCIMENTO']:
@@ -153,34 +216,37 @@ def auto_assign_levantador(df_notas, df_equipes):
 
 @st.cache_data(show_spinner=False)
 def get_processed_data():
-    conn = get_db_connection()
-    df_n = pd.read_sql("SELECT * FROM notas", conn)
-    df_e = pd.read_sql("SELECT * FROM equipes", conn)
-    conn.close()
+    with sqlite3.connect(DB_PATH) as conn:
+        df_n = pd.read_sql("SELECT * FROM notas", conn)
+        df_e = pd.read_sql("SELECT * FROM equipes", conn)
+    
     df_n = auto_assign_levantador(df_n, df_e)
     return df_n, df_e
 
 def save_notas_to_db(df_notas_atualizado):
+    """
+    Gravação segura via Context Manager.
+    Em aplicações avançadas com alta concorrência, o ideal seria iterar iterrows()
+    usando chaves primárias via UPDATE do sqlite3 para não reescrever a tabela toda.
+    """
     try:
         df_notas_limpo = df_notas_atualizado.copy()
         df_notas_limpo = df_notas_limpo.fillna("")
-        df_notas_limpo = df_notas_limpo.astype(str)
-        df_notas_limpo = df_notas_limpo.replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+        df_notas_limpo = df_notas_limpo.astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
         
-        conn = get_db_connection()
-        df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
-        conn.close()
+        with sqlite3.connect(DB_PATH) as conn:
+            df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
         
         get_processed_data.clear()
         process_analytical_data.clear()
         return True
-    except Exception as e:
-        st.error(f"Falha de gravação no banco de dados: {e}")
+    except sqlite3.Error as e:
+        st.error(f"Falha de gravação no banco de dados SQLite: {e}")
         return False
 
 df_notas_db, df_equipes_db = get_processed_data()
 
-# --- MOTOR DE ALTA PERFORMANCE 2: DUPLO CACHE ESTRATÉGICO ---
+# DUPLO CACHE ESTRATÉGICO
 @st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
     df_coords = df_equipes_db.dropna(subset=['Município', 'Latitude', 'Longitude']).drop_duplicates(subset=['Município'])
@@ -199,7 +265,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
     contagem_prod = df_filtrado_status['LEVANTADOR'].value_counts().reset_index()
     contagem_prod.columns = ['Levantador', 'Total_Obras_Real']
 
-    todos_lev = [l for l in df_equipes_db['Levantador'].dropna().unique() if str(l).strip() not in ['SEM LEVANTADOR', 'NAN', '', 'None']]
+    todos_lev = [l for l in df_equipes_db['Levantador'].dropna().unique() if str(l).strip() not in [SEM_LEVANTADOR, 'NAN', '', 'None']]
 
     resumo_lev = pd.DataFrame({'Levantador': todos_lev})
     resumo_lev = pd.merge(resumo_lev, contagem_prod, on='Levantador', how='left').fillna(0)
@@ -215,7 +281,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# 3. INTERFACE DE NAVEGAÇÃO PREMIUM LATERAL
+# INTERFACE DE NAVEGAÇÃO PREMIUM LATERAL
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
@@ -234,7 +300,9 @@ with st.sidebar:
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
-# --- VISÃO 1: PAINEL EXECUTIVO E MAPAS ---
+# -----------------------------------------------------------------------------
+# VISÃO 1: PAINEL EXECUTIVO E MAPAS
+# -----------------------------------------------------------------------------
 if menu_selecionado == 'Painel Executivo':
     st.markdown("### Monitoramento de Produtividade (Meta: Mínimo 45 obras reais)")
     
@@ -249,32 +317,17 @@ if menu_selecionado == 'Painel Executivo':
                 qtd_obras_reais = row['Total_Obras_Real']
                 eq_nome = row['Equipe']
                 is_critico = lev_nome in levantadores_criticos
-                
-                cor_hex = "#D9534F" if is_critico else "#5CB85C"
-                bg_hex = "rgba(217, 83, 79, 0.07)" if is_critico else "rgba(92, 184, 92, 0.07)"
                 saldo_necessario = max(0, 45 - qtd_obras_reais)
                 
                 with cols[idx]:
-                    st.markdown(
-                        f"""
-                        <div style='padding: 12px; border-radius: 6px; background-color: {bg_hex}; border-left: 6px solid {cor_hex}; margin-bottom: 5px; height: 135px; display: flex; flex-direction: column; justify-content: space-between;'>
-                            <div>
-                                <strong style='font-size: 14px; color: #111;'>{lev_nome}</strong><br>
-                                <span style='font-size: 11px; color: #555;'>Equipe: {eq_nome}</span><br>
-                            </div>
-                            <div style='font-size: 11px; color: #333; margin-top: auto;'>
-                                <i>Apenas Obras Reais Atribuídas:</i><br>
-                                <span style='font-size: 18px; font-weight: bold; color: {cor_hex};'>{qtd_obras_reais}</span> <span style='font-size: 12px;'>/ 45</span>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True
-                    )
+                    # Chamada modularizada da UI
+                    st.markdown(gerar_card_levantador(lev_nome, eq_nome, qtd_obras_reais, is_critico), unsafe_allow_html=True)
                     
                     b1, b2 = st.columns([1.3, 1])
                     with b1:
                         if is_critico:
                             if st.button(f"⚡ +{saldo_necessario} Reais", key=f"btn_atrib_{lev_nome}"):
-                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == 'SEM LEVANTADOR') & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
+                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
                                 df_livres = df_notas_db[cond_livres_reais].copy()
                                 
                                 if len(df_livres) == 0:
@@ -293,8 +346,8 @@ if menu_selecionado == 'Painel Executivo':
                                                 tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa']
                                             )
                                             df_livres = df_livres.sort_values('Distancia_KM')
-                                        except Exception:
-                                            pass
+                                        except Exception as e:
+                                            logging.error(f"Erro na roteirização: {e}")
 
                                         qtd_atribuir = min(saldo_necessario, len(df_livres))
                                         indices_para_mudar = df_livres.head(qtd_atribuir).index
@@ -321,11 +374,11 @@ if menu_selecionado == 'Painel Executivo':
                                            hole=0.4, color_discrete_sequence=px.colors.qualitative.Safe)
                     fig_rosca_mun.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
                     st.plotly_chart(fig_rosca_mun, use_container_width=True)
-                except Exception:
-                    st.info("Gráfico de municípios indisponível no momento.")
+                except Exception as e:
+                    st.info(f"Gráfico de municípios indisponível no momento: {e}")
             
         with col_g2:
-            df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == 'SEM LEVANTADOR']
+            df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == SEM_LEVANTADOR]
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
             if not df_sem_lev_reg.empty:
                 df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
@@ -336,18 +389,13 @@ if menu_selecionado == 'Painel Executivo':
                                                    hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
                         fig_rosca_sem_lev.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
                         st.plotly_chart(fig_rosca_sem_lev, use_container_width=True)
-                    except Exception:
-                        st.info("Gráfico de Regionais indisponível.")
+                    except Exception as e:
+                        st.info(f"Gráfico de Regionais indisponível: {e}")
 
-        # -----------------------------------------------------------------------------
-        # GRÁFICO DE SLA VETORIZADO E BLINDADO
-        # -----------------------------------------------------------------------------
         st.markdown("---")
-        st.markdown("### ⏳ Monitoramento de SLA por Regional (Regra de Negócio)")
-        st.caption("Visão baseada na 'DATA CRIAÇAO SISCO' ou no cronograma manual, conforme o Tipo de Ligação.")
+        st.markdown("### ⏳ Monitoramento de SLA por Regional")
         
         df_sla = df_notas_calc.copy()
-        
         tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
         
         g1 = ['ASC', 'UNI', 'UNO']
@@ -355,32 +403,23 @@ if menu_selecionado == 'Painel Executivo':
         g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
         g_niv = ['NIV']
         
-        hoje = pd.Timestamp.today().normalize()
+        # Blindagem contra divergências de fuso horário em servidores Cloud
+        hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
         
-        # 🚀 MOTOR BLINDADO DE LIMPEZA E PARSING DE DATAS 
-        # (Trata sujeiras do Excel, formatos do SAP e Nulos Mascarados)
         def blindar_datas(serie):
-            # 1. Força string e limpa espaços residuais
             s = serie.astype(str).str.strip()
-            # 2. Converte nulos mascarados para vazios
             s = s.replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-            # 3. Corrige formatos comumente extraídos do SAP/Proj+ (ex: 10.05.2024 -> 10/05/2024)
             s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False)
-            # 4. Remove horas/minutos caso a base traga timestamp completo ("2024/05/10 14:00:00" -> "2024/05/10")
             s = s.str.split(' ').str[0]
-            # 5. Executa a conversão ciente de que o dia vem primeiro (formato BR)
             dt_parsed = pd.to_datetime(s, errors='coerce', dayfirst=True)
-            # 6. Remove timezone (fuso horário) para evitar erros de cálculo na subtração com o 'hoje'
             return dt_parsed.dt.tz_localize(None)
 
-        # Aplica o motor nas datas principais
         df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
         df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
         
         dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
         idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
 
-        # Regras Cronograma
         cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
         cond_crono_v = cond_crono & (dias_para_vencer < 0)
         cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
@@ -388,31 +427,26 @@ if menu_selecionado == 'Painel Executivo':
 
         cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
         
-        # Regras Grupo 1
         cond_g1 = tipo.isin(g1) & cond_base_dt
         cond_g1_np = cond_g1 & (idade_dias <= 10)
         cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
         cond_g1_v  = cond_g1 & (idade_dias > 15)
 
-        # Regras Grupo 2
         cond_g2 = tipo.isin(g2) & cond_base_dt
         cond_g2_np = cond_g2 & (idade_dias <= 16)
         cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
         cond_g2_v  = cond_g2 & (idade_dias > 24)
 
-        # Regras NIV
         cond_niv = tipo.isin(g_niv) & cond_base_dt
         cond_niv_np = cond_niv & (idade_dias <= 5)
         cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
         cond_niv_v  = cond_niv & (idade_dias > 8)
 
-        # Regras Padrão (Fallback)
         cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
         cond_def_np = cond_default & (idade_dias <= 15)
         cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
         cond_def_v  = cond_default & (idade_dias > 20)
 
-        # Atribuição do Status
         df_sla['Status_SLA'] = np.select(
             [
                 cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
@@ -424,8 +458,6 @@ if menu_selecionado == 'Painel Executivo':
         )
 
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-        
-        # Filtra apenas o que entrou nas réguas do SLA
         df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
@@ -451,22 +483,16 @@ if menu_selecionado == 'Painel Executivo':
                         }
                     )
                     fig_sla.update_traces(textposition='auto', textfont_size=14)
-                    fig_sla.update_layout(xaxis_title="Regional", yaxis_title="Volume de Obras", legend_title="Legenda SLA")
                     st.plotly_chart(fig_sla, use_container_width=True)
                 except Exception as e:
-                    st.warning(f"O gráfico de SLA não pôde ser renderizado no momento: {e}")
+                    st.warning(f"Erro ao renderizar SLA: {e}")
             else:
-                 st.info("💡 Não há dados classificados com o SLA no momento (Verifique as Datas de Criação Sisco/Vencimento).")
+                 st.info("💡 Não há dados classificados com o SLA no momento.")
         else:
-            st.info("💡 Não há dados classificados com o SLA no momento. A base fornecida não possui datas válidas.")
-            # Diagnóstico visual em tela para o usuário final/dev
+            st.info("💡 Não há dados classificados com o SLA. A base não possui datas válidas.")
             with st.expander("🛠️ Diagnóstico de Dados Incorretos (Auditoria)"):
-                st.write("Abaixo está uma amostra bruta da sua base para análise. Se estiver vazio ou preenchido com 'nan', será necessário atualizar a base em **Busca e Governança**:")
                 st.dataframe(df_sla[['PROTOCOLO', 'DATA CRIAÇAO SISCO', 'DATA DE VENCIMENTO', 'Status_SLA']].head(10), use_container_width=True)
 
-        # -----------------------------------------------------------------------------
-        # MAPA GEORREFERENCIADO (COM LEITOR DINÂMICO DE KMZ/KML)
-        # -----------------------------------------------------------------------------
         st.markdown("---")
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
 
@@ -507,9 +533,9 @@ if menu_selecionado == 'Painel Executivo':
                         if kml_files:
                             caminho_camada_temp = kmz.extract(kml_files[0], path=tempfile.gettempdir())
                         else:
-                            st.error("O arquivo KMZ não contém um KML válido em sua raiz.")
+                            st.error("O arquivo KMZ não contém um KML válido.")
                 except Exception as e:
-                    st.error(f"Falha ao abrir pacote KMZ: {e}")
+                    st.error(f"Falha ao abrir KMZ: {e}")
         
         df_notas_mapa_view = df_notas_calc.copy()
         if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view:
@@ -541,91 +567,42 @@ if menu_selecionado == 'Painel Executivo':
             folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
             
             if arquivo_espacial:
-                import fiona
-                try:
-                    camadas = fiona.listlayers(arquivo_espacial)
-                    gdfs = []
+                # Utiliza o motor em cache para não travar o UI
+                gdf_lines, gdf_points, bounds = processar_camada_espacial(arquivo_espacial)
+                
+                if not gdf_lines.empty:
+                    folium.GeoJson(
+                        gdf_lines,
+                        name="Rede Elétrica (Linhas)",
+                        style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}
+                    ).add_to(mapa)
                     
-                    for camada in camadas:
-                        try:
-                            gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
-                            if not gdf_temp.empty:
-                                # Captura o nome da pasta do KML para ajudar na identificação
-                                gdf_temp['Layer_Name'] = camada
-                                gdfs.append(gdf_temp)
-                        except Exception:
-                            continue
+                if not gdf_points.empty:
+                    for col in ['Name', 'Description', 'Layer_Name']:
+                        if col not in gdf_points.columns: gdf_points[col] = ''
                             
-                    if gdfs:
-                        gdf_final = pd.concat(gdfs, ignore_index=True)
-                        gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
+                    def get_point_style(feature):
+                        props = feature.get('properties', {})
+                        busca = (str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))).lower()
                         
-                        gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
-                        gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
-                        
-                        if not gdf_lines.empty:
-                            folium.GeoJson(
-                                gdf_lines,
-                                name="Rede Elétrica (Linhas)",
-                                style_function=lambda feature: {
-                                    'color': '#1A4F7C', 
-                                    'weight': 2.5,
-                                    'fillOpacity': 0.2
-                                }
-                            ).add_to(mapa)
+                        if 'poste' in busca: cor, raio = '#808080', 2.5
+                        elif any(k in busca for k in ['transformador', 'trafo', 'subestação', 'subestacao']): cor, raio = '#28a745', 5.0
+                        elif any(k in busca for k in ['chave', 'seccionador', 'fusivel']): cor, raio = '#ffc107', 4.0
+                        elif any(k in busca for k in ['medidor', 'consumidor', 'cliente']): cor, raio = '#17a2b8', 2.5
+                        else: cor, raio = '#dc3545', 2.5
                             
-                        # --- MOTOR DE SIMBOLOGIA INTELIGENTE PARA PONTOS ---
-                        if not gdf_points.empty:
-                            # Preenche colunas vazias para não gerar erros no Popup
-                            for col in ['Name', 'Description', 'Layer_Name']:
-                                if col not in gdf_points.columns:
-                                    gdf_points[col] = ''
-                                    
-                            def get_point_style(feature):
-                                props = feature.get('properties', {})
-                                # Varre o Nome, a Descrição e a Pasta do KML para achar o tipo de equipamento
-                                busca = str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))
-                                busca = busca.lower()
-                                
-                                if 'poste' in busca:
-                                    cor = '#808080' # Cinza
-                                    raio = 2.5
-                                elif 'transformador' in busca or 'trafo' in busca or 'subestação' in busca or 'subestacao' in busca:
-                                    cor = '#28a745' # Verde
-                                    raio = 5.0
-                                elif 'chave' in busca or 'seccionador' in busca or 'fusivel' in busca:
-                                    cor = '#ffc107' # Amarelo
-                                    raio = 4.0
-                                elif 'medidor' in busca or 'consumidor' in busca or 'cliente' in busca:
-                                    cor = '#17a2b8' # Ciano
-                                    raio = 2.5
-                                else:
-                                    cor = '#dc3545' # Vermelho para outros elementos não identificados
-                                    raio = 2.5
-                                    
-                                return {
-                                    'fillColor': cor,
-                                    'color': cor,
-                                    'weight': 1,
-                                    'fillOpacity': 0.9,
-                                    'radius': raio
-                                }
+                        return {'fillColor': cor, 'color': cor, 'weight': 1, 'fillOpacity': 0.9, 'radius': raio}
 
-                            # Converte os marcadores pesados em círculos vetoriais leves
-                            folium.GeoJson(
-                                gdf_points,
-                                name="Equipamentos (Pontos)",
-                                marker=folium.CircleMarker(), 
-                                style_function=get_point_style,
-                                popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
-                            ).add_to(mapa)
-                        
-                        bounds = gdf_final.total_bounds
-                        mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-                    else:
-                        st.warning("O arquivo carregado está vazio ou não possui geometria visível.")
-                except Exception as e:
-                    st.error(f"Erro ao processar o arquivo geográfico: {e}")
+                    folium.GeoJson(
+                        gdf_points,
+                        name="Equipamentos (Pontos)",
+                        marker=folium.CircleMarker(), 
+                        style_function=get_point_style,
+                        popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
+                    ).add_to(mapa)
+                
+                if bounds is not None:
+                    mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
             fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
@@ -634,8 +611,7 @@ if menu_selecionado == 'Painel Executivo':
             records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
             for row in records_equipes:
                 try:
-                    lat_val = float(row.get('Latitude', np.nan))
-                    lon_val = float(row.get('Longitude', np.nan))
+                    lat_val, lon_val = float(row.get('Latitude', np.nan)), float(row.get('Longitude', np.nan))
                     if pd.notna(lat_val) and pd.notna(lon_val):
                         lev = str(row['Levantador'])
                         if lev in todos_levantadores:
@@ -669,8 +645,8 @@ if menu_selecionado == 'Painel Executivo':
                         </div>
                     </div>
                     """
-                    lev_obra = str(row.get('LEVANTADOR', 'SEM LEVANTADOR'))
-                    cor_marcador = 'orange' if lev_obra == 'SEM LEVANTADOR' else ('red' if lev_obra in criticos_tuple else 'blue')
+                    lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                     
                     folium.Marker(
                         location=[row['lat_jitter'], row['lon_jitter']], 
@@ -688,63 +664,48 @@ if menu_selecionado == 'Painel Executivo':
             mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=750, returned_objects=[])
 
-# --- VISÃO 2: FILTROS E GOVERNANÇA ---
+# -----------------------------------------------------------------------------
+# VISÃO 2: FILTROS E GOVERNANÇA
+# -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
     
     col_f1, col_f2, col_f3, col_f4 = st.columns(4)
     
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
-    if 'ui_lev' not in st.session_state: st.session_state.ui_lev = 'TODOS'
-    elif st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
-    with col_f1:
-        st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
+    if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
+    with col_f1: st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
 
     op_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('REGIONAL', pd.Series()).dropna().unique()])
-    if 'ui_reg' not in st.session_state: st.session_state.ui_reg = 'TODOS'
-    elif st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
-    with col_f2:
-        st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
+    if 'ui_reg' not in st.session_state or st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
+    with col_f2: st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
 
     op_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('MUNICIPIO', pd.Series()).dropna().unique()])
-    if 'ui_mun' not in st.session_state: st.session_state.ui_mun = 'TODOS'
-    elif st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
-    with col_f3:
-        st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
+    if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
+    with col_f3: st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
 
     op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
-    if 'ui_lig' not in st.session_state: st.session_state.ui_lig = 'TODOS'
-    elif st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
-    with col_f4:
-        st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
+    if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
+    with col_f4: st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
 
     col_f5, col_f6 = st.columns(2)
     
     op_sap = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('STATUS SAP', pd.Series()).dropna().unique()])
-    if 'ui_sap' not in st.session_state: st.session_state.ui_sap = 'TODOS'
-    elif st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
-    with col_f5:
-        st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
+    if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
+    with col_f5: st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
     op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
     if 'ui_list' not in st.session_state: st.session_state.ui_list = []
     st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
-    with col_f6:
-        st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
+    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
 
     df_filtrado = df_notas_db.copy()
-    if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
-    if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
-    if st.session_state.ui_mun != "TODOS" and 'MUNICIPIO' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.ui_mun]
-    if st.session_state.ui_lig != "TODOS" and 'TIPO LIGACAO' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.ui_lig]
-    if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
-    if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: 
-        df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
+    if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
+    if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
+    if st.session_state.ui_mun != "TODOS" and 'MUNICIPIO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.ui_mun]
+    if st.session_state.ui_lig != "TODOS" and 'TIPO LIGACAO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.ui_lig]
+    if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
+    if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
 
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     
@@ -761,7 +722,6 @@ elif menu_selecionado == 'Busca e Governança':
     
     st.markdown("---")
     st.markdown("### 📊 Gestão e Edição em Lote")
-    st.caption("Altere as células (incluindo DATA DE VENCIMENTO e DATA CRIAÇAO SISCO) diretamente na tabela abaixo e clique em Salvar Alterações.")
     
     df_editado = st.data_editor(
         df_filtrado, 
@@ -790,10 +750,11 @@ elif menu_selecionado == 'Busca e Governança':
                     st.success("Banco de dados de obras totalmente limpo!")
                     st.rerun()
 
-# --- VISÃO 3: CARGA DE LOTES ---
+# -----------------------------------------------------------------------------
+# VISÃO 3: CARGA DE LOTES
+# -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
     st.markdown("### 📤 Módulo de Importação de Lotes com Validação Strict")
-    st.caption("Arraste o arquivo original. O sistema destruirá automaticamente as linhas fantasmas e validará a estrutura.")
     
     schema_nip = pa.DataFrameSchema({
         "PROTOCOLO": pa.Column(pa.String, coerce=True, required=True),
@@ -820,7 +781,7 @@ elif menu_selecionado == 'Carga de Lotes':
                 
                 df_validado['MUNICIPIO'] = df_validado['MUNICIPIO'].astype(str).str.upper().str.strip()
                 if 'LEVANTADOR' not in df_validado.columns:
-                    df_validado['LEVANTADOR'] = 'SEM LEVANTADOR'
+                    df_validado['LEVANTADOR'] = SEM_LEVANTADOR
                     
                 df_temp_processado = auto_assign_levantador(df_validado, df_equipes_db)
                 
@@ -834,13 +795,14 @@ elif menu_selecionado == 'Carga de Lotes':
                         
             except pa.errors.SchemaError as exc:
                 st.error("🚨 Erro Crítico na Estrutura do Lote! A importação foi bloqueada.")
-                st.markdown(f"**Detalhe da falha:** O dado na coluna `{exc.schema.name}` não respeita o contrato estabelecido. Esperado: `{exc.schema.dtype}`.")
                 st.dataframe(exc.data, use_container_width=True)
                 
         except Exception as e:
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
-# --- VISÃO 4: SIMULADOR DE ALOCAÇÃO ---
+# -----------------------------------------------------------------------------
+# VISÃO 4: SIMULADOR DE ALOCAÇÃO
+# -----------------------------------------------------------------------------
 elif menu_selecionado == 'Simulador de Alocação':
     st.markdown("""
         <div style="background-color: #333; padding: 15px; border-radius: 5px; text-align: center; color: white; margin-bottom: 20px;">
@@ -850,24 +812,19 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     df_eq_sim = df_equipes_db.copy()
     
-    df_eq_sim['Regional'] = df_eq_sim['Regional'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-    df_eq_sim['Regional'] = df_eq_sim['Regional'].astype(str).str.upper()
+    df_eq_sim['Regional'] = df_eq_sim['Regional'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA').astype(str).str.upper()
     df_eq_sim['Levantador'] = df_eq_sim['Levantador'].astype(str).str.upper()
 
     mun_total = df_eq_sim.groupby('Regional')['Município'].nunique().reset_index(name='Total Municípios')
     
     valid_lev_mask = (
-        (df_eq_sim['Levantador'] != 'SEM LEVANTADOR') & 
+        (df_eq_sim['Levantador'] != SEM_LEVANTADOR) & 
         (df_eq_sim['Levantador'].notna()) &
-        (df_eq_sim['Levantador'] != '') & 
-        (df_eq_sim['Levantador'] != '0') & 
-        (df_eq_sim['Levantador'] != 'NAN') &
-        (df_eq_sim['Levantador'] != 'NONE')
+        (~df_eq_sim['Levantador'].isin(['', '0', 'NAN', 'NONE']))
     )
     mun_com = df_eq_sim[valid_lev_mask].groupby('Regional')['Município'].nunique().reset_index(name='Com Levantador')
     
-    df_lev_validos = df_eq_sim[valid_lev_mask]
-    lev_atuais = df_lev_validos.groupby('Regional')['Levantador'].nunique().reset_index(name='Levantadores Atuais')
+    lev_atuais = df_eq_sim[valid_lev_mask].groupby('Regional')['Levantador'].nunique().reset_index(name='Levantadores Atuais')
 
     df_sim = mun_total.merge(mun_com, on='Regional', how='left').fillna(0)
     df_sim = df_sim.merge(lev_atuais, on='Regional', how='left').fillna(0)
@@ -884,17 +841,12 @@ elif menu_selecionado == 'Simulador de Alocação':
     total_lev_atuais = int(df_sim['Levantadores Atuais'].sum())
 
     c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Total Municípios</b><br><span style='font-size:24px'>{total_mun}</span></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com}</span></div>", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem}</span></div>", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual:.1f}%</span></div>", unsafe_allow_html=True)
+    with c1: st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Total Municípios</b><br><span style='font-size:24px'>{total_mun}</span></div>", unsafe_allow_html=True)
+    with c2: st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com}</span></div>", unsafe_allow_html=True)
+    with c3: st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem}</span></div>", unsafe_allow_html=True)
+    with c4: st.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual:.1f}%</span></div>", unsafe_allow_html=True)
     
     st.write("")
-    
     st.markdown("<h4 style='background-color: #333; color: white; padding: 5px 10px; border-radius: 5px;'>Dados por Regional (Edite os Novos Levantadores)</h4>", unsafe_allow_html=True)
 
     df_sim['Novos Levantadores'] = 0
@@ -919,7 +871,6 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
     df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
-    
     df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
     df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
 
@@ -930,23 +881,15 @@ elif menu_selecionado == 'Simulador de Alocação':
     with col_proj_tab:
         df_proj = df_edited[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
         
-        total_mun_sum = df_proj['Total Municípios'].sum()
-        total_com_sum = df_proj['Com Levantador'].sum()
-        total_sem_sum = df_proj['Sem Levantador'].sum()
-        total_lev_atuais_sum = df_proj['Levantadores Atuais'].sum()
-        total_novos_sum = df_proj['Novos Levantadores'].sum()
-        total_gap_sum = df_proj['Gap Restante'].sum()
-        total_cob_sum = ((total_com_sum + df_edited['Municipios Ganhos'].sum()) / total_mun_sum * 100) if total_mun_sum > 0 else 0
-        
         linha_total = pd.DataFrame([{
             'Regional': 'TOTAL ESTADO',
-            'Total Municípios': total_mun_sum,
-            'Com Levantador': total_com_sum,
-            'Sem Levantador': total_sem_sum,
-            'Levantadores Atuais': total_lev_atuais_sum,
-            'Novos Levantadores': total_novos_sum,
-            'Gap Restante': total_gap_sum,
-            'Cobertura %': total_cob_sum
+            'Total Municípios': df_proj['Total Municípios'].sum(),
+            'Com Levantador': df_proj['Com Levantador'].sum(),
+            'Sem Levantador': df_proj['Sem Levantador'].sum(),
+            'Levantadores Atuais': df_proj['Levantadores Atuais'].sum(),
+            'Novos Levantadores': df_proj['Novos Levantadores'].sum(),
+            'Gap Restante': df_proj['Gap Restante'].sum(),
+            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
         }])
         
         df_proj = pd.concat([df_proj, linha_total], ignore_index=True)
@@ -958,19 +901,13 @@ elif menu_selecionado == 'Simulador de Alocação':
                 if percentual < 50.0: return 'background-color: #F8D7DA; color: #721C24; font-weight: bold;'
                 elif percentual < 100.0: return 'background-color: #FFF3CD; color: #856404; font-weight: bold;'
                 else: return 'background-color: #D4EDDA; color: #155724; font-weight: bold;'
-            except:
+            except ValueError:
                 return ''
                 
-        try:
-            styled_proj = df_proj.style.map(
-                lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
-                subset=['Gap Restante']
-            ).map(colorir_cobertura, subset=['Cobertura %'])
-        except AttributeError:
-            styled_proj = df_proj.style.applymap(
-                lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
-                subset=['Gap Restante']
-            ).applymap(colorir_cobertura, subset=['Cobertura %'])
+        styled_proj = df_proj.style.map(
+            lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', 
+            subset=['Gap Restante']
+        ).map(colorir_cobertura, subset=['Cobertura %'])
 
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
@@ -979,30 +916,25 @@ elif menu_selecionado == 'Simulador de Alocação':
         df_chart = df_edited[df_edited['Gap Restante'] > 0]
         
         if not df_chart.empty and df_chart['Gap Restante'].sum() > 0:
-            try:
-                fig_rosca = px.pie(
-                    df_chart, 
-                    names='Regional', 
-                    values='Gap Restante', 
-                    hole=0.55,
-                    title="Gap de Cobertura por Regional"
-                )
-                fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
-                fig_rosca.update_layout(margin=dict(t=40, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
-                st.plotly_chart(fig_rosca, use_container_width=True, config={'displayModeBar': False})
-            except Exception:
-                st.warning("O gráfico de Gap não pôde ser renderizado no momento.")
+            fig_rosca = px.pie(df_chart, names='Regional', values='Gap Restante', hole=0.55, title="Gap de Cobertura por Regional")
+            fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
+            fig_rosca.update_layout(margin=dict(t=40, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
+            st.plotly_chart(fig_rosca, use_container_width=True, config={'displayModeBar': False})
         else:
-            st.success("✅ 100% de Cobertura Atingida! Nenhum município sem levantador nas projeções.")
+            st.success("✅ 100% de Cobertura Atingida!")
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Resumo de Impacto</h4>", unsafe_allow_html=True)
     
+    total_novos_sum = df_proj['Novos Levantadores'].sum()
+    total_gap_sum = df_proj['Gap Restante'].sum()
+    total_cob_sum = float(linha_total['Cobertura %'].iloc[0])
+    
     df_impacto = pd.DataFrame({
         "Métrica": ["Novos Levantadores", "Municípios Sem Levantador", "Cobertura Estadual"],
-        "Atual": [total_lev_atuais_sum, total_sem_sum, f"{cob_atual:.1f}%"],
-        "Após Contratações": [total_lev_atuais_sum + total_novos_sum, total_gap_sum, f"{total_cob_sum:.1f}%"],
+        "Atual": [linha_total['Levantadores Atuais'].iloc[0], linha_total['Sem Levantador'].iloc[0], f"{cob_atual:.1f}%"],
+        "Após Contratações": [linha_total['Levantadores Atuais'].iloc[0] + total_novos_sum, total_gap_sum, f"{total_cob_sum:.1f}%"],
         "Variação": [f"+{total_novos_sum}" if total_novos_sum > 0 else "0", 
-                     total_gap_sum - total_sem_sum, 
+                     total_gap_sum - linha_total['Sem Levantador'].iloc[0], 
                      f"+{(total_cob_sum - cob_atual):.1f}%" if (total_cob_sum - cob_atual) > 0 else "0.0%"]
     })
     
@@ -1010,14 +942,7 @@ elif menu_selecionado == 'Simulador de Alocação':
         if isinstance(v, str):
             if v.startswith('+') or v == '0' or v == '0.0%': return 'color: #5CB85C; font-weight: bold;'
             elif v.startswith('-'): return 'color: #D9534F; font-weight: bold;'
-        if isinstance(v, (int, float)):
-            if v >= 0: return 'color: #5CB85C; font-weight: bold;'
-            else: return 'color: #D9534F; font-weight: bold;'
         return ''
 
-    try:
-        styled_impacto = df_impacto.style.map(style_variacao, subset=['Variação'])
-    except AttributeError:
-        styled_impacto = df_impacto.style.applymap(style_variacao, subset=['Variação'])
-        
+    styled_impacto = df_impacto.style.map(style_variacao, subset=['Variação'])
     st.dataframe(styled_impacto, use_container_width=True, hide_index=True)
