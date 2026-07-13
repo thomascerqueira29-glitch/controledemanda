@@ -39,7 +39,59 @@ except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (IAM / RBAC)
+# INICIALIZAÇÃO E BANCO DE DADOS CORE
+# -----------------------------------------------------------------------------
+def init_database():
+    colunas_template_oficial = [
+        'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
+        'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
+        'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
+        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
+        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
+    ]
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        
+        # Criação/Validação Tabela de Notas
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
+        if not cursor.fetchone():
+            if os.path.exists('NOTAS.xlsx'):
+                df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+                for col in colunas_template_oficial:
+                    if col not in df_legacy.columns: df_legacy[col] = ""
+                df_legacy = df_legacy[colunas_template_oficial]
+                df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
+            else:
+                pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
+                
+        # Criação/Validação Tabela de Equipes
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
+        if not cursor.fetchone():
+            if os.path.exists('EQUIPES.xlsx'):
+                pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
+            else:
+                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
+                
+        # --- NOVO: Tabela de Controle de Usuários (IAM) ---
+        cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios 
+                          (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+        
+        # Injeção do Usuário Mestre (THOMAS)
+        cursor.execute("SELECT * FROM usuarios WHERE username='THOMAS'")
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO usuarios (username, password, role) VALUES ('THOMAS', 'admin123', 'ADMIN')")
+            
+        # Injeção do Usuário Visitante Padrão
+        cursor.execute("SELECT * FROM usuarios WHERE username='VISITANTE'")
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
+            
+    st.session_state.db_initialized = True
+
+if not st.session_state.db_initialized: init_database()
+
+# -----------------------------------------------------------------------------
+# MÓDULO DE SEGURANÇA E AUTENTICAÇÃO
 # -----------------------------------------------------------------------------
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -53,33 +105,29 @@ if st.session_state.usuario_logado is None:
     with col2:
         with st.form("login_form"):
             st.markdown("#### Acesso Restrito")
-            username = st.text_input("Usuário").strip()
+            username = st.text_input("Usuário").strip().upper()
             password = st.text_input("Senha", type="password")
             submit = st.form_submit_button("Autenticar", type="primary", use_container_width=True)
             
             if submit:
-                # Credencial de Administração Mestre
-                if username.upper() == "MAK4R0V" and password == "admin123":
-                    st.session_state.usuario_logado = username.upper()
-                    st.session_state.perfil_usuario = "ADMIN"
-                    st.rerun()
-                # Credencial Limitada
-                elif username.upper() == "VISITANTE" and password == "123":
-                    st.session_state.usuario_logado = username.upper()
-                    st.session_state.perfil_usuario = "LEITURA"
-                    st.rerun()
-                else:
-                    st.error("Credenciais inválidas ou acesso revogado.")
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT role FROM usuarios WHERE username=? AND password=?", (username, password))
+                    result = cursor.fetchone()
+                    
+                    if result:
+                        st.session_state.usuario_logado = username
+                        st.session_state.perfil_usuario = result[0]
+                        st.rerun()
+                    else:
+                        st.error("Credenciais inválidas ou acesso revogado.")
         
-        st.info("💡 **Acesso de Teste:** \n\nAdmin: `MAK4R0V` | Senha: `admin123`\n\nVisitante: `VISITANTE` | Senha: `123`")
-    st.stop() # Bloqueia a execução do resto do código se não autenticado
+        st.info("💡 **Acesso Inicial:** \n\nAdmin: `THOMAS` | Senha: `admin123`")
+    st.stop() 
 
 # -----------------------------------------------------------------------------
 # CONFIGURAÇÕES DE ESTADO E NAVEGAÇÃO
 # -----------------------------------------------------------------------------
-if 'db_initialized' not in st.session_state:
-    st.session_state.db_initialized = False
-
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
@@ -106,10 +154,9 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS
+# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS (CONTINUAÇÃO)
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
-    """Grava as operações críticas na base de dados para garantir Accountability"""
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
@@ -129,37 +176,6 @@ def realizar_backup_db():
         shutil.copy2(DB_PATH, bkp_path)
         registrar_auditoria("BACKUP PREVENTIVO", f"Backup automático gerado em {bkp_path}")
     return bkp_path
-
-def init_database():
-    colunas_template_oficial = [
-        'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
-        'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
-        'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
-        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
-        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
-    ]
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
-        if not cursor.fetchone():
-            if os.path.exists('NOTAS.xlsx'):
-                df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
-                for col in colunas_template_oficial:
-                    if col not in df_legacy.columns: df_legacy[col] = ""
-                df_legacy = df_legacy[colunas_template_oficial]
-                df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
-            else:
-                pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
-                
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
-        if not cursor.fetchone():
-            if os.path.exists('EQUIPES.xlsx'):
-                pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
-            else:
-                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
-    st.session_state.db_initialized = True
-
-if not st.session_state.db_initialized: init_database()
 
 def auto_assign_levantador(df_notas, df_equipes):
     df_notas = df_notas.copy()
@@ -193,9 +209,7 @@ def get_processed_data():
     return auto_assign_levantador(df_n, df_e), df_e
 
 def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operação no Banco de Dados"):
-    """Operação Segura: Atomic Swap e Logging de Auditoria."""
-    if backup:
-        realizar_backup_db()
+    if backup: realizar_backup_db()
     try:
         df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
         with sqlite3.connect(DB_PATH) as conn:
@@ -348,26 +362,35 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL
+# INTERFACE DE NAVEGAÇÃO LATERAL COM IAM
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
-    st.caption(f"Logado como: **{st.session_state.usuario_logado}** ({st.session_state.perfil_usuario})")
+    st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
+    st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
     
-    if st.button("🚪 Sair", use_container_width=True):
+    if st.button("🚪 Sair / Deslogar", use_container_width=True):
         st.session_state.usuario_logado = None
         st.session_state.perfil_usuario = None
         st.rerun()
 
     st.markdown("---")
     
-    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Carga de Lotes', 'Simulador de Alocação']
-    menu_selecionado = sac.menu([
-        sac.MenuItem(opcoes_menu[0], icon='pie-chart-fill'),
-        sac.MenuItem(opcoes_menu[1], icon='sliders'),
-        sac.MenuItem(opcoes_menu[2], icon='cloud-upload-fill'),
-        sac.MenuItem(opcoes_menu[3], icon='calculator-fill'),
-    ], index=st.session_state.menu_idx, format_func='title', size='md')
+    # MENU DINÂMICO (Carga de lotes oculta para visitantes)
+    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Simulador de Alocação']
+    icones_menu = ['pie-chart-fill', 'sliders', 'calculator-fill']
+    
+    if st.session_state.perfil_usuario == "ADMIN":
+        opcoes_menu.insert(2, 'Carga de Lotes')
+        icones_menu.insert(2, 'cloud-upload-fill')
+        
+    menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
+    
+    # Prevenção de quebra de índice se um usuário deslogar de uma aba exclusiva
+    if st.session_state.menu_idx >= len(opcoes_menu):
+        st.session_state.menu_idx = 0
+        
+    menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
     
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
@@ -375,7 +398,6 @@ with st.sidebar:
     if menu_selecionado == 'Painel Executivo':
         st.markdown("---")
         st.markdown("### 🗺️ Filtros do Mapa")
-        
         op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('LEVANTADOR', pd.Series()).dropna().unique()])
         filtro_map_lev = st.selectbox("Levantador:", op_map_lev, key='map_lev')
         op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('REGIONAL', pd.Series()).dropna().unique()])
@@ -387,6 +409,27 @@ with st.sidebar:
         op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
         filtro_map_list = st.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
 
+    # PAINEL EXCLUSIVO DO ADMIN PARA GESTÃO DE USUÁRIOS
+    if st.session_state.perfil_usuario == "ADMIN":
+        st.markdown("---")
+        with st.expander("⚙️ Gerenciar Acessos"):
+            with st.form("new_user_form"):
+                st.write("Adicionar Usuário Visitante")
+                new_user = st.text_input("Novo Usuário").strip().upper()
+                new_pass = st.text_input("Senha", type="password")
+                
+                if st.form_submit_button("Criar Conta", use_container_width=True):
+                    if new_user and new_pass:
+                        try:
+                            with sqlite3.connect(DB_PATH) as conn:
+                                conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, 'LEITURA')", (new_user, new_pass))
+                            st.success(f"Conta {new_user} criada!")
+                            registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} (LEITURA).")
+                        except sqlite3.IntegrityError:
+                            st.error("Usuário já existe.")
+                    else:
+                        st.warning("Preencha todos os campos.")
+
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO E MAPAS
 # -----------------------------------------------------------------------------
@@ -396,6 +439,7 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
+        # --- BLOCO 1: KPIs ---
         total_obras = int(resumo_levantadores['Total_Obras_Real'].sum())
         total_ativos = len(resumo_levantadores)
         total_criticos = len(levantadores_criticos)
@@ -408,6 +452,7 @@ if menu_selecionado == 'Painel Executivo':
         k4.markdown(kpi_card("Levantadores Críticos", total_criticos, "Abaixo de 45 obras", "#D9534F" if total_criticos > 0 else "#5CB85C"), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # --- BLOCO 2: DATA GRID E AÇÕES RÁPIDAS ---
         col_t1, col_t2 = st.columns([2.5, 1.5])
         with col_t1:
             st.markdown("#### 📋 Desempenho e Alocação das Equipes")
@@ -460,11 +505,12 @@ if menu_selecionado == 'Painel Executivo':
                                         st.rerun()
                     else: st.success("✅ Meta Atingida.")
                 else:
-                    st.warning("Acesso de edição restrito aos Coordenadores (Admin).")
+                    st.warning("🔒 Acesso restrito. Módulo de atribuição exclusivo para Coordenação.")
                     
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
+        # --- BLOCO 3: GRÁFICOS TOP 15 ---
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2 = st.columns(2)
@@ -486,6 +532,7 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
+        # --- BLOCO 4: SLA MODULARIZADO ---
         df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
         df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
@@ -504,6 +551,7 @@ if menu_selecionado == 'Painel Executivo':
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
+        # --- BLOCO 5: MAPA HÍBRIDO (MARKERCLUSTER VS FASTMARKERCLUSTER) ---
         st.markdown("---")
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -682,7 +730,7 @@ elif menu_selecionado == 'Busca e Governança':
         if st.session_state.perfil_usuario == "ADMIN":
             btn_salvar = st.button("💾 Salvar Alterações", type="primary", use_container_width=True)
         else:
-            st.button("💾 Apenas Leitura", disabled=True, use_container_width=True)
+            st.button("🔒 Edição Restrita", disabled=True, use_container_width=True)
             btn_salvar = False
         
     with col_tool3:
@@ -701,7 +749,7 @@ elif menu_selecionado == 'Busca e Governança':
         "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_list)
     }
 
-    # Desabilita a edição se não for admin
+    # Desabilita a edição da tabela se não for admin
     is_disabled = st.session_state.perfil_usuario != "ADMIN"
     
     df_editado = st.data_editor(df_filtrado_view, use_container_width=True, num_rows="dynamic", key="editor_notas", column_config=config_colunas, disabled=is_disabled)
