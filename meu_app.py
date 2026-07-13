@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster
+from folium.plugins import MarkerCluster, FastMarkerCluster
 import plotly.express as px
 import numpy as np
 import os
@@ -14,6 +14,8 @@ import tempfile
 import geopandas as gpd
 import zipfile
 import logging
+import shutil
+from datetime import datetime
 
 # -----------------------------------------------------------------------------
 # CONSTANTES GLOBAIS E CONFIGURAÇÕES INICIAIS
@@ -22,17 +24,14 @@ DB_PATH = 'controle_torre_nip.db'
 SEM_LEVANTADOR = 'SEM LEVANTADOR'
 STATUS_PRODUTIVIDADE = ["CORRECAO DE LEVANTAMENTO", "EM LEVANTAMENTO", "PRE ANALISE"]
 
-# Configuração de Layout
 st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️")
 
-# Habilita o suporte a KML no fiona/geopandas (Compatibilidade Universal)
 try:
     import fiona
     try:
         fiona.drvsupport.supported_drivers['KML'] = 'rw'
         fiona.drvsupport.supported_drivers['LIBKML'] = 'rw'
     except AttributeError:
-        # Fallback para versões mais antigas do fiona
         fiona.supported_drivers['KML'] = 'rw'
         fiona.supported_drivers['LIBKML'] = 'rw'
 except ImportError:
@@ -58,10 +57,9 @@ def filtrar_levantador_governanca(nome_lev):
     st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
 
 # -----------------------------------------------------------------------------
-# COMPONENTES DE UI (MODULARIZAÇÃO HTML/CSS)
+# COMPONENTES DE UI
 # -----------------------------------------------------------------------------
 def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
-    """Renderiza um Card de KPI com visual corporativo sólido"""
     return f"""
     <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 5px solid {border_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); height: 100%;">
         <p style="margin:0; font-size: 14px; color: #555; text-transform: uppercase; letter-spacing: 0.5px;">{title}</p>
@@ -71,7 +69,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE
+# MOTORES DE ALTA PERFORMANCE (CACHE, VETORIZAÇÃO E ENCAPSULAMENTO)
 # -----------------------------------------------------------------------------
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
     try:
@@ -93,7 +91,6 @@ def processar_camada_espacial(arquivo_espacial):
     gdf_points = gpd.GeoDataFrame()
     bounds = None
     if not arquivo_espacial: return gdf_lines, gdf_points, bounds
-
     import fiona
     try:
         camadas = fiona.listlayers(arquivo_espacial)
@@ -104,8 +101,7 @@ def processar_camada_espacial(arquivo_espacial):
                 if not gdf_temp.empty:
                     gdf_temp['Layer_Name'] = camada
                     gdfs.append(gdf_temp)
-            except Exception as e:
-                continue
+            except Exception: continue
                 
         if gdfs:
             gdf_final = pd.concat(gdfs, ignore_index=True)
@@ -114,13 +110,80 @@ def processar_camada_espacial(arquivo_espacial):
             gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
             bounds = gdf_final.total_bounds
     except Exception as e:
-        logging.error(f"Falha na extração de geometrias espaciais: {e}")
-        
+        logging.error(f"Falha na extração de geometrias: {e}")
     return gdf_lines, gdf_points, bounds
 
+@st.cache_data(show_spinner=False)
+def calcular_sla_vetorizado(df_notas_calc):
+    """Motor de cálculo de SLA isolado e cacheador"""
+    df_sla = df_notas_calc.copy()
+    tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
+    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
+    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
+    g_niv = ['NIV']
+    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
+    
+    def blindar_datas(serie):
+        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
+        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
+        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
+
+    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
+    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
+    
+    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
+    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
+
+    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
+    cond_crono_v = cond_crono & (dias_para_vencer < 0)
+    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
+    cond_crono_np = cond_crono & (dias_para_vencer > 3)
+    
+    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
+    cond_g1 = tipo.isin(g1) & cond_base_dt
+    cond_g1_np = cond_g1 & (idade_dias <= 10)
+    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
+    cond_g1_v  = cond_g1 & (idade_dias > 15)
+    
+    cond_g2 = tipo.isin(g2) & cond_base_dt
+    cond_g2_np = cond_g2 & (idade_dias <= 16)
+    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
+    cond_g2_v  = cond_g2 & (idade_dias > 24)
+    
+    cond_niv = tipo.isin(g_niv) & cond_base_dt
+    cond_niv_np = cond_niv & (idade_dias <= 5)
+    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
+    cond_niv_v  = cond_niv & (idade_dias > 8)
+    
+    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
+    cond_def_np = cond_default & (idade_dias <= 15)
+    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
+    cond_def_v  = cond_default & (idade_dias > 20)
+
+    df_sla['Status_SLA'] = np.select(
+        [
+            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
+            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
+            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
+        ],
+        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
+    )
+    df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
+    return df_sla
+
 # -----------------------------------------------------------------------------
-# ENGENHARIA DE DADOS E CONEXÃO SQLITE
+# ENGENHARIA DE DADOS, SEGURANÇA E CONEXÃO SQLITE
 # -----------------------------------------------------------------------------
+def realizar_backup_db():
+    """Soft Delete: Salva uma cópia física do DB antes de ações destrutivas."""
+    os.makedirs("backups", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    bkp_path = f"backups/controle_torre_nip_bkp_{timestamp}.db"
+    if os.path.exists(DB_PATH):
+        shutil.copy2(DB_PATH, bkp_path)
+        logging.info(f"Backup preventivo realizado: {bkp_path}")
+    return bkp_path
+
 def init_database():
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
@@ -129,14 +192,12 @@ def init_database():
         'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
         'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
     ]
-    
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
         if not cursor.fetchone():
             if os.path.exists('NOTAS.xlsx'):
-                df_legacy = pd.read_excel('NOTAS.xlsx')
-                df_legacy = df_legacy.fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+                df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
                 for col in colunas_template_oficial:
                     if col not in df_legacy.columns: df_legacy[col] = ""
                 df_legacy = df_legacy[colunas_template_oficial]
@@ -147,8 +208,7 @@ def init_database():
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
         if not cursor.fetchone():
             if os.path.exists('EQUIPES.xlsx'):
-                df_eq_legacy = pd.read_excel('EQUIPES.xlsx')
-                df_eq_legacy.to_sql('equipes', conn, if_exists='replace', index=False)
+                pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
             else:
                 pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
     st.session_state.db_initialized = True
@@ -186,16 +246,27 @@ def get_processed_data():
         df_e = pd.read_sql("SELECT * FROM equipes", conn)
     return auto_assign_levantador(df_n, df_e), df_e
 
-def save_notas_to_db(df_notas_atualizado):
+def save_notas_to_db(df_notas_atualizado, backup=False):
+    """Operação Segura: Atomic Swap. Evita corrupção se acessado concorrentemente."""
+    if backup:
+        realizar_backup_db()
     try:
         df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
         with sqlite3.connect(DB_PATH) as conn:
-            df_notas_limpo.to_sql('notas', conn, if_exists='replace', index=False)
+            # 1. Salva em tabela temporária
+            df_notas_limpo.to_sql('notas_temp', conn, if_exists='replace', index=False)
+            # 2. Inicia transação atômica (milissegundos)
+            conn.execute("BEGIN TRANSACTION;")
+            conn.execute("DROP TABLE IF EXISTS notas;")
+            conn.execute("ALTER TABLE notas_temp RENAME TO notas;")
+            conn.commit()
+            
         get_processed_data.clear()
         process_analytical_data.clear()
+        calcular_sla_vetorizado.clear()
         return True
     except sqlite3.Error as e:
-        st.error(f"Falha de gravação no SQLite: {e}")
+        st.error(f"Falha Crítica no Banco de Dados: {e}")
         return False
 
 df_notas_db, df_equipes_db = get_processed_data()
@@ -274,6 +345,7 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
+        # --- BLOCO 1: KPIs ---
         total_obras = int(resumo_levantadores['Total_Obras_Real'].sum())
         total_ativos = len(resumo_levantadores)
         total_criticos = len(levantadores_criticos)
@@ -286,7 +358,9 @@ if menu_selecionado == 'Painel Executivo':
         k4.markdown(kpi_card("Levantadores Críticos", total_criticos, "Abaixo de 45 obras", "#D9534F" if total_criticos > 0 else "#5CB85C"), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         
+        # --- BLOCO 2: DATA GRID E AÇÕES RÁPIDAS ---
         col_t1, col_t2 = st.columns([2.5, 1.5])
+        
         with col_t1:
             st.markdown("#### 📋 Desempenho e Alocação das Equipes")
             df_resumo_view = resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].copy()
@@ -300,18 +374,20 @@ if menu_selecionado == 'Painel Executivo':
                 column_config={
                     "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
                     "Equipe": st.column_config.TextColumn("Equipe SAP"),
-                    "Total_Obras_Real": st.column_config.ProgressColumn("Obras Reais (Meta: 45)", help="Progresso até a meta", format="%d", min_value=0, max_value=45)
+                    "Total_Obras_Real": st.column_config.ProgressColumn(
+                        "Obras Reais (Meta: 45)",
+                        help="Progresso de atribuição até a meta mínima de 45 obras.",
+                        format="%d", min_value=0, max_value=45
+                    )
                 }
             )
             
         with col_t2:
             st.markdown("#### ⚡ Painel de Ações Rápidas")
             st.caption("Selecione um levantador para tomar decisões.")
-            
             _, central_col, _ = st.columns([0.2, 9, 0.2])
             with central_col:
                 st.markdown("<div style='padding: 20px; border: 1px solid #EAEAEA; border-radius: 8px; background: #FAFAFA;'>", unsafe_allow_html=True)
-                
                 lev_selecionado = st.selectbox("Levantador:", todos_levantadores, label_visibility="collapsed")
                 obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_selecionado]['Total_Obras_Real'].iloc[0])
                 saldo_necessario = max(0, 45 - obras_do_lev)
@@ -333,7 +409,7 @@ if menu_selecionado == 'Painel Executivo':
                                     df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
                                     df_livres['Distancia_KM'] = vectorized_haversine(tech_lat, tech_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
                                     df_livres = df_livres.sort_values('Distancia_KM')
-                                except Exception as e: pass
+                                except Exception: pass
 
                                 qtd_atribuir = min(saldo_necessario, len(df_livres))
                                 indices_para_mudar = df_livres.head(qtd_atribuir).index
@@ -343,12 +419,11 @@ if menu_selecionado == 'Painel Executivo':
                                     st.toast("Rotas designadas com sucesso!", icon="✅")
                                     st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
                                     st.rerun()
-                else:
-                    st.success("✅ Meta Atingida.")
-                    
+                else: st.success("✅ Meta Atingida.")
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
+        # --- BLOCO 3: GRÁFICOS TOP 15 ---
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2 = st.columns(2)
@@ -370,55 +445,9 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
-        df_sla = df_notas_calc.copy()
-        tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
-        g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
-        g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-        g_niv = ['NIV']
-        hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
-        
-        def blindar_datas(serie):
-            s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-            s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
-            return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
-
-        df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
-        df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
-        dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
-        idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
-
-        cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
-        cond_crono_v = cond_crono & (dias_para_vencer < 0)
-        cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
-        cond_crono_np = cond_crono & (dias_para_vencer > 3)
-        cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
-        
-        cond_g1 = tipo.isin(g1) & cond_base_dt
-        cond_g1_np = cond_g1 & (idade_dias <= 10)
-        cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
-        cond_g1_v  = cond_g1 & (idade_dias > 15)
-        
-        cond_g2 = tipo.isin(g2) & cond_base_dt
-        cond_g2_np = cond_g2 & (idade_dias <= 16)
-        cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
-        cond_g2_v  = cond_g2 & (idade_dias > 24)
-        
-        cond_niv = tipo.isin(g_niv) & cond_base_dt
-        cond_niv_np = cond_niv & (idade_dias <= 5)
-        cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
-        cond_niv_v  = cond_niv & (idade_dias > 8)
-        
-        cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
-        cond_def_np = cond_default & (idade_dias <= 15)
-        cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
-        cond_def_v  = cond_default & (idade_dias > 20)
-
-        df_sla['Status_SLA'] = np.select(
-            [cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v, cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p, cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np],
-            ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
-        )
-        df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-        df_sla_chart = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
+        # --- BLOCO 4: SLA MODULARIZADO ---
+        df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
+        df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
         if not df_sla_chart.empty:
             st.markdown("---")
@@ -429,10 +458,13 @@ if menu_selecionado == 'Painel Executivo':
                 df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
                 df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
                 
-                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA', title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group', color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
+                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA',
+                                 title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group',
+                                 color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
+        # --- BLOCO 5: MAPA HÍBRIDO (MARKERCLUSTER VS FASTMARKERCLUSTER) ---
         st.markdown("---")
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -449,7 +481,7 @@ if menu_selecionado == 'Painel Executivo':
                     with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
                         kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
                         if kml_files: caminho_camada_temp = kmz.extract(kml_files[0], path=tempfile.gettempdir())
-                except Exception as e: pass
+                except Exception: pass
         
         df_notas_mapa_view = df_notas_calc.copy()
         if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
@@ -491,9 +523,6 @@ if menu_selecionado == 'Painel Executivo':
                 if bounds is not None: mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
-            fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
-            cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
-            
             records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
             for row in records_equipes:
                 try:
@@ -512,38 +541,47 @@ if menu_selecionado == 'Painel Executivo':
             if not df_notas_mapa.empty:
                 df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
                 df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
-                for row in df_notas_mapa.to_dict('records'):
-                    html_mini_card = f"""
-                    <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
-                        <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
-                        <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
-                            <b>PROTOCOLO:</b> {row.get('PROTOCOLO', '')}<br>
-                            <b>MUNICIPIO:</b> {row.get('MUNICIPIO', '')}<br>
-                            <b>LEVANTADOR:</b> {row.get('LEVANTADOR', '')}<br>
+                
+                # Motor de Renderização Híbrido: Previne travamento em bases volumosas (>500 obras)
+                if len(df_notas_mapa) > 500:
+                    obras_coords = df_notas_mapa[['lat_jitter', 'lon_jitter']].values.tolist()
+                    FastMarkerCluster(data=obras_coords, name="🏗️ Demandas Ativas (Fast Cluster)").add_to(mapa)
+                else:
+                    fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
+                    cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
+                    for row in df_notas_mapa.to_dict('records'):
+                        html_mini_card = f"""
+                        <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
+                            <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
+                            <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
+                                <b>PROTOCOLO:</b> {row.get('PROTOCOLO', '')}<br>
+                                <b>MUNICIPIO:</b> {row.get('MUNICIPIO', '')}<br>
+                                <b>LEVANTADOR:</b> {row.get('LEVANTADOR', '')}<br>
+                            </div>
                         </div>
-                    </div>
-                    """
-                    lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                    folium.Marker(location=[row['lat_jitter'], row['lon_jitter']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(html_mini_card, max_width=310)).add_to(cluster_obras)
+                        """
+                        lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                        folium.Marker(location=[row['lat_jitter'], row['lon_jitter']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(html_mini_card, max_width=310)).add_to(cluster_obras)
+                    fg_obras.add_to(mapa)
 
             fg_equipes.add_to(mapa)
-            fg_obras.add_to(mapa)
             folium.LayerControl().add_to(mapa)
             return mapa
 
-        with st.spinner("Decodificando arquivo e renderizando simbologia inteligente..."):
+        with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
             mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
             st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA (LAYOUT E DADOS OTIMIZADOS)
+# VISÃO 2: FILTROS E GOVERNANÇA (LAYOUT E INTEGRIDADE MELHORADOS)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
     
-    # 1. Reorganização Espacial dos Filtros (Grid 3x2 Balanceado)
     col_f1, col_f2, col_f3 = st.columns(3)
+    col_f4, col_f5, col_f6 = st.columns(3)
+    
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
     if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
     with col_f1: st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
@@ -556,7 +594,6 @@ elif menu_selecionado == 'Busca e Governança':
     if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
     with col_f3: st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
 
-    col_f4, col_f5, col_f6 = st.columns(3)
     op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
     if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
     with col_f4: st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
@@ -565,12 +602,11 @@ elif menu_selecionado == 'Busca e Governança':
     if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
     with col_f5: st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
-    op_list_all = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+    op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
     if 'ui_list' not in st.session_state: st.session_state.ui_list = []
-    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list_all]
-    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list_all, key='ui_list')
+    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
+    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
 
-    # Filtragem Base
     df_filtrado = df_notas_db.copy()
     if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
     if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
@@ -579,75 +615,48 @@ elif menu_selecionado == 'Busca e Governança':
     if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
     if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
 
-    st.info(f"Obras localizadas sob os filtros aplicados: **{len(df_filtrado)} registro(s)**.")
+    st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
+    df_filtrado_view = df_filtrado.replace({'None': '', 'nan': '', '0': '', '<NA>': '', 'NAN': ''}).fillna('')
     
-    # 2. Limpeza Visual de Dados Residuais (Eliminação de "None", "0" e NaNs)
-    df_filtrado_clean = df_filtrado.replace({'None': '', 'nan': '', 'NaN': '', '<NA>': '', '0': '', 0: ''}).fillna('')
-    if 'TIPO LIGACAO' in df_filtrado_clean.columns: df_filtrado_clean['TIPO LIGACAO'] = df_filtrado_clean['TIPO LIGACAO'].replace({'0': ''})
-    if 'STATUS LIST' in df_filtrado_clean.columns: df_filtrado_clean['STATUS LIST'] = df_filtrado_clean['STATUS LIST'].replace({'0': ''})
-
     st.markdown("---")
     st.markdown("### 📊 Gestão e Edição em Lote")
     
-    # Prepara o Container da Toolbar Fixa no Topo
-    toolbar = st.container()
-
-    # 3. Blindagem e Tipagem do Data Grid (column_config)
-    op_status_sap_config = sorted(list(set([str(x) for x in df_notas_db['STATUS SAP'].dropna().unique() if str(x).strip() not in ["", "nan", "None", "0"]])))
-    op_status_list_config = sorted(list(set([str(x) for x in df_notas_db['STATUS LIST'].dropna().unique() if str(x).strip() not in ["", "nan", "None", "0"]] + STATUS_PRODUTIVIDADE)))
-    op_lev_config = sorted(list(set(todos_levantadores + [SEM_LEVANTADOR])))
-    
-    col_configs = {
-        "PROTOCOLO": st.column_config.TextColumn("PROTOCOLO", disabled=True, help="Chave Primária (Inalterável)"),
-        "ID SISCO": st.column_config.TextColumn("ID SISCO", disabled=True, help="Chave Primária (Inalterável)"),
-        "CONTA CONTRATO": st.column_config.TextColumn("CONTA CONTRATO", disabled=True, help="Identificação do Cliente (Inalterável)"),
-        "STATUS SAP": st.column_config.SelectboxColumn("STATUS SAP", options=op_status_sap_config, help="Seleção rigorosa de status SAP"),
-        "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_status_list_config, help="Fases de produtividade"),
-        "LEVANTADOR": st.column_config.SelectboxColumn("LEVANTADOR", options=op_lev_config)
-    }
-
-    # Renderiza o DataFrame Editável
-    df_editado = st.data_editor(
-        df_filtrado_clean, 
-        use_container_width=True, 
-        num_rows="dynamic", 
-        key="editor_notas",
-        column_config=col_configs
-    )
-
-    # Preenche a Toolbar Fixa (Acessa o df_editado processado acima)
-    with toolbar:
-        tb1, tb2, tb3 = st.columns([2.5, 2.5, 5])
-        
-        with tb1:
+    col_tool1, col_tool2, col_tool3 = st.columns([2, 2, 6])
+    with col_tool1:
+        if len(df_filtrado_view) > 0:
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_filtrado_clean.to_excel(writer, index=False, sheet_name='Filtrado')
-            st.download_button(
-                label="📥 Exportar Dados para Excel", 
-                data=buffer.getvalue(), 
-                file_name="relatorio_nip_filtrado.xlsx", 
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+                df_filtrado_view.to_excel(writer, index=False, sheet_name='Filtrado')
+            st.download_button(label="📥 Exportar para Excel", data=buffer.getvalue(), file_name="relatorio_nip_filtrado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             
-        with tb2:
-            if st.button("💾 Salvar Alterações na Base", type="primary", use_container_width=True):
-                with st.spinner("Persistindo informações no banco corporativo..."):
-                    indices_originais = df_editado.index
-                    df_notas_db.loc[indices_originais] = df_editado
-                    if save_notas_to_db(df_notas_db):
-                        st.success("Banco de Dados Atualizado com Sucesso!")
-                        st.toast("Dados salvos e validados!", icon="✅")
-                        st.rerun()
-                        
-        with tb3:
-            with st.expander("⚠️ ÁREA DE PERIGO (Apagar Base)"):
-                confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
-                if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
-                    if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns)):
-                        st.success("Banco de dados de obras totalmente limpo!")
-                        st.rerun()
+    with col_tool2:
+        btn_salvar = st.button("💾 Salvar Alterações", type="primary", use_container_width=True)
+        
+    with col_tool3:
+        with st.expander("⚠️ ÁREA DE PERIGO (O BACKUP SERÁ GERADO AUTOMATICAMENTE)"):
+            confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
+            if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
+                if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns), backup=True):
+                    st.success("Banco limpo. Backup preventivo gerado com sucesso!")
+                    st.rerun()
+
+    config_colunas = {
+        "ID SISCO": st.column_config.TextColumn("ID SISCO", disabled=True),
+        "PROTOCOLO": st.column_config.TextColumn("PROTOCOLO", disabled=True),
+        "STATUS SAP": st.column_config.SelectboxColumn("STATUS SAP", options=op_sap[1:]), 
+        "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_list)
+    }
+
+    df_editado = st.data_editor(df_filtrado_view, use_container_width=True, num_rows="dynamic", key="editor_notas", column_config=config_colunas)
+
+    if btn_salvar:
+        with st.spinner("Persistindo informações com swap atômico..."):
+            indices_originais = df_editado.index
+            df_notas_db.loc[indices_originais] = df_editado
+            if save_notas_to_db(df_notas_db, backup=False):
+                st.success("Banco de Dados Atualizado com Sucesso!")
+                st.toast("Dados salvos e painel atualizado!", icon="✅")
+                st.rerun()
 
 # -----------------------------------------------------------------------------
 # VISÃO 3: CARGA DE LOTES
@@ -680,9 +689,9 @@ elif menu_selecionado == 'Carga de Lotes':
                 df_temp_processado = auto_assign_levantador(df_validado, df_equipes_db)
                 
                 if st.button("⚡ Confirmar Importação e Gravar no Banco de Dados SQLite"):
-                    with st.spinner("Injetando carga de lotes no banco..."):
+                    with st.spinner("Injetando carga de lotes no banco (Operação com Backup Automático)..."):
                         df_final = pd.concat([df_notas_db, df_temp_processado], ignore_index=True)
-                        if save_notas_to_db(df_final):
+                        if save_notas_to_db(df_final, backup=True):
                             st.toast("Lote processado e inserido!", icon="✅")
                             st.success(f"Sucesso! {len(df_temp_processado)} novas demandas validadas e injetadas.")
                             st.rerun()
@@ -742,18 +751,18 @@ elif menu_selecionado == 'Simulador de Alocação':
         "Capacidade Media": None 
     }
 
-    df_edited_sim = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
+    df_edited = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
 
-    df_edited_sim['Municipios Ganhos'] = np.floor(df_edited_sim['Novos Levantadores'] * df_edited_sim['Capacidade Media']).astype(int)
-    df_edited_sim['Municipios Ganhos'] = df_edited_sim[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
-    df_edited_sim['Gap Restante'] = df_edited_sim['Sem Levantador'] - df_edited_sim['Municipios Ganhos']
-    df_edited_sim['Cobertura %'] = np.where(df_edited_sim['Total Municípios'] > 0, ((df_edited_sim['Com Levantador'] + df_edited_sim['Municipios Ganhos']) / df_edited_sim['Total Municípios']) * 100, 0)
+    df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
+    df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
+    df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
+    df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Projeção Atualizada e Representatividade</h4>", unsafe_allow_html=True)
     col_proj_tab, col_proj_chart = st.columns([2.5, 1.5])
     
     with col_proj_tab:
-        df_proj = df_edited_sim[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
+        df_proj = df_edited[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
         linha_total = pd.DataFrame([{
             'Regional': 'TOTAL ESTADO',
             'Total Municípios': df_proj['Total Municípios'].sum(),
@@ -762,7 +771,7 @@ elif menu_selecionado == 'Simulador de Alocação':
             'Levantadores Atuais': df_proj['Levantadores Atuais'].sum(),
             'Novos Levantadores': df_proj['Novos Levantadores'].sum(),
             'Gap Restante': df_proj['Gap Restante'].sum(),
-            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited_sim['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
+            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
         }])
         df_proj = pd.concat([df_proj, linha_total], ignore_index=True)
         df_proj['Cobertura %'] = df_proj['Cobertura %'].apply(lambda x: f"{x:.1f}%")
@@ -779,8 +788,8 @@ elif menu_selecionado == 'Simulador de Alocação':
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
     with col_proj_chart:
-        df_edited_sim['Gap Restante'] = pd.to_numeric(df_edited_sim['Gap Restante'], errors='coerce').fillna(0)
-        df_chart = df_edited_sim[df_edited_sim['Gap Restante'] > 0]
+        df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
+        df_chart = df_edited[df_edited['Gap Restante'] > 0]
         if not df_chart.empty and df_chart['Gap Restante'].sum() > 0:
             fig_rosca = px.pie(df_chart, names='Regional', values='Gap Restante', hole=0.55, title="Gap de Cobertura por Regional")
             fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
