@@ -16,7 +16,7 @@ import zipfile
 import logging
 import shutil
 import html
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # -----------------------------------------------------------------------------
 # CONSTANTES GLOBAIS E CONFIGURAÇÕES INICIAIS
@@ -72,9 +72,15 @@ def init_database():
             else:
                 pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
                 
-        # --- NOVO: Tabela de Controle de Usuários (IAM) ---
+        # Tabela de Controle de Usuários (IAM) com Suporte a Sessões Online
         cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios 
                           (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+        
+        # Adiciona a coluna last_active para rastrear online/offline (ignora erro se já existir)
+        try:
+            cursor.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
+        except sqlite3.OperationalError:
+            pass
         
         # Injeção do Usuário Mestre (THOMAS)
         cursor.execute("SELECT * FROM usuarios WHERE username='THOMAS'")
@@ -118,12 +124,29 @@ if st.session_state.usuario_logado is None:
                     if result:
                         st.session_state.usuario_logado = username
                         st.session_state.perfil_usuario = result[0]
+                        # Registra o primeiro login no Heartbeat
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, username))
+                        conn.commit()
                         st.rerun()
                     else:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
-        st.info("💡 **Acesso Inicial:** \n\nAdmin: `THOMAS` | Senha: `admin123`")
+        st.info("💡 **Acesso Inicial:** \n\nAdmin: `THOMAS` | Senha: `admin123`\n\nVisitante: `VISITANTE` | Senha: `123`")
     st.stop() 
+
+# -----------------------------------------------------------------------------
+# MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
+# -----------------------------------------------------------------------------
+def atualizar_sessao():
+    """Atualiza o 'visto por último' do usuário a cada interação na tela."""
+    if st.session_state.usuario_logado:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, st.session_state.usuario_logado))
+            conn.commit()
+
+atualizar_sessao()
 
 # -----------------------------------------------------------------------------
 # CONFIGURAÇÕES DE ESTADO E NAVEGAÇÃO
@@ -154,7 +177,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS (CONTINUAÇÃO)
+# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     with sqlite3.connect(DB_PATH) as conn:
@@ -370,13 +393,16 @@ with st.sidebar:
     st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
     
     if st.button("🚪 Sair / Deslogar", use_container_width=True):
+        # Limpa o status "online" no banco antes de deslogar
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
+            conn.commit()
         st.session_state.usuario_logado = None
         st.session_state.perfil_usuario = None
         st.rerun()
 
     st.markdown("---")
     
-    # MENU DINÂMICO (Carga de lotes oculta para visitantes)
     opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Simulador de Alocação']
     icones_menu = ['pie-chart-fill', 'sliders', 'calculator-fill']
     
@@ -386,7 +412,6 @@ with st.sidebar:
         
     menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
     
-    # Prevenção de quebra de índice se um usuário deslogar de uma aba exclusiva
     if st.session_state.menu_idx >= len(opcoes_menu):
         st.session_state.menu_idx = 0
         
@@ -409,7 +434,6 @@ with st.sidebar:
         op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
         filtro_map_list = st.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
 
-    # PAINEL EXCLUSIVO DO ADMIN PARA GESTÃO DE USUÁRIOS
     if st.session_state.perfil_usuario == "ADMIN":
         st.markdown("---")
         with st.expander("⚙️ Gerenciar Acessos"):
@@ -439,7 +463,6 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        # --- BLOCO 1: KPIs ---
         total_obras = int(resumo_levantadores['Total_Obras_Real'].sum())
         total_ativos = len(resumo_levantadores)
         total_criticos = len(levantadores_criticos)
@@ -452,7 +475,6 @@ if menu_selecionado == 'Painel Executivo':
         k4.markdown(kpi_card("Levantadores Críticos", total_criticos, "Abaixo de 45 obras", "#D9534F" if total_criticos > 0 else "#5CB85C"), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # --- BLOCO 2: DATA GRID E AÇÕES RÁPIDAS ---
         col_t1, col_t2 = st.columns([2.5, 1.5])
         with col_t1:
             st.markdown("#### 📋 Desempenho e Alocação das Equipes")
@@ -510,7 +532,6 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-        # --- BLOCO 3: GRÁFICOS TOP 15 ---
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2 = st.columns(2)
@@ -532,7 +553,6 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
-        # --- BLOCO 4: SLA MODULARIZADO ---
         df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
         df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
         
@@ -551,7 +571,6 @@ if menu_selecionado == 'Painel Executivo':
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
-        # --- BLOCO 5: MAPA HÍBRIDO (MARKERCLUSTER VS FASTMARKERCLUSTER) ---
         st.markdown("---")
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -568,7 +587,6 @@ if menu_selecionado == 'Painel Executivo':
                     with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
                         kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
                         if kml_files: 
-                            # BLINDAGEM CONTRA ZIP SLIP (Extração segura via path.basename)
                             kml_filename = os.path.basename(kml_files[0])
                             safe_extract_path = os.path.join(tempfile.gettempdir(), kml_filename)
                             with open(safe_extract_path, 'wb') as out_file:
@@ -642,7 +660,6 @@ if menu_selecionado == 'Painel Executivo':
                     fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
                     cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
                     for row in df_notas_mapa.to_dict('records'):
-                        # BLINDAGEM XSS: Uso de html.escape para neutralizar tags maliciosas
                         safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
                         safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
                         safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
@@ -671,7 +688,7 @@ if menu_selecionado == 'Painel Executivo':
             st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
+# VISÃO 2: FILTROS E GOVERNANÇA
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
@@ -749,9 +766,7 @@ elif menu_selecionado == 'Busca e Governança':
         "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_list)
     }
 
-    # Desabilita a edição da tabela se não for admin
     is_disabled = st.session_state.perfil_usuario != "ADMIN"
-    
     df_editado = st.data_editor(df_filtrado_view, use_container_width=True, num_rows="dynamic", key="editor_notas", column_config=config_colunas, disabled=is_disabled)
 
     if btn_salvar:
@@ -924,3 +939,34 @@ elif menu_selecionado == 'Simulador de Alocação':
         return ''
 
     st.dataframe(df_impacto.style.map(style_variacao, subset=['Variação']), use_container_width=True, hide_index=True)
+
+# -----------------------------------------------------------------------------
+# RODAPÉ: USUÁRIOS ONLINE (HEARTBEAT)
+# -----------------------------------------------------------------------------
+st.markdown("---")
+st.markdown("#### 🟢 Usuários Online Agora")
+
+try:
+    with sqlite3.connect(DB_PATH) as conn:
+        # Define o limiar de inatividade (5 minutos)
+        limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        ativos = pd.read_sql(f"""
+            SELECT username, role 
+            FROM usuarios 
+            WHERE last_active >= '{limite_inatividade}'
+            ORDER BY username ASC
+        """, conn)
+
+    if not ativos.empty:
+        # Renderiza tags HTML (pills) para cada usuário ativo
+        html_pills = "".join([
+            f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
+            for _, row in ativos.iterrows()
+        ])
+        st.markdown(html_pills, unsafe_allow_html=True)
+    else:
+        st.caption("Nenhum usuário ativo detectado no momento.")
+except Exception as e:
+    st.caption("Status de usuários temporariamente indisponível.")
+    logging.error(f"Erro ao ler heartbeat: {e}")
