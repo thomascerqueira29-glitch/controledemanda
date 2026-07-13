@@ -39,9 +39,38 @@ except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# 1. INICIALIZAÇÃO E BANCO DE DADOS CORE (DEVE RODAR PRIMEIRO)
+# 1. MOTOR DE IDENTIDADE (RODA INCONDICIONALMENTE PARA GARANTIR LOGIN)
 # -----------------------------------------------------------------------------
-def init_database():
+def init_iam():
+    """Garante que as tabelas de segurança existam, independentemente do estado do servidor Cloud"""
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        # Tabela de Usuários
+        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios 
+                        (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+        
+        # Adiciona coluna last_active (ignora se já existir)
+        try:
+            conn.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
+        # Tabela de Auditoria
+        conn.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
+                         data_hora TEXT, acao TEXT, detalhes TEXT)''')
+
+        # Injeção segura dos usuários padrão (Ignora se já existirem)
+        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('THOMAS', 'admin123', 'ADMIN')")
+        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
+        conn.commit()
+
+init_iam()
+
+# -----------------------------------------------------------------------------
+# 2. MOTOR DE NEGÓCIOS E CARGA DO LEGADO (NOTAS E EQUIPES)
+# -----------------------------------------------------------------------------
+def init_business_db():
+    """Inicializa as tabelas de dados apenas se for uma sessão virgem"""
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
         'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
@@ -49,62 +78,39 @@ def init_database():
         'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
         'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
     ]
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        
-        # Criação/Validação Tabela de Notas
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
-        if not cursor.fetchone():
-            if os.path.exists('NOTAS.xlsx'):
-                df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
-                for col in colunas_template_oficial:
-                    if col not in df_legacy.columns: df_legacy[col] = ""
-                df_legacy = df_legacy[colunas_template_oficial]
-                df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
-            else:
-                pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
-                
-        # Criação/Validação Tabela de Equipes
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
-        if not cursor.fetchone():
-            if os.path.exists('EQUIPES.xlsx'):
-                pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
-            else:
-                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
-                
-        # Tabela de Controle de Usuários (IAM)
-        cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios 
-                          (username TEXT PRIMARY KEY, password TEXT, role TEXT, last_active TEXT)''')
-        
-        # Garantia de retrocompatibilidade caso a tabela antiga não tenha a coluna last_active
-        try:
-            cursor.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
-        except sqlite3.OperationalError:
-            pass
-        
-        # Tabela de Log de Auditoria
-        cursor.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
-                          (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
-                           data_hora TEXT, acao TEXT, detalhes TEXT)''')
-
-        # Injeção do Usuário Mestre (THOMAS)
-        cursor.execute("SELECT * FROM usuarios WHERE username='THOMAS'")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO usuarios (username, password, role) VALUES ('THOMAS', 'admin123', 'ADMIN')")
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            cursor = conn.cursor()
             
-        # Injeção do Usuário Visitante Padrão
-        cursor.execute("SELECT * FROM usuarios WHERE username='VISITANTE'")
-        if not cursor.fetchone():
-            cursor.execute("INSERT INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
-            
-    st.session_state.db_initialized = True
+            # Validação Tabela de Notas
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
+            if not cursor.fetchone():
+                if os.path.exists('NOTAS.xlsx'):
+                    df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+                    for col in colunas_template_oficial:
+                        if col not in df_legacy.columns: df_legacy[col] = ""
+                    df_legacy = df_legacy[colunas_template_oficial]
+                    df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
+                else:
+                    pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
+                    
+            # Validação Tabela de Equipes
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
+            if not cursor.fetchone():
+                if os.path.exists('EQUIPES.xlsx'):
+                    pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
+                else:
+                    pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
+                    
+        st.session_state.db_initialized = True
+    except Exception as e:
+        logging.error(f"Erro ao inicializar tabelas de negócios: {e}")
 
-# GARANTIA DE ORDEM DE EXECUÇÃO: O banco é validado ANTES do formulário de login
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
-    init_database()
+    init_business_db()
 
 # -----------------------------------------------------------------------------
-# 2. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
+# 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
 # -----------------------------------------------------------------------------
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -123,7 +129,7 @@ if st.session_state.usuario_logado is None:
             submit = st.form_submit_button("Autenticar", type="primary", use_container_width=True)
             
             if submit:
-                with sqlite3.connect(DB_PATH) as conn:
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
                     cursor = conn.cursor()
                     cursor.execute("SELECT role FROM usuarios WHERE username=? AND password=?", (username, password))
                     result = cursor.fetchone()
@@ -139,20 +145,21 @@ if st.session_state.usuario_logado is None:
                     else:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
-        # TEXTO CORRIGIDO: Senhas removidas para segurança
         st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
     st.stop() # Interrompe a renderização para usuários não logados
 
 # -----------------------------------------------------------------------------
-# 3. MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
+# 4. MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
 # -----------------------------------------------------------------------------
 def atualizar_sessao():
-    """Atualiza o 'visto por último' do usuário a cada interação na tela."""
     if st.session_state.usuario_logado:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, st.session_state.usuario_logado))
-            conn.commit()
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, st.session_state.usuario_logado))
+                conn.commit()
+        except sqlite3.OperationalError:
+            pass # Ignora erro silencioso se o banco estiver temporariamente travado na nuvem
 
 atualizar_sessao()
 
@@ -185,13 +192,15 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
 # TRILHA DE AUDITORIA E ENGENHARIA DE DADOS
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
-        agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        usuario = st.session_state.usuario_logado
-        cursor.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
-                       (usuario, agora, acao, detalhes))
-        conn.commit()
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            usuario = st.session_state.usuario_logado
+            conn.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
+                         (usuario, agora, acao, detalhes))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"Erro ao registrar auditoria: {e}")
 
 def realizar_backup_db():
     os.makedirs("backups", exist_ok=True)
@@ -228,7 +237,7 @@ def auto_assign_levantador(df_notas, df_equipes):
 
 @st.cache_data(show_spinner=False)
 def get_processed_data():
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
         df_n = pd.read_sql("SELECT * FROM notas", conn)
         df_e = pd.read_sql("SELECT * FROM equipes", conn)
     return auto_assign_levantador(df_n, df_e), df_e
@@ -237,7 +246,7 @@ def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operaç�
     if backup: realizar_backup_db()
     try:
         df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
             df_notas_limpo.to_sql('notas_temp', conn, if_exists='replace', index=False)
             conn.execute("BEGIN TRANSACTION;")
             conn.execute("DROP TABLE IF EXISTS notas;")
@@ -395,7 +404,7 @@ with st.sidebar:
     st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
     
     if st.button("🚪 Sair / Deslogar", use_container_width=True):
-        with sqlite3.connect(DB_PATH) as conn:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
             conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
             conn.commit()
         st.session_state.usuario_logado = None
@@ -446,7 +455,7 @@ with st.sidebar:
                 if st.form_submit_button("Criar Conta", use_container_width=True):
                     if new_user and new_pass:
                         try:
-                            with sqlite3.connect(DB_PATH) as conn:
+                            with sqlite3.connect(DB_PATH, timeout=10) as conn:
                                 conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, 'LEITURA')", (new_user, new_pass))
                             st.success(f"Conta {new_user} criada!")
                             registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} (LEITURA).")
@@ -948,7 +957,7 @@ st.markdown("---")
 st.markdown("#### 🟢 Usuários Online Agora")
 
 try:
-    with sqlite3.connect(DB_PATH) as conn:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
         limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
         ativos = pd.read_sql(f"""
             SELECT username, role 
