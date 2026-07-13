@@ -39,7 +39,7 @@ except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# INICIALIZAÇÃO E BANCO DE DADOS CORE
+# 1. INICIALIZAÇÃO E BANCO DE DADOS CORE (DEVE RODAR PRIMEIRO)
 # -----------------------------------------------------------------------------
 def init_database():
     colunas_template_oficial = [
@@ -72,16 +72,21 @@ def init_database():
             else:
                 pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
                 
-        # Tabela de Controle de Usuários (IAM) com Suporte a Sessões Online
+        # Tabela de Controle de Usuários (IAM)
         cursor.execute('''CREATE TABLE IF NOT EXISTS usuarios 
-                          (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+                          (username TEXT PRIMARY KEY, password TEXT, role TEXT, last_active TEXT)''')
         
-        # Adiciona a coluna last_active para rastrear online/offline (ignora erro se já existir)
+        # Garantia de retrocompatibilidade caso a tabela antiga não tenha a coluna last_active
         try:
             cursor.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
         except sqlite3.OperationalError:
             pass
         
+        # Tabela de Log de Auditoria
+        cursor.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
+                          (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
+                           data_hora TEXT, acao TEXT, detalhes TEXT)''')
+
         # Injeção do Usuário Mestre (THOMAS)
         cursor.execute("SELECT * FROM usuarios WHERE username='THOMAS'")
         if not cursor.fetchone():
@@ -94,10 +99,12 @@ def init_database():
             
     st.session_state.db_initialized = True
 
-if not st.session_state.db_initialized: init_database()
+# GARANTIA DE ORDEM DE EXECUÇÃO: O banco é validado ANTES do formulário de login
+if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
+    init_database()
 
 # -----------------------------------------------------------------------------
-# MÓDULO DE SEGURANÇA E AUTENTICAÇÃO
+# 2. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
 # -----------------------------------------------------------------------------
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -133,10 +140,10 @@ if st.session_state.usuario_logado is None:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
         st.info("💡 **Acesso Inicial:** \n\nAdmin: `THOMAS` | Senha: `admin123`\n\nVisitante: `VISITANTE` | Senha: `123`")
-    st.stop() 
+    st.stop() # Interrompe a renderização para usuários não logados
 
 # -----------------------------------------------------------------------------
-# MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
+# 3. MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
 # -----------------------------------------------------------------------------
 def atualizar_sessao():
     """Atualiza o 'visto por último' do usuário a cada interação na tela."""
@@ -149,7 +156,7 @@ def atualizar_sessao():
 atualizar_sessao()
 
 # -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE ESTADO E NAVEGAÇÃO
+# CONFIGURAÇÕES DE ESTADO GERAIS E NAVEGAÇÃO
 # -----------------------------------------------------------------------------
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
@@ -164,9 +171,6 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.menu_idx = 1
     st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
 
-# -----------------------------------------------------------------------------
-# COMPONENTES DE UI
-# -----------------------------------------------------------------------------
 def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     return f"""
     <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 5px solid {border_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); height: 100%;">
@@ -182,9 +186,6 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
 def registrar_auditoria(acao, detalhes):
     with sqlite3.connect(DB_PATH) as conn:
         cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
-                          (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
-                           data_hora TEXT, acao TEXT, detalhes TEXT)''')
         agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         usuario = st.session_state.usuario_logado
         cursor.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
@@ -393,7 +394,6 @@ with st.sidebar:
     st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
     
     if st.button("🚪 Sair / Deslogar", use_container_width=True):
-        # Limpa o status "online" no banco antes de deslogar
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
             conn.commit()
@@ -779,7 +779,7 @@ elif menu_selecionado == 'Busca e Governança':
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# VISÃO 3: CARGA DE LOTES (SOMENTE ADMIN)
+# VISÃO 3: CARGA DE LOTES
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -948,9 +948,7 @@ st.markdown("#### 🟢 Usuários Online Agora")
 
 try:
     with sqlite3.connect(DB_PATH) as conn:
-        # Define o limiar de inatividade (5 minutos)
         limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        
         ativos = pd.read_sql(f"""
             SELECT username, role 
             FROM usuarios 
@@ -959,7 +957,6 @@ try:
         """, conn)
 
     if not ativos.empty:
-        # Renderiza tags HTML (pills) para cada usuário ativo
         html_pills = "".join([
             f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
             for _, row in ativos.iterrows()
