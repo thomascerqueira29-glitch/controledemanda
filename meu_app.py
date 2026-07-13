@@ -266,7 +266,7 @@ with st.sidebar:
         filtro_map_list = st.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
 
 # -----------------------------------------------------------------------------
-# VISÃO 1: PAINEL EXECUTIVO E MAPAS (LAYOUT BI OTIMIZADO)
+# VISÃO 1: PAINEL EXECUTIVO E MAPAS
 # -----------------------------------------------------------------------------
 if menu_selecionado == 'Painel Executivo':
     st.markdown("### 📈 Visão Global de Produtividade")
@@ -274,7 +274,6 @@ if menu_selecionado == 'Painel Executivo':
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados de notas está vazio. Realize uma carga em lote para ativar os indicadores.")
     else:
-        # --- BLOCO 1: KPIs GLOBAIS ENCLAUSURADOS (CARDS) ---
         total_obras = int(resumo_levantadores['Total_Obras_Real'].sum())
         total_ativos = len(resumo_levantadores)
         total_criticos = len(levantadores_criticos)
@@ -287,15 +286,12 @@ if menu_selecionado == 'Painel Executivo':
         k4.markdown(kpi_card("Levantadores Críticos", total_criticos, "Abaixo de 45 obras", "#D9534F" if total_criticos > 0 else "#5CB85C"), unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # --- BLOCO 2: DATA GRID (COLUMN_CONFIG) E AÇÕES RÁPIDAS ---
         col_t1, col_t2 = st.columns([2.5, 1.5])
-        
         with col_t1:
             st.markdown("#### 📋 Desempenho e Alocação das Equipes")
             df_resumo_view = resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].copy()
             df_resumo_view = df_resumo_view.sort_values('Total_Obras_Real', ascending=False)
             
-            # Upgrade visual com as barras de progresso nativas
             st.dataframe(
                 df_resumo_view, 
                 use_container_width=True, 
@@ -304,13 +300,7 @@ if menu_selecionado == 'Painel Executivo':
                 column_config={
                     "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
                     "Equipe": st.column_config.TextColumn("Equipe SAP"),
-                    "Total_Obras_Real": st.column_config.ProgressColumn(
-                        "Obras Reais (Meta: 45)",
-                        help="Progresso de atribuição até a meta mínima de 45 obras.",
-                        format="%d",
-                        min_value=0,
-                        max_value=45
-                    )
+                    "Total_Obras_Real": st.column_config.ProgressColumn("Obras Reais (Meta: 45)", help="Progresso até a meta", format="%d", min_value=0, max_value=45)
                 }
             )
             
@@ -318,9 +308,7 @@ if menu_selecionado == 'Painel Executivo':
             st.markdown("#### ⚡ Painel de Ações Rápidas")
             st.caption("Selecione um levantador para tomar decisões.")
             
-            # Controle de Largura para telas ultrawide
             _, central_col, _ = st.columns([0.2, 9, 0.2])
-            
             with central_col:
                 st.markdown("<div style='padding: 20px; border: 1px solid #EAEAEA; border-radius: 8px; background: #FAFAFA;'>", unsafe_allow_html=True)
                 
@@ -361,20 +349,14 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-        # --- BLOCO 3: GRÁFICOS DE BARRAS HORIZONTAIS (LIMITADOS AO TOP 15) ---
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
             if not municipios_por_levantador.empty and municipios_por_levantador['Qtd_Municipios'].sum() > 0:
-                # Regra Top 15 para evitar parede de texto no eixo Y
-                df_mun_sorted = municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15)
-                df_mun_sorted = df_mun_sorted.sort_values('Qtd_Municipios', ascending=True)
-                
-                fig_bar_mun = px.bar(df_mun_sorted, x='Qtd_Municipios', y='Levantador', orientation='h',
-                                     title="Top 15 - Municípios por Levantador",
-                                     color_discrete_sequence=['#4A4F7C'])
+                df_mun_sorted = municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios', ascending=True)
+                fig_bar_mun = px.bar(df_mun_sorted, x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 - Municípios por Levantador", color_discrete_sequence=['#4A4F7C'])
                 fig_bar_mun.update_layout(xaxis_title="Qtd. Municípios", yaxis_title="")
                 st.plotly_chart(fig_bar_mun, use_container_width=True)
             
@@ -383,17 +365,11 @@ if menu_selecionado == 'Painel Executivo':
             df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
             if not df_sem_lev_reg.empty:
                 df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
-                # Regra Top 15 para pendências
-                df_sem_lev_reg = df_sem_lev_reg.sort_values('Quantidade_Sem_Atribuicao', ascending=False).head(15)
-                df_sem_lev_reg = df_sem_lev_reg.sort_values('Quantidade_Sem_Atribuicao', ascending=True)
-                
-                fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h',
-                                         title="Top 15 - Obras Sem Levantador Atribuído por Regional",
-                                         color_discrete_sequence=['#D9534F'])
+                df_sem_lev_reg = df_sem_lev_reg.sort_values('Quantidade_Sem_Atribuicao', ascending=False).head(15).sort_values('Quantidade_Sem_Atribuicao', ascending=True)
+                fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h', title="Top 15 - Obras Sem Levantador Atribuído por Regional", color_discrete_sequence=['#D9534F'])
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
-        # --- BLOCO 4: SLA CONDICIONAL ---
         df_sla = df_notas_calc.copy()
         tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
         g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
@@ -408,7 +384,6 @@ if menu_selecionado == 'Painel Executivo':
 
         df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
         df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
-        
         dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
         idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
 
@@ -439,11 +414,7 @@ if menu_selecionado == 'Painel Executivo':
         cond_def_v  = cond_default & (idade_dias > 20)
 
         df_sla['Status_SLA'] = np.select(
-            [
-                cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
-                cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
-                cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
-            ],
+            [cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v, cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p, cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np],
             ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
         )
         df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
@@ -458,13 +429,10 @@ if menu_selecionado == 'Painel Executivo':
                 df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
                 df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
                 
-                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA',
-                                 title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group',
-                                 color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
+                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA', title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group', color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
-        # --- BLOCO 5: MAPA MAXIMIZADO ---
         st.markdown("---")
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -569,11 +537,13 @@ if menu_selecionado == 'Painel Executivo':
             st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA
+# VISÃO 2: FILTROS E GOVERNANÇA (LAYOUT E DADOS OTIMIZADOS)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    
+    # 1. Reorganização Espacial dos Filtros (Grid 3x2 Balanceado)
+    col_f1, col_f2, col_f3 = st.columns(3)
     op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
     if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
     with col_f1: st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
@@ -586,20 +556,21 @@ elif menu_selecionado == 'Busca e Governança':
     if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
     with col_f3: st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
 
+    col_f4, col_f5, col_f6 = st.columns(3)
     op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
     if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
     with col_f4: st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
 
-    col_f5, col_f6 = st.columns(2)
     op_sap = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('STATUS SAP', pd.Series()).dropna().unique()])
     if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
     with col_f5: st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
 
-    op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+    op_list_all = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
     if 'ui_list' not in st.session_state: st.session_state.ui_list = []
-    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
-    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
+    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list_all]
+    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list_all, key='ui_list')
 
+    # Filtragem Base
     df_filtrado = df_notas_db.copy()
     if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
     if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
@@ -608,36 +579,75 @@ elif menu_selecionado == 'Busca e Governança':
     if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
     if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
 
-    st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
+    st.info(f"Obras localizadas sob os filtros aplicados: **{len(df_filtrado)} registro(s)**.")
     
-    if len(df_filtrado) > 0:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_filtrado.to_excel(writer, index=False, sheet_name='Filtrado')
-        st.download_button(label="📥 Exportar Dados Filtrados para Excel", data=buffer.getvalue(), file_name="relatorio_nip_filtrado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    
+    # 2. Limpeza Visual de Dados Residuais (Eliminação de "None", "0" e NaNs)
+    df_filtrado_clean = df_filtrado.replace({'None': '', 'nan': '', 'NaN': '', '<NA>': '', '0': '', 0: ''}).fillna('')
+    if 'TIPO LIGACAO' in df_filtrado_clean.columns: df_filtrado_clean['TIPO LIGACAO'] = df_filtrado_clean['TIPO LIGACAO'].replace({'0': ''})
+    if 'STATUS LIST' in df_filtrado_clean.columns: df_filtrado_clean['STATUS LIST'] = df_filtrado_clean['STATUS LIST'].replace({'0': ''})
+
     st.markdown("---")
     st.markdown("### 📊 Gestão e Edição em Lote")
-    df_editado = st.data_editor(df_filtrado, use_container_width=True, num_rows="dynamic", key="editor_notas")
+    
+    # Prepara o Container da Toolbar Fixa no Topo
+    toolbar = st.container()
 
-    col_btn1, col_btn2 = st.columns([8, 2])
-    with col_btn1:
-        if st.button("💾 Salvar Alterações na Base", type="primary"):
-            with st.spinner("Persistindo informações..."):
-                indices_originais = df_editado.index
-                df_notas_db.loc[indices_originais] = df_editado
-                if save_notas_to_db(df_notas_db):
-                    st.success("Banco de Dados Atualizado com Sucesso!")
-                    st.toast("Dados salvos e painel atualizado!", icon="✅")
-                    st.rerun()
-                
-    with col_btn2:
-        with st.expander("⚠️ ÁREA DE PERIGO"):
-            confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
-            if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
-                if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns)):
-                    st.success("Banco de dados de obras totalmente limpo!")
-                    st.rerun()
+    # 3. Blindagem e Tipagem do Data Grid (column_config)
+    op_status_sap_config = sorted(list(set([str(x) for x in df_notas_db['STATUS SAP'].dropna().unique() if str(x).strip() not in ["", "nan", "None", "0"]])))
+    op_status_list_config = sorted(list(set([str(x) for x in df_notas_db['STATUS LIST'].dropna().unique() if str(x).strip() not in ["", "nan", "None", "0"]] + STATUS_PRODUTIVIDADE)))
+    op_lev_config = sorted(list(set(todos_levantadores + [SEM_LEVANTADOR])))
+    
+    col_configs = {
+        "PROTOCOLO": st.column_config.TextColumn("PROTOCOLO", disabled=True, help="Chave Primária (Inalterável)"),
+        "ID SISCO": st.column_config.TextColumn("ID SISCO", disabled=True, help="Chave Primária (Inalterável)"),
+        "CONTA CONTRATO": st.column_config.TextColumn("CONTA CONTRATO", disabled=True, help="Identificação do Cliente (Inalterável)"),
+        "STATUS SAP": st.column_config.SelectboxColumn("STATUS SAP", options=op_status_sap_config, help="Seleção rigorosa de status SAP"),
+        "STATUS LIST": st.column_config.SelectboxColumn("STATUS LIST", options=op_status_list_config, help="Fases de produtividade"),
+        "LEVANTADOR": st.column_config.SelectboxColumn("LEVANTADOR", options=op_lev_config)
+    }
+
+    # Renderiza o DataFrame Editável
+    df_editado = st.data_editor(
+        df_filtrado_clean, 
+        use_container_width=True, 
+        num_rows="dynamic", 
+        key="editor_notas",
+        column_config=col_configs
+    )
+
+    # Preenche a Toolbar Fixa (Acessa o df_editado processado acima)
+    with toolbar:
+        tb1, tb2, tb3 = st.columns([2.5, 2.5, 5])
+        
+        with tb1:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_filtrado_clean.to_excel(writer, index=False, sheet_name='Filtrado')
+            st.download_button(
+                label="📥 Exportar Dados para Excel", 
+                data=buffer.getvalue(), 
+                file_name="relatorio_nip_filtrado.xlsx", 
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+        with tb2:
+            if st.button("💾 Salvar Alterações na Base", type="primary", use_container_width=True):
+                with st.spinner("Persistindo informações no banco corporativo..."):
+                    indices_originais = df_editado.index
+                    df_notas_db.loc[indices_originais] = df_editado
+                    if save_notas_to_db(df_notas_db):
+                        st.success("Banco de Dados Atualizado com Sucesso!")
+                        st.toast("Dados salvos e validados!", icon="✅")
+                        st.rerun()
+                        
+        with tb3:
+            with st.expander("⚠️ ÁREA DE PERIGO (Apagar Base)"):
+                confirmacao_global = st.checkbox("Confirmo que desejo apagar TODAS as notas.")
+                if st.button("🚨 APAGAR TUDO", type="primary", disabled=not confirmacao_global):
+                    if save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns)):
+                        st.success("Banco de dados de obras totalmente limpo!")
+                        st.rerun()
 
 # -----------------------------------------------------------------------------
 # VISÃO 3: CARGA DE LOTES
@@ -732,18 +742,18 @@ elif menu_selecionado == 'Simulador de Alocação':
         "Capacidade Media": None 
     }
 
-    df_edited = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
+    df_edited_sim = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
 
-    df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
-    df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
-    df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
-    df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
+    df_edited_sim['Municipios Ganhos'] = np.floor(df_edited_sim['Novos Levantadores'] * df_edited_sim['Capacidade Media']).astype(int)
+    df_edited_sim['Municipios Ganhos'] = df_edited_sim[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
+    df_edited_sim['Gap Restante'] = df_edited_sim['Sem Levantador'] - df_edited_sim['Municipios Ganhos']
+    df_edited_sim['Cobertura %'] = np.where(df_edited_sim['Total Municípios'] > 0, ((df_edited_sim['Com Levantador'] + df_edited_sim['Municipios Ganhos']) / df_edited_sim['Total Municípios']) * 100, 0)
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Projeção Atualizada e Representatividade</h4>", unsafe_allow_html=True)
     col_proj_tab, col_proj_chart = st.columns([2.5, 1.5])
     
     with col_proj_tab:
-        df_proj = df_edited[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
+        df_proj = df_edited_sim[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
         linha_total = pd.DataFrame([{
             'Regional': 'TOTAL ESTADO',
             'Total Municípios': df_proj['Total Municípios'].sum(),
@@ -752,7 +762,7 @@ elif menu_selecionado == 'Simulador de Alocação':
             'Levantadores Atuais': df_proj['Levantadores Atuais'].sum(),
             'Novos Levantadores': df_proj['Novos Levantadores'].sum(),
             'Gap Restante': df_proj['Gap Restante'].sum(),
-            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
+            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited_sim['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
         }])
         df_proj = pd.concat([df_proj, linha_total], ignore_index=True)
         df_proj['Cobertura %'] = df_proj['Cobertura %'].apply(lambda x: f"{x:.1f}%")
@@ -769,8 +779,8 @@ elif menu_selecionado == 'Simulador de Alocação':
         st.dataframe(styled_proj, use_container_width=True, hide_index=True)
 
     with col_proj_chart:
-        df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
-        df_chart = df_edited[df_edited['Gap Restante'] > 0]
+        df_edited_sim['Gap Restante'] = pd.to_numeric(df_edited_sim['Gap Restante'], errors='coerce').fillna(0)
+        df_chart = df_edited_sim[df_edited_sim['Gap Restante'] > 0]
         if not df_chart.empty and df_chart['Gap Restante'].sum() > 0:
             fig_rosca = px.pie(df_chart, names='Regional', values='Gap Restante', hole=0.55, title="Gap de Cobertura por Regional")
             fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
