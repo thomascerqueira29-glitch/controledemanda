@@ -47,21 +47,20 @@ if 'db_initialized' not in st.session_state:
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
-if 'filtros_salvos' not in st.session_state:
-    st.session_state.filtros_salvos = {
-        'lev': 'TODOS', 'reg': 'TODOS', 'mun': 'TODOS',
-        'lig': 'TODOS', 'sap': 'TODOS', 'list': [] 
-    }
-
 def filtrar_levantador_governanca(nome_lev):
-    st.session_state.filtros_salvos['lev'] = nome_lev
-    st.session_state.filtros_salvos['reg'] = 'TODOS'
-    st.session_state.filtros_salvos['mun'] = 'TODOS'
-    st.session_state.filtros_salvos['lig'] = 'TODOS'
-    st.session_state.filtros_salvos['sap'] = 'TODOS'
-    st.session_state.filtros_salvos['list'] = STATUS_PRODUTIVIDADE.copy() 
+    # Atualiza DIRETAMENTE as chaves (keys) vinculadas à interface 'Busca e Governança'
+    st.session_state.ui_lev = nome_lev
+    st.session_state.ui_reg = 'TODOS'
+    st.session_state.ui_mun = 'TODOS'
+    st.session_state.ui_lig = 'TODOS'
+    st.session_state.ui_sap = 'TODOS'
+    
+    # Injeta a lista de status de produtividade na chave do multiselect
+    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
+    
+    # Aciona a navegação para a tela de Busca e Governança (índice 1)
     st.session_state.menu_idx = 1
-    st.toast(f"Buscando demandas de {nome_lev}...", icon="🔍")
+    st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
 
 # -----------------------------------------------------------------------------
 # COMPONENTES DE UI (MODULARIZAÇÃO HTML/CSS)
