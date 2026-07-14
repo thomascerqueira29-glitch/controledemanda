@@ -148,6 +148,15 @@ if st.session_state.usuario_logado is None:
         st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
     st.stop() # Interrompe a renderização para usuários não logados
 
+# Injeta CSS para ocultar menus nativos se o usuário não for ADMIN
+if st.session_state.get('perfil_usuario') != 'ADMIN':
+    st.markdown("""
+        <style>
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        </style>
+    """, unsafe_allow_html=True)
+
 # -----------------------------------------------------------------------------
 # 4. MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
 # -----------------------------------------------------------------------------
@@ -447,22 +456,63 @@ with st.sidebar:
     if st.session_state.perfil_usuario == "ADMIN":
         st.markdown("---")
         with st.expander("⚙️ Gerenciar Acessos"):
+            st.markdown("#### Usuários do Sistema")
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                df_users = pd.read_sql("SELECT username, role, last_active FROM usuarios", conn)
+            
+            df_users['Remover'] = False
+            
+            edited_users = st.data_editor(
+                df_users, 
+                column_config={
+                    "username": st.column_config.TextColumn("Usuário", disabled=True),
+                    "last_active": st.column_config.TextColumn("Último Acesso", disabled=True),
+                    "role": st.column_config.SelectboxColumn("Perfil", options=["ADMIN", "LEITURA"], required=True),
+                    "Remover": st.column_config.CheckboxColumn("Apagar", default=False)
+                },
+                hide_index=True,
+                key="user_editor"
+            )
+            
+            if st.button("Salvar Alterações de Acesso", type="primary", use_container_width=True):
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                    for _, row in edited_users.iterrows():
+                        user = row['username']
+                        new_role = row['role']
+                        to_delete = row['Remover']
+                        
+                        if to_delete:
+                            if user != st.session_state.usuario_logado:
+                                conn.execute("DELETE FROM usuarios WHERE username=?", (user,))
+                                registrar_auditoria("Exclusão de Usuário", f"O Administrador removeu o usuário {user}.")
+                            else:
+                                st.warning("Você não pode apagar seu próprio usuário logado.")
+                        else:
+                            conn.execute("UPDATE usuarios SET role=? WHERE username=?", (new_role, user))
+                    conn.commit()
+                st.success("Configurações atualizadas com sucesso!")
+                st.rerun()
+
+            st.markdown("---")
+            st.markdown("#### Criar Novo Usuário")
             with st.form("new_user_form"):
-                st.write("Adicionar Usuário Visitante")
-                new_user = st.text_input("Novo Usuário").strip().upper()
-                new_pass = st.text_input("Senha", type="password")
+                col_n1, col_n2 = st.columns(2)
+                new_user = col_n1.text_input("Novo Usuário").strip().upper()
+                new_pass = col_n2.text_input("Senha", type="password")
+                new_role = st.selectbox("Perfil de Acesso", ["LEITURA", "ADMIN"])
                 
                 if st.form_submit_button("Criar Conta", use_container_width=True):
                     if new_user and new_pass:
                         try:
                             with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                                conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, 'LEITURA')", (new_user, new_pass))
+                                conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", (new_user, new_pass, new_role))
                             st.success(f"Conta {new_user} criada!")
-                            registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} (LEITURA).")
+                            registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} ({new_role}).")
+                            st.rerun()
                         except sqlite3.IntegrityError:
-                            st.error("Usuário já existe.")
+                            st.error("Usuário já existe no banco de dados.")
                     else:
-                        st.warning("Preencha todos os campos.")
+                        st.warning("Preencha todos os campos para continuar.")
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO E MAPAS
@@ -527,11 +577,14 @@ if menu_selecionado == 'Painel Executivo':
                                     df_livres['Distancia_KM'] = vectorized_haversine(tech_coords['Latitude'], tech_coords['Longitude'], df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
                                     df_livres = df_livres.sort_values('Distancia_KM')
 
+                                    # CORREÇÃO: Usando cópia para evitar travamentos de cache mutável
+                                    df_notas_update = df_notas_db.copy()
                                     qtd_atribuir = min(saldo_necessario, len(df_livres))
                                     indices_para_mudar = df_livres.head(qtd_atribuir).index
-                                    df_notas_db.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
                                     
-                                    if save_notas_to_db(df_notas_db, acao_auditoria=f"Atribuição Geo-otimizada: {qtd_atribuir} obras para {lev_selecionado}"):
+                                    df_notas_update.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
+                                    
+                                    if save_notas_to_db(df_notas_update, acao_auditoria=f"Atribuição Geo-otimizada: {qtd_atribuir} obras para {lev_selecionado}"):
                                         st.toast("Rotas designadas com sucesso!", icon="✅")
                                         st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
                                         st.rerun()
@@ -541,6 +594,49 @@ if menu_selecionado == 'Painel Executivo':
                     
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
+
+        # NOVO PAINEL: Desempenho e Levantamentos Concluídos
+        st.markdown("---")
+        st.markdown("#### 🏆 Obras em Levantamento Concluído")
+        
+        col_c1, col_c2 = st.columns([1, 3])
+        with col_c1:
+            data_filtro_conclusao = st.date_input("Filtrar por Data de Conclusão", value=datetime.today())
+            
+        with col_c2:
+            st.caption("Filtra e contabiliza as obras com o **STATUS LIST** igual a `LEVANTAMENTO CONCLUIDO` baseando-se na data informada na coluna correspondente ao envio.")
+            
+        df_concluidas = df_notas_calc[df_notas_calc['STATUS LIST'].astype(str).str.upper().str.strip() == 'LEVANTAMENTO CONCLUIDO'].copy()
+        
+        def safe_date_parse(serie):
+            s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
+            s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
+            return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
+            
+        # Utilizamos a DATA ENVIO A CAMPO - LIST para bater com a data vigente do status
+        df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA ENVIO A CAMPO - LIST'])
+        df_concluidas_dia = df_concluidas[df_concluidas['DATA_REF'] == data_filtro_conclusao]
+        
+        contagem_concluidas = df_concluidas_dia['LEVANTADOR'].value_counts().reset_index()
+        contagem_concluidas.columns = ['Levantador', 'Obras_Concluidas']
+        
+        resumo_concluidas = pd.DataFrame({'Levantador': todos_levantadores})
+        resumo_concluidas = pd.merge(resumo_concluidas, contagem_concluidas, on='Levantador', how='left').fillna(0)
+        resumo_concluidas['Obras_Concluidas'] = resumo_concluidas['Obras_Concluidas'].astype(int)
+        
+        mapa_lev_equipe = df_equipes_db.dropna(subset=['Levantador', 'Equipe']).drop_duplicates(subset=['Levantador']).set_index('Levantador')['Equipe'].to_dict()
+        resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
+        resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
+        
+        st.dataframe(
+            resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
+            use_container_width=True, hide_index=True, height=320,
+            column_config={
+                "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
+                "Equipe": st.column_config.TextColumn("Equipe SAP"),
+                "Obras_Concluidas": st.column_config.ProgressColumn("Concluídas no Dia", format="%d", min_value=0, max_value=int(resumo_concluidas['Obras_Concluidas'].max() if not resumo_concluidas.empty and resumo_concluidas['Obras_Concluidas'].max() > 0 else 10))
+            }
+        )
 
         st.markdown("---")
         st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
@@ -582,8 +678,21 @@ if menu_selecionado == 'Painel Executivo':
                 st.plotly_chart(fig_sla, use_container_width=True)
 
         st.markdown("---")
+        
+        # Filtros e geração do Map View
+        df_notas_mapa_view = df_notas_calc.copy()
+        if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
+        if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
+        if filtro_map_mun != "TODOS" and 'MUNICIPIO' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['MUNICIPIO'] == filtro_map_mun]
+        if filtro_map_sap != "TODOS" and 'STATUS SAP' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS SAP'] == filtro_map_sap]
+        if len(filtro_map_list) > 0 and 'STATUS LIST' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS LIST'].isin(filtro_map_list)]
+
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
+        
+        # CORREÇÃO: Contador de obras nos filtros exibido antes do mapa
+        col_m1.info(f"📍 **Obras localizadas no mapa:** {len(df_notas_mapa_view)}")
+        
         camada_upload = col_m2.file_uploader("Sobrepor Camada (KML/KMZ/GeoJSON)", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
             
         caminho_camada_temp = None
@@ -604,13 +713,6 @@ if menu_selecionado == 'Painel Executivo':
                             caminho_camada_temp = safe_extract_path
                 except Exception: pass
         
-        df_notas_mapa_view = df_notas_calc.copy()
-        if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
-        if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
-        if filtro_map_mun != "TODOS" and 'MUNICIPIO' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['MUNICIPIO'] == filtro_map_mun]
-        if filtro_map_sap != "TODOS" and 'STATUS SAP' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS SAP'] == filtro_map_sap]
-        if len(filtro_map_list) > 0 and 'STATUS LIST' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS LIST'].isin(filtro_map_list)]
-
         df_eq_mapa_view = df_equipes_db.copy()
         if filtro_map_lev != "TODOS" and 'Levantador' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Levantador'].astype(str).str.upper() == filtro_map_lev.upper()]
         if filtro_map_reg != "TODOS" and 'Regional' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Regional'].astype(str).str.upper() == filtro_map_reg.upper()]
