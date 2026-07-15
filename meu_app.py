@@ -226,7 +226,7 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.ui_lig = 'TODOS'
     st.session_state.ui_sap = 'TODOS'
     st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
-    st.session_state.menu_idx = 1
+    st.session_state.menu_idx = 2
     st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
 
 def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
@@ -463,16 +463,16 @@ with st.sidebar:
 
     st.markdown("---")
     
-    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Simulador de Alocação']
-    icones_menu = ['pie-chart-fill', 'sliders', 'calculator-fill']
+    opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
+    icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
     
     if st.session_state.perfil_usuario == "ADMIN":
-        opcoes_menu.insert(2, 'Carga de Lotes')
-        icones_menu.insert(2, 'cloud-upload-fill')
-        opcoes_menu.insert(3, 'Levantadores')
-        icones_menu.insert(3, 'person-vcard-fill')
-        opcoes_menu.insert(4, 'Gerenciamento de Acessos')
-        icones_menu.insert(4, 'shield-lock-fill')
+        opcoes_menu.insert(4, 'Carga de Lotes')
+        icones_menu.insert(4, 'cloud-upload-fill')
+        opcoes_menu.insert(5, 'Levantadores')
+        icones_menu.insert(5, 'person-vcard-fill')
+        opcoes_menu.insert(6, 'Gerenciamento de Acessos')
+        icones_menu.insert(6, 'shield-lock-fill')
         
     menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
     
@@ -640,9 +640,9 @@ if menu_selecionado == 'Painel Executivo':
                 df_demanda_view = df_demanda[cols_view].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
                 
-                dist_series = df_demanda_view['Distancia_KM'].copy() # Salva valores para calcular as cores
+                dist_series = df_demanda_view['Distancia_KM'].copy() # Salva valores originais numéricos para pintar cor
                 
-                # Aplica Formato BR encurtado apenas na visualização (Ex: 123.800 -> 123,8)
+                # Exibe de forma curta (Ex: 123.8 -> 123,8) apenas na View da tela
                 df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].apply(
                     lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
                 )
@@ -659,25 +659,21 @@ if menu_selecionado == 'Painel Executivo':
                 
                 # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
                 def is_valid_export(row):
-                    def is_valid(val):
-                        s = str(val).strip().upper()
-                        # Ignora espaços vazios, nulos, e lixos de conversão
-                        if s in ['', 'NAN', 'NONE', '<NA>', 'NULL', 'NAT']: return False
-                        # Ignora marcações zeradas numéricas
-                        if s in ['0', '0.0', '0,0', '0.00']: return False
-                        return True
+                    # Retorna False se a celula for vazia, nula ou zero
+                    t = str(row.get('TIPO LIGACAO', '')).strip().upper()
+                    n = str(row.get('NOME DO SOLICITANTE', '')).strip().upper()
+                    lat = str(row.get('LATITUDE', '')).strip().upper()
+                    lon = str(row.get('LONGITUDE', '')).strip().upper()
                     
-                    t = is_valid(row.get('TIPO LIGACAO'))
-                    n = is_valid(row.get('NOME DO SOLICITANTE'))
-                    lat = is_valid(row.get('LATITUDE'))
-                    lon = is_valid(row.get('LONGITUDE'))
-                    return t and n and lat and lon
+                    valid_t = t not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0', '0,0']
+                    valid_n = n not in ['', 'NAN', 'NONE', '<NA>']
+                    valid_lat = lat not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0', '0,0']
+                    valid_lon = lon not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0', '0,0']
+                    return valid_t and valid_n and valid_lat and valid_lon
 
-                # Aplica validação linha por linha
                 valid_mask = df_demanda.apply(is_valid_export, axis=1)
                 df_export_base = df_demanda[valid_mask].copy().sort_values('Distancia_KM')
 
-                # Colunas Exatas da Imagem Exigida Pelo Usuario
                 cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
                                        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
                                        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
@@ -700,7 +696,6 @@ if menu_selecionado == 'Painel Executivo':
                     else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                 
-                # Aplica as cores nas colunas antes de exportar
                 styled_df_export = df_export.style.apply(style_excel, axis=1)
 
                 buffer_excel = io.BytesIO()
@@ -713,7 +708,6 @@ if menu_selecionado == 'Painel Executivo':
                     pms = []
                     for _, row in df.iterrows():
                         try:
-                            # Prevenção contra vírgula em coordenadas BR
                             lat = float(str(row.get('LATITUDE', '')).replace(',','.'))
                             lon = float(str(row.get('LONGITUDE', '')).replace(',','.'))
                             if not pd.isna(lat) and not pd.isna(lon):
@@ -731,7 +725,6 @@ if menu_selecionado == 'Painel Executivo':
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome devidamente preenchidos na base).")
                 
-                # Nomenclatura do arquivo acompanha o dia atual
                 hoje_str_file = datetime.now().strftime('%d_%m_%Y')
                 col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
                 
@@ -766,9 +759,12 @@ if menu_selecionado == 'Painel Executivo':
             s = str(val).strip().upper()
             if s in ['NAN', 'NONE', 'NAT', '<NA>', '']: return pd.NaT
             
+            # Corta TimeStamp se houver
             s = s.split(' ')[0].split('T')[0]
+            # Padroniza divisórias
             s = s.replace('.', '/').replace('-', '/')
             try:
+                # Força o pandas a entender que o primeiro número é Dia
                 return pd.to_datetime(s, dayfirst=True).date()
             except:
                 return pd.NaT
@@ -840,143 +836,116 @@ if menu_selecionado == 'Painel Executivo':
                 fig_sla.update_traces(textposition='auto', textfont_size=14)
                 st.plotly_chart(fig_sla, use_container_width=True)
 
-        st.markdown("---")
+# -----------------------------------------------------------------------------
+# VISÃO 2: LEITOR KMZ (NOVA ABA INSPIRADA NA IMAGEM GIS EARTH)
+# -----------------------------------------------------------------------------
+elif menu_selecionado == 'Leitor KMZ':
+    st.markdown("""
+        <style>
+        .gis-panel { background-color: #1a1a2e; color: #e0e0e0; padding: 15px; border-radius: 8px; border: 1px solid #2d2d44; height: 750px; overflow-y: auto;}
+        .gis-header { font-size: 14px; font-weight: bold; color: #8282b9; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #2d2d44; padding-bottom: 5px;}
+        .gis-value { font-size: 13px; margin-bottom: 10px; color: #fff; background-color: #24243e; padding: 8px; border-radius: 4px;}
+        </style>
+    """, unsafe_allow_html=True)
+    
+    st.markdown("### 🗺️ GIS Earth - Leitor de Levantamentos")
+    
+    col_l, col_m, col_r = st.columns([2.5, 6, 2.5])
+    
+    with col_l:
+        st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
+        st.markdown("<div class='gis-header'>📂 Carregar KML / KMZ</div>", unsafe_allow_html=True)
         
-        st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
+        camada_gis = st.file_uploader("", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
+        caminho_gis_temp = None
+        gdf_pontos_gis = gpd.GeoDataFrame()
         
-        op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('LEVANTADOR', pd.Series()).dropna().unique()])
-        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('REGIONAL', pd.Series()).dropna().unique()])
-        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('MUNICIPIO', pd.Series()).dropna().unique()])
-        op_map_sap = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('STATUS SAP', pd.Series()).dropna().unique()])
-        op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
-        
-        col_f1, col_f2, col_f3 = st.columns(3)
-        with col_f1: filtro_map_lev = st.selectbox("Filtro Mapa Levantador:", op_map_lev, key='map_lev')
-        with col_f2: filtro_map_reg = st.selectbox("Filtro Mapa Regional:", op_map_reg, key='map_reg')
-        with col_f3: filtro_map_mun = st.selectbox("Filtro Mapa Município:", op_map_mun, key='map_mun')
-        
-        col_f4, col_f5, col_f6 = st.columns(3)
-        with col_f4: filtro_map_sap = st.selectbox("Filtro Mapa Status SAP:", op_map_sap, key='map_sap')
-        with col_f5: filtro_map_list = st.multiselect("Filtro Mapa Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
-        
-        df_notas_mapa_view = df_notas_calc.copy()
-        if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
-        if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
-        if filtro_map_mun != "TODOS" and 'MUNICIPIO' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['MUNICIPIO'] == filtro_map_mun]
-        if filtro_map_sap != "TODOS" and 'STATUS SAP' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS SAP'] == filtro_map_sap]
-        if len(filtro_map_list) > 0 and 'STATUS LIST' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS LIST'].isin(filtro_map_list)]
-
-        col_m1, col_m2 = st.columns([8, 2])
-        col_m1.info(f"📍 **Obras localizadas no mapa:** {len(df_notas_mapa_view)}")
-        
-        camada_upload = col_m2.file_uploader("Sobrepor Camada (KML/KMZ)", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
-            
-        caminho_camada_temp = None
-        if camada_upload is not None:
-            extensao = camada_upload.name.split('.')[-1].lower()
+        if camada_gis is not None:
+            extensao = camada_gis.name.split('.')[-1].lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
-                tmp.write(camada_upload.getvalue())
-                caminho_camada_temp = tmp.name
+                tmp.write(camada_gis.getvalue())
+                caminho_gis_temp = tmp.name
             if extensao == 'kmz':
                 try:
-                    with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
+                    with zipfile.ZipFile(caminho_gis_temp, 'r') as kmz:
                         kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
                         if kml_files: 
                             kml_filename = os.path.basename(kml_files[0])
                             safe_extract_path = os.path.join(tempfile.gettempdir(), kml_filename)
                             with open(safe_extract_path, 'wb') as out_file:
                                 out_file.write(kmz.read(kml_files[0]))
-                            caminho_camada_temp = safe_extract_path
+                            caminho_gis_temp = safe_extract_path
                 except Exception: pass
-        
-        df_eq_mapa_view = df_equipes_db.copy()
-        if filtro_map_lev != "TODOS" and 'Levantador' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Levantador'].astype(str).str.upper() == filtro_map_lev.upper()]
-        if filtro_map_reg != "TODOS" and 'Regional' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Regional'].astype(str).str.upper() == filtro_map_reg.upper()]
-        if filtro_map_mun != "TODOS" and 'Município' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Município'].astype(str).str.upper() == filtro_map_mun.upper()]
-
-        def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
-            mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
-            folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Visão de Satélite', overlay=False, control=True).add_to(mapa)
-            folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
-            
-            if arquivo_espacial:
-                gdf_lines, gdf_points, bounds = processar_camada_espacial(arquivo_espacial)
-                if not gdf_lines.empty:
-                    folium.GeoJson(gdf_lines, name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
-                if not gdf_points.empty:
-                    for col in ['Name', 'Description', 'Layer_Name']:
-                        if col not in gdf_points.columns: gdf_points[col] = ''
-                    def get_point_style(feature):
-                        props = feature.get('properties', {})
-                        busca = (str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))).lower()
-                        if 'poste' in busca: cor, raio = '#808080', 2.5
-                        elif any(k in busca for k in ['transformador', 'trafo', 'subestação', 'subestacao']): cor, raio = '#28a745', 5.0
-                        elif any(k in busca for k in ['chave', 'seccionador', 'fusivel']): cor, raio = '#ffc107', 4.0
-                        elif any(k in busca for k in ['medidor', 'consumidor', 'cliente']): cor, raio = '#17a2b8', 2.5
-                        else: cor, raio = '#dc3545', 2.5
-                        return {'fillColor': cor, 'color': cor, 'weight': 1, 'fillOpacity': 0.9, 'radius': raio}
-                    folium.GeoJson(
-                        gdf_points, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
-                        style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
-                    ).add_to(mapa)
-                if bounds is not None: mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-
-            fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
-            records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
-            for row in records_equipes:
-                try:
-                    lat_val, lon_val = float(row.get('Latitude', np.nan)), float(row.get('Longitude', np.nan))
-                    if pd.notna(lat_val) and pd.notna(lon_val):
-                        lev = str(row['Levantador'])
-                        if lev in todos_levantadores:
-                            folium.Marker(location=[lat_val, lon_val], icon=folium.Icon(color='red' if lev in criticos_tuple else 'green', icon='user', prefix='fa'), tooltip=f"Levantador: {html.escape(lev)}").add_to(fg_equipes)
-                except (ValueError, TypeError): pass 
-
-            df_notas_mapa = df_nt.copy()
-            df_notas_mapa['Lat_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lat_Mapa'), errors='coerce')
-            df_notas_mapa['Lon_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lon_Mapa'), errors='coerce')
-            df_notas_mapa = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
-            
-            if not df_notas_mapa.empty:
-                df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
-                df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
                 
-                if len(df_notas_mapa) > 500:
-                    obras_coords = df_notas_mapa[['lat_jitter', 'lon_jitter']].values.tolist()
-                    FastMarkerCluster(data=obras_coords, name="🏗️ Demandas Ativas (Fast Cluster)").add_to(mapa)
-                else:
-                    fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
-                    cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
-                    for row in df_notas_mapa.to_dict('records'):
-                        safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
-                        safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
-                        safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
-                        
-                        html_mini_card = f"""
-                        <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
-                            <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
-                            <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
-                                <b>PROTOCOLO:</b> {safe_protocolo}<br>
-                                <b>MUNICIPIO:</b> {safe_municipio}<br>
-                                <b>LEVANTADOR:</b> {safe_levantador}<br>
-                            </div>
-                        </div>
-                        """
-                        lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                        folium.Marker(location=[row['lat_jitter'], row['lon_jitter']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(html_mini_card, max_width=310)).add_to(cluster_obras)
-                    fg_obras.add_to(mapa)
+            _, gdf_pontos_gis, _ = processar_camada_espacial(caminho_gis_temp)
+            
+        st.markdown("<div class='gis-header' style='margin-top:20px;'>📍 Camadas / Pontos</div>", unsafe_allow_html=True)
+        
+        ponto_selecionado = None
+        if not gdf_pontos_gis.empty:
+            for col in ['Name', 'Description', 'Layer_Name']:
+                if col not in gdf_pontos_gis.columns:
+                    gdf_pontos_gis[col] = ''
+                    
+            lista_nomes = gdf_pontos_gis['Name'].replace('', 'Ponto Sem Nome').tolist()
+            escolha = st.selectbox("Selecione um elemento para visualizar detalhes:", ["Ver Todos"] + lista_nomes)
+            
+            if escolha != "Ver Todos":
+                ponto_selecionado = gdf_pontos_gis[gdf_pontos_gis['Name'].replace('', 'Ponto Sem Nome') == escolha].iloc[0]
+        else:
+            st.caption("Faça o upload de um arquivo para listar os elementos.")
+            
+        st.markdown("</div>", unsafe_allow_html=True)
 
-            fg_equipes.add_to(mapa)
-            folium.LayerControl().add_to(mapa)
-            return mapa
+    with col_m:
+        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7)
+        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Visão de Satélite', overlay=False, control=True).add_to(mapa_gis)
+        
+        if not gdf_pontos_gis.empty:
+            def get_point_style(feature):
+                return {'fillColor': '#007BFF', 'color': '#007BFF', 'weight': 1, 'fillOpacity': 0.9, 'radius': 4.0}
+            
+            folium.GeoJson(
+                gdf_pontos_gis, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
+                style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name', 'Description'], aliases=['Nome:', 'Detalhes:'])
+            ).add_to(mapa_gis)
+            
+            if ponto_selecionado is not None:
+                lat_foc, lon_foc = ponto_selecionado.geometry.y, ponto_selecionado.geometry.x
+                mapa_gis.location = [lat_foc, lon_foc]
+                mapa_gis.zoom_start = 17
+                folium.Marker(location=[lat_foc, lon_foc], icon=folium.Icon(color='red', icon='info-sign')).add_to(mapa_gis)
+            else:
+                b_gis = gdf_pontos_gis.total_bounds
+                mapa_gis.fit_bounds([[b_gis[1], b_gis[0]], [b_gis[3], b_gis[2]]])
+                
+        st_folium(mapa_gis, use_container_width=True, height=750, returned_objects=[])
 
-        with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
-            mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
-            st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
+    with col_r:
+        st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
+        if ponto_selecionado is not None:
+            st.markdown("<div class='gis-header'>📍 Detalhes do Ponto</div>", unsafe_allow_html=True)
+            
+            st.caption("NOME / IDENTIFICAÇÃO")
+            st.markdown(f"<div class='gis-value'>{ponto_selecionado.get('Name', 'N/A')}</div>", unsafe_allow_html=True)
+            
+            st.caption("COORDENADAS")
+            lat_txt = f"{ponto_selecionado.geometry.y:.6f}°"
+            lon_txt = f"{ponto_selecionado.geometry.x:.6f}°"
+            st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
+            
+            st.caption("DESCRIÇÃO / DADOS")
+            st.markdown(f"<div class='gis-value'>{ponto_selecionado.get('Description', 'Sem detalhes informados.')}</div>", unsafe_allow_html=True)
+            
+            st.caption("FOTOS (Se anexadas no HTML do KML)")
+            st.info("Para visualização completa de fotos de pastas internas (.kmz), clique diretamente no ícone do mapa no centro da tela.")
+        else:
+            st.markdown("<div class='gis-header'>📍 Detalhes do Ponto</div>", unsafe_allow_html=True)
+            st.caption("Selecione um ponto na lista à esquerda para carregar seus dados e metadados.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
+# VISÃO 3: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
@@ -1067,7 +1036,7 @@ elif menu_selecionado == 'Busca e Governança':
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# VISÃO 3: CARGA DE LOTES (SOMENTE ADMIN)
+# VISÃO 4: CARGA DE LOTES (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1117,7 +1086,7 @@ elif menu_selecionado == 'Carga de Lotes':
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
-# VISÃO 4: LEVANTADORES (NOVA ABA - MUDANÇA DE RESIDÊNCIA E CRIAÇÃO)
+# VISÃO 5: LEVANTADORES (NOVA ABA - MUDANÇA DE RESIDÊNCIA E CRIAÇÃO)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Levantadores':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1196,7 +1165,7 @@ elif menu_selecionado == 'Levantadores':
                 st.warning("⚠️ Preencha todos os campos obrigatórios (Nome, Equipe e Residência).")
 
 # -----------------------------------------------------------------------------
-# VISÃO 5: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
+# VISÃO 6: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Gerenciamento de Acessos':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1265,7 +1234,7 @@ elif menu_selecionado == 'Gerenciamento de Acessos':
                 st.warning("Preencha todos os campos para continuar.")
 
 # -----------------------------------------------------------------------------
-# VISÃO 6: SIMULADOR DE ALOCAÇÃO
+# VISÃO 7: SIMULADOR DE ALOCAÇÃO
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Simulador de Alocação':
     st.markdown("""
