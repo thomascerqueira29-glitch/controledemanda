@@ -61,6 +61,32 @@ def init_iam():
 
 init_iam()
 
+def update_residencias_hardcoded():
+    """Mapeamento rígido das residências dos levantadores baseado nas definições operacionais"""
+    mapeamento_residencias = {
+        "ARGELL CARLOS LOPES AZEVEDO": "SANTA INES",
+        "EDELSON SOUSA GUIMARÃES": "CHAPADINHA",
+        "FÁBIO ALTINO DE SOUZA JUNIOR": "IMPERATRIZ",
+        "ISRAEL GARRAS VERAS": "SAO LUIS",
+        "JEFFERSON COSTA JANSEM": "SITIO NOVO",
+        "JEIAN CLAUDIO NAVA PEREIRA": "AÇAILANDIA",
+        "JOSÉ ANTÔNIO LEITE ALVES": "PERI MIRIM",
+        "LUÍS FERREIRA DE ARAUJO": "TIMON",
+        "LUIZ ALESSANDRO OLIVEIRA CASTRO CONRADO DA SILVA": "BARRA DO CORDA",
+        "MAILSON DA SILVA BARBOSA": "BERNARDO DO MEARIM",
+        "MARCONE DE OLIVEIRA FERREIRA": "BACABAL",
+        "MARCOS DA SILVA NEVES": "BARREIRINHAS",
+        "OSVALDO RABELO DIAS JUNIOR": "APICUM-ACU",
+        "RAIMUNDO JHONES ASSUNÇÃO DA LUZ": "COROATA"
+    }
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            for lev, res in mapeamento_residencias.items():
+                conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (res, lev))
+            conn.commit()
+    except Exception as e:
+        logging.error(f"Erro ao forçar residencias baseadas na imagem: {e}")
+
 def ensure_residencia_column():
     """Garante que a coluna Residencia exista na tabela equipes para a lógica de 'Gerar Demanda'"""
     try:
@@ -73,7 +99,6 @@ def ensure_residencia_column():
                 if 'Residencia' not in columns:
                     conn.execute("ALTER TABLE equipes ADD COLUMN Residencia TEXT")
                     
-                    # Tenta extrair da planilha base levantador se ela existir no ambiente
                     if os.path.exists('base levantador.xlsx'):
                         df_base = pd.read_excel('base levantador.xlsx')
                         if 'Residencia' in df_base.columns:
@@ -114,7 +139,6 @@ def init_business_db():
             # Validação Tabela de Equipes
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
             if not cursor.fetchone():
-                # Usa a base_levantador caso não encontre equipes genérica
                 if os.path.exists('base levantador.xlsx'):
                     pd.read_excel('base levantador.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 elif os.path.exists('EQUIPES.xlsx'):
@@ -129,6 +153,7 @@ def init_business_db():
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
     init_business_db()
     ensure_residencia_column()
+    update_residencias_hardcoded()
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -503,7 +528,6 @@ if menu_selecionado == 'Painel Executivo':
                 st.markdown("<div style='padding: 20px; border: 1px solid #EAEAEA; border-radius: 8px; background: #FAFAFA;'>", unsafe_allow_html=True)
                 lev_selecionado = st.selectbox("Levantador:", todos_levantadores, label_visibility="collapsed")
                 
-                # Zera a etapa de confirmação se mudarmos o levantador selecionado
                 if st.session_state.get('last_lev_selecionado') != lev_selecionado:
                     st.session_state.assign_step = 0
                     st.session_state.show_demanda = False
@@ -516,13 +540,11 @@ if menu_selecionado == 'Painel Executivo':
                 
                 if st.session_state.perfil_usuario == "ADMIN":
                     if obras_do_lev < 45:
-                        # Etapa 0: Exibe o botão principal de Atribuir
                         if st.session_state.get('assign_step', 0) == 0:
                             if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Próximas", use_container_width=True, type="primary"):
                                 st.session_state.assign_step = 1
                                 st.rerun()
                                 
-                        # Etapa 1: Aguardando a Confirmação de Segurança
                         elif st.session_state.assign_step == 1:
                             st.warning(f"Confirmar atribuição de +{saldo_necessario} obras para {lev_selecionado}?")
                             col_conf1, col_conf2 = st.columns(2)
@@ -568,7 +590,6 @@ if menu_selecionado == 'Painel Executivo':
                                 st.session_state.assign_step = 0
                                 st.rerun()
                                 
-                        # Etapa 2: Exibe o botão de Gerar Demanda (Roteirização/Cor) após a confirmação
                         elif st.session_state.assign_step == 2:
                             st.success("✅ Atribuição confirmada.")
                             if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"):
@@ -577,7 +598,6 @@ if menu_selecionado == 'Painel Executivo':
                                 st.rerun()
                     else: 
                         st.success("✅ Meta Atingida.")
-                        # Se já tem as metas, o botão de gerar demanda pode ser acessado livremente
                         if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"):
                             st.session_state.show_demanda = True
                             
@@ -587,7 +607,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
                 
-        # --- NOVO PAINEL: GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES) ---
+        # --- GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES E EXPORTAÇÃO KML/EXCEL) ---
         if st.session_state.get('show_demanda', False):
             st.markdown("---")
             st.markdown(f"#### 📋 Gerador de Demanda Otimizado - {lev_selecionado}")
@@ -611,26 +631,64 @@ if menu_selecionado == 'Painel Executivo':
                     
                 df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
                 
+                # Monta a visualização da tela
                 df_demanda_view = df_demanda[['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
                 df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].round(1)
                 
-                # Regras de Coloração Baseada na Planilha
                 def color_rules(row):
                     dist = row['Distancia_KM']
-                    if pd.isna(dist):
-                        color = ''
-                    elif dist <= 50:
-                        color = 'background-color: #d4edda; color: #155724;' # Verde (Até 50km)
-                    elif dist <= 100:
-                        color = 'background-color: #fff3cd; color: #856404;' # Amarelo (Até 100km)
-                    else:
-                        color = 'background-color: #f8d7da; color: #721C24;' # Vermelho (150 a 250km+)
+                    if pd.isna(dist): color = ''
+                    elif dist <= 50: color = 'background-color: #d4edda; color: #155724;' 
+                    elif dist <= 100: color = 'background-color: #fff3cd; color: #856404;' 
+                    else: color = 'background-color: #f8d7da; color: #721C24;' 
                     return [color] * len(row)
                     
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
-                if st.button("Fechar Aba de Demanda"):
+                # Prepara o DataFrame Oficial exigido na exportação (Imagem do usuário)
+                cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
+                                       'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
+                                       'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
+                
+                df_export = df_demanda.copy()
+                # Garante colunas caso a base original venha sem alguma delas
+                for c in cols_export_oficial:
+                    if c not in df_export.columns:
+                        df_export[c] = ""
+                        
+                df_export = df_export[cols_export_oficial].sort_index()
+                
+                buffer_excel = io.BytesIO()
+                with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='Demanda')
+                
+                def gerar_kml_demanda(df):
+                    header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
+                    footer = '</Document>\n</kml>'
+                    pms = []
+                    for _, row in df.iterrows():
+                        try:
+                            lat = float(str(row.get('LATITUDE', '')).replace(',','.'))
+                            lon = float(str(row.get('LONGITUDE', '')).replace(',','.'))
+                            if not pd.isna(lat) and not pd.isna(lon):
+                                pms.append(f'''<Placemark>
+                                    <name>{html.escape(str(row.get('PROTOCOLO', '')))}</name>
+                                    <description>{html.escape(str(row.get('ENDEREÇO', '')))}</description>
+                                    <Point><coordinates>{lon},{lat},0</coordinates></Point>
+                                </Placemark>\n''')
+                        except ValueError:
+                            pass
+                    return (header + "".join(pms) + footer).encode('utf-8')
+                
+                kml_data = gerar_kml_demanda(df_export)
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
+                
+                col_btn1.download_button("📥 Planilha Oficial (Excel)", data=buffer_excel.getvalue(), file_name=f"Demanda_{lev_selecionado}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                col_btn2.download_button("🗺️ Pontos de Rota (KML)", data=kml_data, file_name=f"Demanda_{lev_selecionado}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
+                if col_btn3.button("Fechar Aba de Demanda", use_container_width=True):
                     st.session_state.show_demanda = False
                     st.rerun()
             else:
@@ -640,24 +698,27 @@ if menu_selecionado == 'Painel Executivo':
                     st.rerun()
 
         st.markdown("---")
-        st.markdown("#### 🏆 Obras em Levantamento Concluído")
+        # --- PAINEL PRODUÇÃO DIÁRIA (Totalmente Corrigido e Limpo) ---
+        st.markdown("#### 🏆 PRODUÇÃO DIÁRIA")
         
         col_c1, col_c2 = st.columns([1, 3])
         with col_c1:
-            data_filtro_conclusao = st.date_input("Filtrar por Data de Conclusão", value=datetime.today())
+            data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today())
             
         with col_c2:
-            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE no preenchimento da coluna **DATA DE LEVANTAMENTO LIST** correspondente à data selecionada.")
+            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE na extração das datas preenchidas na coluna **DATA DE LEVANTAMENTO LIST**.")
             
         df_concluidas = df_notas_calc.copy()
         
-        def safe_date_parse(serie):
+        def safe_date_parse_robust(serie):
+            # Limpa lixo oculto, nulos e troca traços e pontos por barras
             s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-            s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
+            s = s.str.replace(r'[\.\-]', '/', regex=True).str.split(' ').str[0]
+            # Converte forcando os que não passarem a virar NaT
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
         if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
-            df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA DE LEVANTAMENTO LIST'])
+            df_concluidas['DATA_REF'] = safe_date_parse_robust(df_concluidas['DATA DE LEVANTAMENTO LIST'])
         else:
             df_concluidas['DATA_REF'] = pd.NaT
             
@@ -674,13 +735,14 @@ if menu_selecionado == 'Painel Executivo':
         resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
         resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
         
+        # O layout problemático foi resolvido removendo a ProgressColumn esticada
         st.dataframe(
             resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
             use_container_width=True, hide_index=True, height=320,
             column_config={
                 "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
                 "Equipe": st.column_config.TextColumn("Equipe SAP"),
-                "Obras_Concluidas": st.column_config.ProgressColumn("Concluídas no Dia", format="%d", min_value=0, max_value=int(resumo_concluidas['Obras_Concluidas'].max() if not resumo_concluidas.empty and resumo_concluidas['Obras_Concluidas'].max() > 0 else 10))
+                "Obras_Concluidas": st.column_config.NumberColumn("Quantidade Concluída", format="%d")
             }
         )
 
