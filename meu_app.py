@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, FastMarkerCluster, MeasureControl, Draw
+from folium.plugins import MarkerCluster, FastMarkerCluster
 import plotly.express as px
 import numpy as np
 import os
@@ -14,6 +14,7 @@ import tempfile
 import geopandas as gpd
 import zipfile
 import logging
+import hashlib
 import shutil
 import html
 from datetime import datetime, timedelta
@@ -35,13 +36,18 @@ try:
     except AttributeError:
         fiona.supported_drivers['KML'] = 'rw'
         fiona.supported_drivers['LIBKML'] = 'rw'
-except ImportError:
-    logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
+except ImportError as e:
+    logging.warning(f"Módulo fiona não instalado perfeitamente: {e}")
 
 # -----------------------------------------------------------------------------
-# 1. MOTOR DE IDENTIDADE E BANCOS DE DADOS
+# 1. MOTOR DE SEGURANÇA E BANCOS DE DADOS
 # -----------------------------------------------------------------------------
+def hash_senha(senha):
+    """Criptografa as senhas usando SHA-256 para não armazenar texto plano no DB."""
+    return hashlib.sha256(str(senha).encode('utf-8')).hexdigest()
+
 def init_iam():
+    """Garante que as tabelas de segurança existam, independentemente do estado do servidor Cloud"""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS usuarios 
                         (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
@@ -54,13 +60,23 @@ def init_iam():
                         (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
                          data_hora TEXT, acao TEXT, detalhes TEXT)''')
 
-        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('THOMAS', 'admin123', 'ADMIN')")
-        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
+        # Injeção segura dos usuários padrão já criptografados
+        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('THOMAS', ?, 'ADMIN')", (hash_senha('admin123'),))
+        conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', ?, 'LEITURA')", (hash_senha('123'),))
         conn.commit()
 
-init_iam()
+def create_db_indexes(conn):
+    """Acelera as buscas criando índices nas colunas mais pesquisadas"""
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notas_lev ON notas (LEVANTADOR);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notas_reg ON notas (REGIONAL);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notas_list ON notas ([STATUS LIST]);")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notas_mun ON notas (MUNICIPIO);")
+    except Exception as e:
+        logging.error(f"Erro ao criar índices de aceleração: {e}", exc_info=True)
 
 def ensure_residencia_column():
+    """Garante que a coluna Residencia exista na tabela equipes."""
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             cursor = conn.cursor()
@@ -77,8 +93,8 @@ def ensure_residencia_column():
                             for lev, res in map_res.items():
                                 conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (str(res).upper().strip(), lev))
                     conn.commit()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"Erro de Schema na tabela de equipes: {e}", exc_info=True)
 
 def init_business_db():
     colunas_template_oficial = [
@@ -101,6 +117,9 @@ def init_business_db():
                     df_legacy.to_sql('notas', conn, if_exists='replace', index=False)
                 else:
                     pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
+            
+            # Chama a criação de Índices de alta performance
+            create_db_indexes(conn)
                     
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
             if not cursor.fetchone():
@@ -111,8 +130,10 @@ def init_business_db():
                 else:
                     pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
         st.session_state.db_initialized = True
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error(f"Erro fatal ao instanciar o SQLite primário: {e}", exc_info=True)
+
+init_iam()
 
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
     init_business_db()
@@ -121,7 +142,7 @@ if 'db_initialized' not in st.session_state or not st.session_state.db_initializ
     st.cache_data.clear()
 
 # -----------------------------------------------------------------------------
-# 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
+# 2. AUTENTICAÇÃO
 # -----------------------------------------------------------------------------
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
@@ -142,16 +163,26 @@ if st.session_state.usuario_logado is None:
             if submit:
                 with sqlite3.connect(DB_PATH, timeout=10) as conn:
                     cursor = conn.cursor()
-                    cursor.execute("SELECT role FROM usuarios WHERE username=? AND password=?", (username, password))
+                    cursor.execute("SELECT password, role FROM usuarios WHERE username=?", (username,))
                     result = cursor.fetchone()
                     
                     if result:
-                        st.session_state.usuario_logado = username
-                        st.session_state.perfil_usuario = result[0]
-                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, username))
-                        conn.commit()
-                        st.rerun()
+                        db_pwd, role = result
+                        input_hash = hash_senha(password)
+                        
+                        # Verifica o hash. Inclui fallback para senhas legadas que ainda não foram criptografadas
+                        if db_pwd == input_hash or db_pwd == password:
+                            if db_pwd == password: # Atualiza legado para Hash silenciosamente
+                                conn.execute("UPDATE usuarios SET password=? WHERE username=?", (input_hash, username))
+                                
+                            st.session_state.usuario_logado = username
+                            st.session_state.perfil_usuario = role
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, username))
+                            conn.commit()
+                            st.rerun()
+                        else:
+                            st.error("Credenciais inválidas.")
                     else:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
@@ -176,16 +207,9 @@ atualizar_sessao()
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
-def filtrar_levantador_governanca(nome_lev):
-    st.session_state.ui_lev = nome_lev
-    st.session_state.ui_reg = 'TODOS'
-    st.session_state.ui_mun = 'TODOS'
-    st.session_state.ui_lig = 'TODOS'
-    st.session_state.ui_sap = 'TODOS'
-    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
-    st.session_state.menu_idx = 1
-    st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
-
+# -----------------------------------------------------------------------------
+# 3. MODULARIZAÇÃO DE COMPONENTES DE UI
+# -----------------------------------------------------------------------------
 def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     return f"""
     <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 5px solid {border_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); height: 100%;">
@@ -195,8 +219,59 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     </div>
     """
 
+def render_filtros_governanca(df_notas):
+    """Componente modular de filtros reutilizável para a Governança"""
+    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f4, col_f5, col_f6 = st.columns(3)
+    
+    op_lev = ["TODOS"] + sorted([str(x) for x in df_notas.get('LEVANTADOR', pd.Series()).dropna().unique()])
+    if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
+    with col_f1: filtro_lev = st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
+
+    op_reg = ["TODOS"] + sorted([str(x) for x in df_notas.get('REGIONAL', pd.Series()).dropna().unique()])
+    if 'ui_reg' not in st.session_state or st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
+    with col_f2: filtro_reg = st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
+
+    op_mun = ["TODOS"] + sorted([str(x) for x in df_notas.get('MUNICIPIO', pd.Series()).dropna().unique()])
+    if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
+    with col_f3: filtro_mun = st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
+
+    op_lig = ["TODOS"] + sorted([str(x) for x in df_notas.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
+    if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
+    with col_f4: filtro_lig = st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
+
+    op_sap = ["TODOS"] + sorted([str(x) for x in df_notas.get('STATUS SAP', pd.Series()).dropna().unique()])
+    if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
+    with col_f5: filtro_sap = st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
+
+    op_list = sorted([str(x) for x in df_notas.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+    if 'ui_list' not in st.session_state: st.session_state.ui_list = []
+    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
+    with col_f6: filtro_list = st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
+
+    df_filtrado = df_notas.copy()
+    if filtro_lev != "TODOS": df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == filtro_lev]
+    if filtro_reg != "TODOS": df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == filtro_reg]
+    if filtro_mun != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == filtro_mun]
+    if filtro_lig != "TODOS": df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == filtro_lig]
+    if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == filtro_sap]
+    if len(filtro_list) > 0: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(filtro_list)]
+    
+    return df_filtrado, filtro_list, op_sap, op_list
+
+def filtrar_levantador_governanca(nome_lev):
+    """Função atrelada ao botão de atalho do Painel Executivo"""
+    st.session_state.ui_lev = nome_lev
+    st.session_state.ui_reg = 'TODOS'
+    st.session_state.ui_mun = 'TODOS'
+    st.session_state.ui_lig = 'TODOS'
+    st.session_state.ui_sap = 'TODOS'
+    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
+    st.session_state.menu_idx = 1
+    st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
+
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE E MAPPING
+# 4. MOTORES DE ALTA PERFORMANCE (DADOS E GIS)
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     try:
@@ -206,7 +281,8 @@ def registrar_auditoria(acao, detalhes):
             conn.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
                          (usuario, agora, acao, detalhes))
             conn.commit()
-    except Exception: pass
+    except Exception as e:
+        logging.error(f"Falha de Auditoria: {e}", exc_info=True)
 
 def auto_assign_levantador(df_notas, df_equipes):
     df_notas = df_notas.copy()
@@ -249,13 +325,30 @@ def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operaç�
             conn.execute("ALTER TABLE notas_temp RENAME TO notas;")
             conn.commit()
             
+            # Recria os índices após a destruição da tabela para assegurar velocidade constante
+            create_db_indexes(conn)
+            
+        if backup: realizar_backup_db()
+            
         registrar_auditoria(acao_auditoria, f"Tabela NOTAS atualizada. Volume final: {len(df_notas_limpo)} registros.")
         get_processed_data.clear()
         process_analytical_data.clear()
         return True
     except sqlite3.Error as e:
+        logging.error(f"Falha na manipulação do Banco SQLite: {e}", exc_info=True)
         st.error(f"Falha Crítica no Banco de Dados: {e}")
         return False
+
+def realizar_backup_db():
+    try:
+        os.makedirs("backups", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bkp_path = f"backups/controle_torre_nip_bkp_{timestamp}.db"
+        if os.path.exists(DB_PATH):
+            shutil.copy2(DB_PATH, bkp_path)
+            registrar_auditoria("BACKUP PREVENTIVO", f"Backup automático gerado em {bkp_path}")
+    except Exception as e:
+        logging.error(f"Erro ao gerar backup: {e}", exc_info=True)
 
 df_notas_db, df_equipes_db = get_processed_data()
 
@@ -269,7 +362,8 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         a = np.sin(dlat / 2)**2 + np.cos(lat1_rad) * np.cos(lat2_rad) * np.sin(dlon / 2)**2
         c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
         return R * c
-    except (ValueError, TypeError):
+    except (ValueError, TypeError) as e:
+        logging.error(f"Erro na matriz Haversine: {e}", exc_info=True)
         return pd.Series(99999, index=lat2_series.index)
 
 @st.cache_data(show_spinner=False)
@@ -346,7 +440,9 @@ def processar_camada_espacial(arquivo_espacial):
                 if not gdf_temp.empty:
                     gdf_temp['Layer_Name'] = camada
                     gdfs.append(gdf_temp)
-            except Exception: continue
+            except Exception as e: 
+                logging.error(f"Erro em camada {camada}: {e}", exc_info=True)
+                continue
                 
         if gdfs:
             gdf_final = pd.concat(gdfs, ignore_index=True)
@@ -364,7 +460,8 @@ def processar_camada_espacial(arquivo_espacial):
             gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
             gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
             bounds = gdf_final.total_bounds
-    except Exception: pass
+    except Exception as e:
+        logging.error(f"Erro global ao carregar a camada KMZ: {e}", exc_info=True)
     return gdf_lines, gdf_points, bounds
 
 @st.cache_data(show_spinner=False)
@@ -401,8 +498,77 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
+def construir_mapa_executivo(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
+    """Componente isolado de renderização de mapas para o painel Executivo para evitar loops"""
+    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
+    folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Visão de Satélite', overlay=False, control=True).add_to(mapa)
+    folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
+    
+    if arquivo_espacial:
+        gdf_lines_e, gdf_points_e, bounds_e = processar_camada_espacial(arquivo_espacial)
+        if not gdf_lines_e.empty:
+            folium.GeoJson(gdf_lines_e[['Name', 'geometry']], name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
+        if not gdf_points_e.empty:
+            def get_point_style(feature):
+                return {'fillColor': '#dc3545', 'color': '#dc3545', 'weight': 1, 'fillOpacity': 0.9, 'radius': 2.5}
+            folium.GeoJson(
+                gdf_points_e[['Name', 'geometry']], name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
+                style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
+            ).add_to(mapa)
+        if bounds_e is not None: mapa.fit_bounds([[bounds_e[1], bounds_e[0]], [bounds_e[3], bounds_e[2]]])
+
+    fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
+    records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
+    for row in records_equipes:
+        try:
+            lat_val, lon_val = float(row.get('Latitude', np.nan)), float(row.get('Longitude', np.nan))
+            if pd.notna(lat_val) and pd.notna(lon_val):
+                lev = str(row['Levantador'])
+                if lev in todos_levantadores:
+                    folium.Marker(location=[lat_val, lon_val], icon=folium.Icon(color='red' if lev in criticos_tuple else 'green', icon='user', prefix='fa'), tooltip=f"Levantador: {html.escape(lev)}").add_to(fg_equipes)
+        except (ValueError, TypeError): pass 
+
+    df_notas_mapa = df_nt.copy()
+    df_notas_mapa['Lat_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lat_Mapa'), errors='coerce')
+    df_notas_mapa['Lon_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lon_Mapa'), errors='coerce')
+    df_notas_mapa = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
+    
+    if not df_notas_mapa.empty:
+        df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
+        df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
+        
+        if len(df_notas_mapa) > 500:
+            obras_coords = df_notas_mapa[['lat_jitter', 'lon_jitter']].values.tolist()
+            FastMarkerCluster(data=obras_coords, name="🏗️ Demandas Ativas (Fast Cluster)").add_to(mapa)
+        else:
+            fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
+            cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
+            for row in df_notas_mapa.to_dict('records'):
+                safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
+                safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
+                safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
+                html_mini_card = f"""
+                <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
+                    <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
+                    <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
+                        <b>PROTOCOLO:</b> {safe_protocolo}<br>
+                        <b>MUNICIPIO:</b> {safe_municipio}<br>
+                        <b>LEVANTADOR:</b> {safe_levantador}<br>
+                    </div>
+                </div>
+                """
+                lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                folium.Marker(location=[row['lat_jitter'], row['lon_jitter']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(html_mini_card, max_width=310)).add_to(cluster_obras)
+            fg_obras.add_to(mapa)
+
+    fg_equipes.add_to(mapa)
+    folium.LayerControl(position='bottomright').add_to(mapa)
+    return mapa
+
+
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL
+# NAVEGAÇÃO LATERAL (RENDERIZAÇÃO)
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
@@ -436,6 +602,7 @@ with st.sidebar:
     
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
+
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO
@@ -686,12 +853,12 @@ if menu_selecionado == 'Painel Executivo':
                     st.session_state.show_demanda = False
                     st.rerun()
             else:
-                st.warning("Nenhuma obra na fila de produtividade para este levantador.")
+                st.warning("Nenhuma obra na fila de produtividade para este levantador. Utilize a Busca Governança para conferir o status.")
                 if st.button("Fechar"):
                     st.session_state.show_demanda = False
                     st.rerun()
 
-        # BLINDAGEM DOS GRÁFICOS E MAPA EXEC
+        # BLINDAGEM DOS GRÁFICOS
         try:
             st.markdown("---")
             st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
@@ -713,8 +880,8 @@ if menu_selecionado == 'Painel Executivo':
                     fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h', title="Top 15 - Obras Sem Levantador Atribuído por Regional", color_discrete_sequence=['#D9534F'])
                     fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                     st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Erro ao renderizar gráficos: {e}", exc_info=True)
 
         try:
             df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
@@ -734,8 +901,8 @@ if menu_selecionado == 'Painel Executivo':
                                      color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
                     fig_sla.update_traces(textposition='auto', textfont_size=14)
                     st.plotly_chart(fig_sla, use_container_width=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Erro ao renderizar SLA: {e}", exc_info=True)
 
         try:
             st.markdown("---")
@@ -780,78 +947,12 @@ if menu_selecionado == 'Painel Executivo':
             if filtro_map_reg != "TODOS" and 'Regional' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Regional'].astype(str).str.upper() == filtro_map_reg.upper()]
             if filtro_map_mun != "TODOS" and 'Município' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Município'].astype(str).str.upper() == filtro_map_mun.upper()]
 
-            def construir_mapa(df_eq, df_nt, criticos_tuple, arquivo_espacial=None):
-                mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7)
-                folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Visão de Satélite', overlay=False, control=True).add_to(mapa)
-                folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
-                
-                if arquivo_espacial:
-                    gdf_lines_e, gdf_points_e, bounds_e = processar_camada_espacial(arquivo_espacial)
-                    if not gdf_lines_e.empty:
-                        folium.GeoJson(gdf_lines_e[['Name', 'geometry']], name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
-                    if not gdf_points_e.empty:
-                        def get_point_style(feature):
-                            return {'fillColor': '#dc3545', 'color': '#dc3545', 'weight': 1, 'fillOpacity': 0.9, 'radius': 2.5}
-                        folium.GeoJson(
-                            gdf_points_e[['Name', 'geometry']], name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
-                            style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
-                        ).add_to(mapa)
-                    if bounds_e is not None: mapa.fit_bounds([[bounds_e[1], bounds_e[0]], [bounds_e[3], bounds_e[2]]])
-
-                fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
-                records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
-                for row in records_equipes:
-                    try:
-                        lat_val, lon_val = float(row.get('Latitude', np.nan)), float(row.get('Longitude', np.nan))
-                        if pd.notna(lat_val) and pd.notna(lon_val):
-                            lev = str(row['Levantador'])
-                            if lev in todos_levantadores:
-                                folium.Marker(location=[lat_val, lon_val], icon=folium.Icon(color='red' if lev in criticos_tuple else 'green', icon='user', prefix='fa'), tooltip=f"Levantador: {html.escape(lev)}").add_to(fg_equipes)
-                    except (ValueError, TypeError): pass 
-
-                df_notas_mapa = df_nt.copy()
-                df_notas_mapa['Lat_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lat_Mapa'), errors='coerce')
-                df_notas_mapa['Lon_Mapa'] = pd.to_numeric(df_notas_mapa.get('Lon_Mapa'), errors='coerce')
-                df_notas_mapa = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
-                
-                if not df_notas_mapa.empty:
-                    df_notas_mapa['lat_jitter'] = df_notas_mapa['Lat_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
-                    df_notas_mapa['lon_jitter'] = df_notas_mapa['Lon_Mapa'] + np.random.normal(0, 0.004, len(df_notas_mapa))
-                    
-                    if len(df_notas_mapa) > 500:
-                        obras_coords = df_notas_mapa[['lat_jitter', 'lon_jitter']].values.tolist()
-                        FastMarkerCluster(data=obras_coords, name="🏗️ Demandas Ativas (Fast Cluster)").add_to(mapa)
-                    else:
-                        fg_obras = folium.FeatureGroup(name="🏗️ Demandas Ativas (Clusters)")
-                        cluster_obras = MarkerCluster(name="Obras Agrupadas", disableClusteringAtZoom=13).add_to(fg_obras)
-                        for row in df_notas_mapa.to_dict('records'):
-                            safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
-                            safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
-                            safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
-                            html_mini_card = f"""
-                            <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
-                                <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
-                                <div style="padding: 7px; border: 1px solid #1A4F7C; border-top: none; background-color: #FFF; border-radius: 0 0 4px 4px;">
-                                    <b>PROTOCOLO:</b> {safe_protocolo}<br>
-                                    <b>MUNICIPIO:</b> {safe_municipio}<br>
-                                    <b>LEVANTADOR:</b> {safe_levantador}<br>
-                                </div>
-                            </div>
-                            """
-                            lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                            cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                            folium.Marker(location=[row['lat_jitter'], row['lon_jitter']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(html_mini_card, max_width=310)).add_to(cluster_obras)
-                        fg_obras.add_to(mapa)
-
-                fg_equipes.add_to(mapa)
-                folium.LayerControl(position='bottomright').add_to(mapa)
-                return mapa
-
             with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
-                mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
+                mapa_pronto = construir_mapa_executivo(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp, todos_levantadores)
                 st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Erro crítico no processamento do mapa executivo: {e}", exc_info=True)
+            st.error("Erro interno ao renderizar o mapa. Verifique a formatação das coordenadas.")
 
 # -----------------------------------------------------------------------------
 # VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
@@ -859,42 +960,9 @@ if menu_selecionado == 'Painel Executivo':
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
     
-    col_f1, col_f2, col_f3 = st.columns(3)
-    col_f4, col_f5, col_f6 = st.columns(3)
+    # Chama o módulo universal de filtro em UI
+    df_filtrado, st_list_usado, op_sap, op_list = render_filtros_governanca(df_notas_db)
     
-    op_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
-    if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
-    with col_f1: st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
-
-    op_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('REGIONAL', pd.Series()).dropna().unique()])
-    if 'ui_reg' not in st.session_state or st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
-    with col_f2: st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
-
-    op_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('MUNICIPIO', pd.Series()).dropna().unique()])
-    if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
-    with col_f3: st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
-
-    op_lig = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('TIPO LIGACAO', pd.Series()).dropna().astype(str).unique()])
-    if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
-    with col_f4: st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
-
-    op_sap = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('STATUS SAP', pd.Series()).dropna().unique()])
-    if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
-    with col_f5: st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
-
-    op_list = sorted([str(x) for x in df_notas_db.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
-    if 'ui_list' not in st.session_state: st.session_state.ui_list = []
-    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
-    with col_f6: st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
-
-    df_filtrado = df_notas_db.copy()
-    if st.session_state.ui_lev != "TODOS" and 'LEVANTADOR' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == st.session_state.ui_lev]
-    if st.session_state.ui_reg != "TODOS" and 'REGIONAL' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == st.session_state.ui_reg]
-    if st.session_state.ui_mun != "TODOS" and 'MUNICIPIO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == st.session_state.ui_mun]
-    if st.session_state.ui_lig != "TODOS" and 'TIPO LIGACAO' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == st.session_state.ui_lig]
-    if st.session_state.ui_sap != "TODOS" and 'STATUS SAP' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == st.session_state.ui_sap]
-    if len(st.session_state.ui_list) > 0 and 'STATUS LIST' in df_filtrado: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(st.session_state.ui_list)]
-
     st.info(f"Obras localizadas sob os filtros aplicados: {len(df_filtrado)} registro(s).")
     df_filtrado_view = df_filtrado.replace({'None': '', 'nan': '', '0': '', '<NA>': '', 'NAN': ''}).fillna('')
     
@@ -992,6 +1060,7 @@ elif menu_selecionado == 'Carga de Lotes':
                 st.dataframe(exc.data, use_container_width=True)
                 
         except Exception as e:
+            logging.error(f"Erro na leitura do lote: {e}", exc_info=True)
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
@@ -1069,7 +1138,8 @@ elif menu_selecionado == 'Levantadores':
                         st.success(f"✅ Levantador {novo_nome} cadastrado com sucesso e já está disponível!")
                         st.rerun()
                     except Exception as e:
-                        st.error(f"Erro ao cadastrar levantador no Banco de Dados: {e}")
+                        logging.error(f"Erro ao inserir novo lev: {e}", exc_info=True)
+                        st.error("Erro ao cadastrar levantador no Banco de Dados.")
             else:
                 st.warning("⚠️ Preencha todos os campos obrigatórios (Nome, Equipe e Residência).")
 
@@ -1133,8 +1203,8 @@ elif menu_selecionado == 'Gerenciamento de Acessos':
             if new_user and new_pass:
                 try:
                     with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                        conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", (new_user, new_pass, new_role))
-                    st.success(f"Conta {new_user} criada!")
+                        conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", (new_user, hash_senha(new_pass), new_role))
+                    st.success(f"Conta {new_user} criada com Segurança SHA-256!")
                     registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} ({new_role}).")
                     st.rerun()
                 except sqlite3.IntegrityError:
@@ -1167,7 +1237,6 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
-    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
@@ -1291,5 +1360,5 @@ try:
         st.markdown(html_pills, unsafe_allow_html=True)
     else:
         st.caption("Nenhum usuário ativo detectado no momento.")
-except Exception:
-    st.caption("Status de usuários temporariamente indisponível.")
+except Exception as e:
+    logging.error(f"Erro ao ler heartbeat: {e}", exc_info=True)
