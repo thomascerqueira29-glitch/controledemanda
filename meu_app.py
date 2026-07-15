@@ -82,7 +82,8 @@ def update_residencias_hardcoded():
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             for lev, res in mapeamento_residencias.items():
-                conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (res, lev))
+                # Usa UPPER e TRIM para garantir que os nomes lidos do Excel deem match perfeito no banco
+                conn.execute("UPDATE equipes SET Residencia = ? WHERE UPPER(TRIM(Levantador)) = ?", (res.upper(), lev.upper()))
             conn.commit()
     except Exception as e:
         logging.error(f"Erro ao forçar residencias baseadas na imagem: {e}")
@@ -154,6 +155,9 @@ if 'db_initialized' not in st.session_state or not st.session_state.db_initializ
     init_business_db()
     ensure_residencia_column()
     update_residencias_hardcoded()
+    # Limpeza de cache obrigatória após update forçado no banco de dados
+    st.session_state.db_initialized = True
+    st.cache_data.clear()
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -631,7 +635,6 @@ if menu_selecionado == 'Painel Executivo':
                     
                 df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
                 
-                # Monta a visualização da tela
                 df_demanda_view = df_demanda[['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
                 df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].round(1)
@@ -639,32 +642,33 @@ if menu_selecionado == 'Painel Executivo':
                 def color_rules(row):
                     dist = row['Distancia_KM']
                     if pd.isna(dist): color = ''
-                    elif dist <= 50: color = 'background-color: #d4edda; color: #155724;' 
-                    elif dist <= 100: color = 'background-color: #fff3cd; color: #856404;' 
-                    else: color = 'background-color: #f8d7da; color: #721C24;' 
+                    elif dist <= 50: color = 'background-color: #00B050; color: white;' 
+                    elif dist <= 100: color = 'background-color: #FFFF00; color: black;' 
+                    else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                     
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
-                # PREPARAÇÃO PARA EXPORTAÇÃO (APLICAÇÃO DOS FILTROS RÍGIDOS)
+                # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
                 def clean_str(s):
-                    return s.astype(str).str.strip().replace({'nan': '', 'None': '', '<NA>': ''})
+                    return s.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0.0': '0'})
 
                 cond_tipo = clean_str(df_demanda['TIPO LIGACAO'])
                 cond_nome = clean_str(df_demanda['NOME DO SOLICITANTE'])
                 cond_lat = clean_str(df_demanda['LATITUDE'])
                 cond_lon = clean_str(df_demanda['LONGITUDE'])
 
+                # Só passa se TIPO LIGACAO != vazio/0 E NOME != vazio/0 E LAT/LON != vazio/0
                 valid_mask = (
                     (cond_tipo != '') & (cond_tipo != '0') &
-                    (cond_nome != '') &
-                    (cond_lat != '') & (cond_lat != '0') & (cond_lat != '0.0') &
-                    (cond_lon != '') & (cond_lon != '0') & (cond_lon != '0.0')
+                    (cond_nome != '') & (cond_nome != '0') &
+                    (cond_lat != '') & (cond_lat != '0') &
+                    (cond_lon != '') & (cond_lon != '0')
                 )
 
                 df_export_base = df_demanda[valid_mask].copy().sort_values('Distancia_KM')
 
-                # Prepara o DataFrame Oficial exigido na exportação (Imagem do usuário)
+                # Colunas Exatas da Imagem Exigida Pelo Usuario
                 cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
                                        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
                                        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
@@ -676,17 +680,18 @@ if menu_selecionado == 'Painel Executivo':
                         
                 df_export = df_export[cols_export_oficial]
                 
-                # APLICA ESTILO NO EXCEL
-                dist_export_series = df_export_base['Distancia_KM'] # Para consultar na hora de colorir
+                # APLICA ESTILO NO EXCEL IGUAL O DA TELA
+                dist_export_series = df_export_base['Distancia_KM'] 
                 
                 def style_excel(row):
                     dist = dist_export_series.loc[row.name]
                     if pd.isna(dist): color = ''
-                    elif dist <= 50: color = 'background-color: #d4edda; color: #155724;' 
-                    elif dist <= 100: color = 'background-color: #fff3cd; color: #856404;' 
-                    else: color = 'background-color: #f8d7da; color: #721C24;' 
+                    elif dist <= 50: color = 'background-color: #00B050; color: white;' 
+                    elif dist <= 100: color = 'background-color: #FFFF00; color: black;' 
+                    else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                 
+                # Aplica as cores nas colunas antes de exportar
                 styled_df_export = df_export.style.apply(style_excel, axis=1)
 
                 buffer_excel = io.BytesIO()
@@ -714,8 +719,9 @@ if menu_selecionado == 'Painel Executivo':
                 kml_data = gerar_kml_demanda(df_export)
 
                 st.markdown("<br>", unsafe_allow_html=True)
-                st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome preenchidos).")
+                st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome devidamente preenchidos na base).")
                 
+                # Nomenclatura do arquivo acompanha o dia atual
                 hoje_str_file = datetime.now().strftime('%d_%m_%Y')
                 col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
                 
@@ -739,14 +745,17 @@ if menu_selecionado == 'Painel Executivo':
             data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today())
             
         with col_c2:
-            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE na extração das datas preenchidas na coluna **DATA DE LEVANTAMENTO LIST** (Ignorando qualquer Status List).")
+            st.caption("Filtra e contabiliza as obras baseando-se **EXCLUSIVAMENTE** na extração da data preenchida na coluna **DATA DE LEVANTAMENTO LIST** (Ignorando qual seja o Status List do SAP).")
             
         df_concluidas = df_notas_calc.copy()
         
         def safe_date_parse_robust(serie):
-            # Limpa formatos anormais, espaços e nulos para extrair a data pura
-            s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-            s = s.str.replace(r'[\.\-]', '/', regex=True).str.split(' ').str[0]
+            # Limpa formatos anormais, lixos e extrai a data pura independente do relógio do Excel
+            s = serie.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0': '', 'NAT': ''})
+            # Puxa só a primeira parte ignorando Timestamp
+            s = s.str.split(' ').str[0]
+            # Troca todos os marcadores por /
+            s = s.str.replace(r'[\.\-]', '/', regex=True)
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
         if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
@@ -767,6 +776,7 @@ if menu_selecionado == 'Painel Executivo':
         resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
         resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
         
+        # Coluna convertida em Número para não esticar a interface (antiga barra de progresso do visual)
         st.dataframe(
             resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
             use_container_width=True, hide_index=True, height=320,
@@ -1093,7 +1103,7 @@ elif menu_selecionado == 'Carga de Lotes':
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
-# VISÃO 4: LEVANTADORES (NOVA ABA - MUDANÇA DE RESIDÊNCIA)
+# VISÃO 4: LEVANTADORES (NOVA ABA - MUDANÇA DE RESIDÊNCIA E CRIAÇÃO)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Levantadores':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1110,7 +1120,7 @@ elif menu_selecionado == 'Levantadores':
         df_eq['Residencia'] = ""
         
     df_levs = df_eq[['Levantador', 'Equipe', 'Residencia']].drop_duplicates(subset=['Levantador']).copy()
-    opcoes_mun = [""] + sorted([str(x).upper() for x in df_eq['Município'].dropna().unique()])
+    opcoes_mun = [""] + sorted([str(x).upper() for x in df_eq['Município'].dropna().unique() if str(x).strip() != ''])
     
     edited_levs = st.data_editor(
         df_levs,
@@ -1136,6 +1146,40 @@ elif menu_selecionado == 'Levantadores':
             process_analytical_data.clear()
             st.success("Residências atualizadas com sucesso!")
             st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### ➕ Cadastrar Novo Levantador")
+    st.caption("Adicione novos membros à equipe de campo. Eles aparecerão no sistema para receberem novas atribuições de demandas.")
+    
+    with st.form("form_novo_levantador"):
+        col_nl1, col_n2, col_n3 = st.columns(3)
+        novo_nome = col_nl1.text_input("Nome do Levantador").strip().upper()
+        nova_equipe = col_n2.text_input("Equipe (ex: EQUIPE 20)").strip().upper()
+        nova_residencia = col_n3.selectbox("Município-Base (Residência)", options=opcoes_mun)
+        
+        submit_novo_lev = st.form_submit_button("Cadastrar Levantador", type="primary", use_container_width=True)
+        
+        if submit_novo_lev:
+            if novo_nome and nova_equipe and nova_residencia:
+                if novo_nome in df_levs['Levantador'].values:
+                    st.error("🚨 Levantador já existe na base de dados!")
+                else:
+                    try:
+                        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                            conn.execute("""
+                                INSERT INTO equipes (Levantador, Equipe, Residencia) 
+                                VALUES (?, ?, ?)
+                            """, (novo_nome, nova_equipe, nova_residencia))
+                            conn.commit()
+                        
+                        get_processed_data.clear()
+                        process_analytical_data.clear()
+                        st.success(f"✅ Levantador {novo_nome} cadastrado com sucesso e já está disponível!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao cadastrar levantador no Banco de Dados: {e}")
+            else:
+                st.warning("⚠️ Preencha todos os campos obrigatórios (Nome, Equipe e Residência).")
 
 # -----------------------------------------------------------------------------
 # VISÃO 5: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
@@ -1231,7 +1275,6 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
-    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
