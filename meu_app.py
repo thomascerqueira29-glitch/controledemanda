@@ -73,8 +73,7 @@ def init_kmz_db():
                          filepath TEXT)''')
         conn.commit()
 
-init_iam()
-init_kmz_db()
+# Inicialização movida para setup_application() com st.cache_resource
 
 def update_residencias_hardcoded():
     mapeamento_residencias = {
@@ -155,12 +154,18 @@ def init_business_db():
     except Exception:
         pass
 
-if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
+@st.cache_resource
+def setup_application():
+    init_iam()
+    init_kmz_db()
     init_business_db()
     ensure_residencia_column()
     update_residencias_hardcoded()
-    st.session_state.db_initialized = True
-    st.cache_data.clear()
+    return True
+
+if 'app_ready' not in st.session_state:
+    setup_application()
+    st.session_state.app_ready = True
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -318,14 +323,14 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
 
 @st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
     from shapely.geometry import Point, LineString
     
     gdf_lines = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
     gdf_points = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
     bounds = None
     
-    hash_name = hashlib.md5(file_path.encode()).hexdigest()
+    hash_name = hashlib.sha256(file_path.encode()).hexdigest()
     ext_dir = os.path.join("kmz_extracted", hash_name)
     os.makedirs(ext_dir, exist_ok=True)
     
@@ -1439,12 +1444,11 @@ st.markdown("#### 🟢 Usuários Online Agora")
 try:
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        ativos = pd.read_sql(f"""
-            SELECT username, role 
-            FROM usuarios 
-            WHERE last_active >= '{limite_inatividade}'
-            ORDER BY username ASC
-        """, conn)
+        ativos = pd.read_sql(
+            "SELECT username, role FROM usuarios WHERE last_active >= ? ORDER BY username ASC",
+            conn,
+            params=(limite_inatividade,)
+        )
 
     if not ativos.empty:
         html_pills = "".join([
