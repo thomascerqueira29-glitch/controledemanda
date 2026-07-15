@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, FastMarkerCluster
+from folium.plugins import MarkerCluster, FastMarkerCluster, MeasureControl, Draw
 import plotly.express as px
 import numpy as np
 import os
@@ -16,6 +16,7 @@ import zipfile
 import logging
 import shutil
 import html
+import re
 from datetime import datetime, timedelta
 
 # -----------------------------------------------------------------------------
@@ -39,10 +40,9 @@ except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# 1. MOTOR DE IDENTIDADE E COLUNAS CRÍTICAS DE NEGÓCIOS
+# 1. MOTOR DE IDENTIDADE E BANCOS DE DADOS
 # -----------------------------------------------------------------------------
 def init_iam():
-    """Garante que as tabelas de segurança existam, independentemente do estado do servidor Cloud"""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS usuarios 
                         (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
@@ -59,10 +59,21 @@ def init_iam():
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
         conn.commit()
 
+def init_kmz_db():
+    os.makedirs("kmz_history", exist_ok=True)
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS historico_kmz 
+                        (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                         nome TEXT, 
+                         data_upload TEXT, 
+                         usuario TEXT, 
+                         filepath TEXT)''')
+        conn.commit()
+
 init_iam()
+init_kmz_db()
 
 def update_residencias_hardcoded():
-    """Mapeamento rígido das residências dos levantadores baseado nas definições operacionais"""
     mapeamento_residencias = {
         "ARGELL CARLOS LOPES AZEVEDO": "SANTA INES",
         "EDELSON SOUSA GUIMARÃES": "CHAPADINHA",
@@ -85,10 +96,9 @@ def update_residencias_hardcoded():
                 conn.execute("UPDATE equipes SET Residencia = ? WHERE UPPER(TRIM(Levantador)) = ?", (res.upper(), lev.upper()))
             conn.commit()
     except Exception as e:
-        logging.error(f"Erro ao forçar residencias baseadas na imagem: {e}")
+        pass
 
 def ensure_residencia_column():
-    """Garante que a coluna Residencia exista na tabela equipes para a lógica de 'Gerar Demanda'"""
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             cursor = conn.cursor()
@@ -98,7 +108,6 @@ def ensure_residencia_column():
                 columns = [col[1] for col in cursor.fetchall()]
                 if 'Residencia' not in columns:
                     conn.execute("ALTER TABLE equipes ADD COLUMN Residencia TEXT")
-                    
                     if os.path.exists('base levantador.xlsx'):
                         df_base = pd.read_excel('base levantador.xlsx')
                         if 'Residencia' in df_base.columns:
@@ -107,11 +116,8 @@ def ensure_residencia_column():
                                 conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (str(res).upper().strip(), lev))
                     conn.commit()
     except Exception as e:
-        logging.error(f"Erro ao adicionar Residencia: {e}")
+        pass
 
-# -----------------------------------------------------------------------------
-# 2. MOTOR DE NEGÓCIOS E CARGA DO LEGADO (NOTAS E EQUIPES)
-# -----------------------------------------------------------------------------
 def init_business_db():
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
@@ -123,7 +129,6 @@ def init_business_db():
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             cursor = conn.cursor()
-            
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
             if not cursor.fetchone():
                 if os.path.exists('NOTAS.xlsx'):
@@ -143,10 +148,9 @@ def init_business_db():
                     pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 else:
                     pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
-                    
         st.session_state.db_initialized = True
     except Exception as e:
-        logging.error(f"Erro ao inicializar tabelas de negócios: {e}")
+        pass
 
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
     init_business_db()
@@ -194,12 +198,7 @@ if st.session_state.usuario_logado is None:
     st.stop() 
 
 if st.session_state.get('perfil_usuario') != 'ADMIN':
-    st.markdown("""
-        <style>
-        #MainMenu {visibility: hidden;}
-        header {visibility: hidden;}
-        </style>
-    """, unsafe_allow_html=True)
+    st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
 def atualizar_sessao():
     if st.session_state.usuario_logado:
@@ -213,11 +212,10 @@ def atualizar_sessao():
 
 atualizar_sessao()
 
-# -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE ESTADO GERAIS E NAVEGAÇÃO
-# -----------------------------------------------------------------------------
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
+if 'selected_ponto_gis' not in st.session_state:
+    st.session_state.selected_ponto_gis = None
 
 def filtrar_levantador_governanca(nome_lev):
     st.session_state.ui_lev = nome_lev
@@ -239,7 +237,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# TRILHA DE AUDITORIA E ENGENHARIA DE DADOS
+# MOTORES DE ALTA PERFORMANCE (CACHE E VETORIZAÇÃO)
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     try:
@@ -249,17 +247,7 @@ def registrar_auditoria(acao, detalhes):
             conn.execute("INSERT INTO auditoria_log (usuario, data_hora, acao, detalhes) VALUES (?, ?, ?, ?)",
                          (usuario, agora, acao, detalhes))
             conn.commit()
-    except Exception as e:
-        logging.error(f"Erro ao registrar auditoria: {e}")
-
-def realizar_backup_db():
-    os.makedirs("backups", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    bkp_path = f"backups/controle_torre_nip_bkp_{timestamp}.db"
-    if os.path.exists(DB_PATH):
-        shutil.copy2(DB_PATH, bkp_path)
-        registrar_auditoria("BACKUP PREVENTIVO", f"Backup automático gerado em {bkp_path}")
-    return bkp_path
+    except Exception: pass
 
 def auto_assign_levantador(df_notas, df_equipes):
     df_notas = df_notas.copy()
@@ -293,7 +281,6 @@ def get_processed_data():
     return auto_assign_levantador(df_n, df_e), df_e
 
 def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operação no Banco de Dados"):
-    if backup: realizar_backup_db()
     try:
         df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
@@ -306,7 +293,6 @@ def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operaç�
         registrar_auditoria(acao_auditoria, f"Tabela NOTAS atualizada. Volume final: {len(df_notas_limpo)} registros.")
         get_processed_data.clear()
         process_analytical_data.clear()
-        calcular_sla_vetorizado.clear()
         return True
     except sqlite3.Error as e:
         st.error(f"Falha Crítica no Banco de Dados: {e}")
@@ -314,9 +300,6 @@ def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operaç�
 
 df_notas_db, df_equipes_db = get_processed_data()
 
-# -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE (CACHE E VETORIZAÇÃO)
-# -----------------------------------------------------------------------------
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
     try:
         R = 6371.0 
@@ -331,88 +314,78 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return pd.Series(99999, index=lat2_series.index)
 
 @st.cache_data(show_spinner=False)
-def processar_camada_espacial(arquivo_espacial):
+def parse_kmz_advanced(file_path):
+    """Extração avançada de KML/KMZ permitindo leitura de fotos da Description"""
     gdf_lines = gpd.GeoDataFrame()
     gdf_points = gpd.GeoDataFrame()
     bounds = None
-    if not arquivo_espacial: return gdf_lines, gdf_points, bounds
-    import fiona
+    temp_dir = tempfile.mkdtemp()
+    
     try:
-        camadas = fiona.listlayers(arquivo_espacial)
-        gdfs = []
-        for camada in camadas:
-            try:
-                gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
-                if not gdf_temp.empty:
-                    gdf_temp['Layer_Name'] = camada
-                    gdfs.append(gdf_temp)
-            except Exception: continue
+        kml_file = None
+        if file_path.endswith('.kmz'):
+            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+            for root, dirs, files in os.walk(temp_dir):
+                for f in files:
+                    if f.lower().endswith('.kml'):
+                        kml_file = os.path.join(root, f)
+                        break
+                if kml_file: break
+        else:
+            kml_file = file_path 
+            
+        if kml_file:
+            import fiona
+            camadas = fiona.listlayers(kml_file)
+            gdfs = []
+            for camada in camadas:
+                try:
+                    gdf_temp = gpd.read_file(kml_file, driver='KML', layer=camada)
+                    if not gdf_temp.empty:
+                        gdf_temp['Layer_Name'] = camada
+                        gdfs.append(gdf_temp)
+                except: pass
+            
+            if gdfs:
+                gdf_final = pd.concat(gdfs, ignore_index=True)
+                if 'Name' not in gdf_final.columns: gdf_final['Name'] = 'Sem Nome'
+                if 'Description' not in gdf_final.columns: gdf_final['Description'] = ''
                 
-        if gdfs:
-            gdf_final = pd.concat(gdfs, ignore_index=True)
-            gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
-            gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
-            gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
-            bounds = gdf_final.total_bounds
-    except Exception: pass
-    return gdf_lines, gdf_points, bounds
+                # Preenche nomes vazios para evitar erros no Streamlit Selectbox
+                gdf_final['Name'] = gdf_final['Name'].fillna('Ponto Sem Nome').replace('', 'Ponto Sem Nome')
+                
+                gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
+                gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
+                bounds = gdf_final.total_bounds
+                
+        return gdf_lines, gdf_points, bounds, temp_dir
+    except Exception as e:
+        return gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, temp_dir
 
-@st.cache_data(show_spinner=False)
-def calcular_sla_vetorizado(df_notas_calc):
-    df_sla = df_notas_calc.copy()
-    tipo = df_sla['TIPO LIGACAO'].astype(str).str.strip().str.upper()
-    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
-    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-    g_niv = ['NIV']
-    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
+def get_images_from_desc(desc, temp_dir):
+    """Função robusta para varrer HTML do KML e resgatar as fotos atreladas"""
+    if not desc or pd.isna(desc): return []
+    desc_str = str(desc)
     
-    def blindar_datas(serie):
-        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
-        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
-
-    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla['DATA DE VENCIMENTO'])
-    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla['DATA CRIAÇAO SISCO'])
-    
-    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
-    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
-
-    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
-    cond_crono_v = cond_crono & (dias_para_vencer < 0)
-    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
-    cond_crono_np = cond_crono & (dias_para_vencer > 3)
-    
-    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
-    cond_g1 = tipo.isin(g1) & cond_base_dt
-    cond_g1_np = cond_g1 & (idade_dias <= 10)
-    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
-    cond_g1_v  = cond_g1 & (idade_dias > 15)
-    
-    cond_g2 = tipo.isin(g2) & cond_base_dt
-    cond_g2_np = cond_g2 & (idade_dias <= 16)
-    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
-    cond_g2_v  = cond_g2 & (idade_dias > 24)
-    
-    cond_niv = tipo.isin(g_niv) & cond_base_dt
-    cond_niv_np = cond_niv & (idade_dias <= 5)
-    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
-    cond_niv_v  = cond_niv & (idade_dias > 8)
-    
-    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
-    cond_def_np = cond_default & (idade_dias <= 15)
-    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
-    cond_def_v  = cond_default & (idade_dias > 20)
-
-    df_sla['Status_SLA'] = np.select(
-        [
-            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
-            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
-            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
-        ],
-        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
-    )
-    df_sla['REGIONAL'] = df_sla['REGIONAL'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-    return df_sla
+    # Procura referências clássicas HTML
+    imgs = re.findall(r'src=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+    if not imgs:
+        imgs = re.findall(r'href=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+    if not imgs:
+        # Tenta pegar qualquer arquivo jpg/png mencionado diretamente no texto
+        imgs = re.findall(r'[\w\/\-]+\.(?:jpg|png|jpeg)', desc_str, re.IGNORECASE)
+        
+    valid_imgs = []
+    for img in imgs:
+        if str(img).startswith('http'):
+            valid_imgs.append(img)
+        else:
+            img_clean = img.replace('\\', '/')
+            img_path = os.path.join(temp_dir, img_clean)
+            if os.path.exists(img_path) and img_path not in valid_imgs:
+                valid_imgs.append(img_path)
+    return valid_imgs
 
 @st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
@@ -446,7 +419,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL COM IAM
+# INTERFACE DE NAVEGAÇÃO LATERAL
 # -----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
@@ -485,7 +458,7 @@ with st.sidebar:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
 # -----------------------------------------------------------------------------
-# VISÃO 1: PAINEL EXECUTIVO E MAPAS
+# VISÃO 1: PAINEL EXECUTIVO
 # -----------------------------------------------------------------------------
 if menu_selecionado == 'Painel Executivo':
     st.markdown("### 📈 Visão Global de Produtividade")
@@ -607,7 +580,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
                 
-        # --- GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES E EXPORTAÇÃO KML/EXCEL) ---
+        # --- GERAÇÃO DE DEMANDA (EXCEL / KML) ---
         if st.session_state.get('show_demanda', False):
             st.markdown("---")
             st.markdown(f"#### 📋 Gerador de Demanda Otimizado - {lev_selecionado}")
@@ -631,7 +604,6 @@ if menu_selecionado == 'Painel Executivo':
                     
                 df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
                 
-                # Garante que não ocorra KeyError na visualização se a planilha faltar com alguma coluna
                 cols_view = ['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']
                 for c in cols_view:
                     if c not in df_demanda.columns:
@@ -640,18 +612,17 @@ if menu_selecionado == 'Painel Executivo':
                 df_demanda_view = df_demanda[cols_view].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
                 
-                dist_series = df_demanda_view['Distancia_KM'].copy() # Salva valores originais numéricos para pintar cor
+                dist_series = df_demanda_view['Distancia_KM'].copy() 
                 
-                # Exibe de forma curta (Ex: 123.8 -> 123,8) apenas na View da tela
                 df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].apply(
-                    lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
+                    lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) and x != "" else ""
                 )
                 
                 def color_rules(row):
                     dist = dist_series.loc[row.name]
-                    if pd.isna(dist): color = ''
-                    elif dist <= 50: color = 'background-color: #00B050; color: white;' 
-                    elif dist <= 100: color = 'background-color: #FFFF00; color: black;' 
+                    if pd.isna(dist) or dist == "": color = ''
+                    elif float(dist) <= 50: color = 'background-color: #00B050; color: white;' 
+                    elif float(dist) <= 100: color = 'background-color: #FFFF00; color: black;' 
                     else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                     
@@ -659,7 +630,6 @@ if menu_selecionado == 'Painel Executivo':
                 
                 # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
                 def is_valid_export(row):
-                    # Retorna False se a celula for vazia, nula ou zero
                     t = str(row.get('TIPO LIGACAO', '')).strip().upper()
                     n = str(row.get('NOME DO SOLICITANTE', '')).strip().upper()
                     lat = str(row.get('LATITUDE', '')).strip().upper()
@@ -685,14 +655,13 @@ if menu_selecionado == 'Painel Executivo':
                         
                 df_export = df_export[cols_export_oficial]
                 
-                # APLICA ESTILO NO EXCEL IGUAL O DA TELA
                 dist_export_series = df_export_base['Distancia_KM'] 
                 
                 def style_excel(row):
                     dist = dist_export_series.loc[row.name]
-                    if pd.isna(dist): color = ''
-                    elif dist <= 50: color = 'background-color: #00B050; color: white;' 
-                    elif dist <= 100: color = 'background-color: #FFFF00; color: black;' 
+                    if pd.isna(dist) or dist == "": color = ''
+                    elif float(dist) <= 50: color = 'background-color: #00B050; color: white;' 
+                    elif float(dist) <= 100: color = 'background-color: #FFFF00; color: black;' 
                     else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                 
@@ -739,112 +708,15 @@ if menu_selecionado == 'Painel Executivo':
                     st.session_state.show_demanda = False
                     st.rerun()
 
-        st.markdown("---")
-        # --- PAINEL PRODUÇÃO DIÁRIA ---
-        st.markdown("#### 🏆 PRODUÇÃO DIÁRIA")
-        
-        col_c1, col_c2 = st.columns([1, 3])
-        with col_c1:
-            data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today(), format="DD/MM/YYYY")
-            
-        with col_c2:
-            st.caption("Filtra e contabiliza as obras baseando-se **EXCLUSIVAMENTE** na extração da data preenchida na coluna **DATA DE LEVANTAMENTO LIST** (Ignorando qual seja o Status List do SAP).")
-            
-        df_concluidas = df_notas_calc.copy()
-        
-        def parse_data_br(val):
-            """Limpador universal para resgatar apenas o formato de Data Brasileira"""
-            if pd.isna(val): return pd.NaT
-            if isinstance(val, (datetime, pd.Timestamp)): return val.date()
-            s = str(val).strip().upper()
-            if s in ['NAN', 'NONE', 'NAT', '<NA>', '']: return pd.NaT
-            
-            # Corta TimeStamp se houver
-            s = s.split(' ')[0].split('T')[0]
-            # Padroniza divisórias
-            s = s.replace('.', '/').replace('-', '/')
-            try:
-                # Força o pandas a entender que o primeiro número é Dia
-                return pd.to_datetime(s, dayfirst=True).date()
-            except:
-                return pd.NaT
-            
-        if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
-            df_concluidas['DATA_REF'] = df_concluidas['DATA DE LEVANTAMENTO LIST'].apply(parse_data_br)
-        else:
-            df_concluidas['DATA_REF'] = pd.NaT
-            
-        df_concluidas_dia = df_concluidas[df_concluidas['DATA_REF'] == data_filtro_conclusao]
-        
-        contagem_concluidas = df_concluidas_dia['LEVANTADOR'].value_counts().reset_index()
-        contagem_concluidas.columns = ['Levantador', 'Obras_Concluidas']
-        
-        resumo_concluidas = pd.DataFrame({'Levantador': todos_levantadores})
-        resumo_concluidas = pd.merge(resumo_concluidas, contagem_concluidas, on='Levantador', how='left').fillna(0)
-        resumo_concluidas['Obras_Concluidas'] = resumo_concluidas['Obras_Concluidas'].astype(int)
-        
-        mapa_lev_equipe = df_equipes_db.dropna(subset=['Levantador', 'Equipe']).drop_duplicates(subset=['Levantador']).set_index('Levantador')['Equipe'].to_dict()
-        resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
-        resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
-        
-        st.dataframe(
-            resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
-            use_container_width=True, hide_index=True, height=320,
-            column_config={
-                "Levantador": st.column_config.TextColumn("Levantador / Técnico"),
-                "Equipe": st.column_config.TextColumn("Equipe SAP"),
-                "Obras_Concluidas": st.column_config.NumberColumn("Quantidade Concluída", format="%d")
-            }
-        )
-
-        st.markdown("---")
-        st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
-        col_g1, col_g2 = st.columns(2)
-        
-        with col_g1:
-            if not municipios_por_levantador.empty and municipios_por_levantador['Qtd_Municipios'].sum() > 0:
-                df_mun_sorted = municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios', ascending=True)
-                fig_bar_mun = px.bar(df_mun_sorted, x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 - Municípios por Levantador", color_discrete_sequence=['#4A4F7C'])
-                fig_bar_mun.update_layout(xaxis_title="Qtd. Municípios", yaxis_title="")
-                st.plotly_chart(fig_bar_mun, use_container_width=True)
-            
-        with col_g2:
-            df_sem_levantador = df_notas_calc[df_notas_calc['LEVANTADOR'] == SEM_LEVANTADOR]
-            df_sem_lev_reg = df_sem_levantador['REGIONAL'].value_counts().reset_index() if 'REGIONAL' in df_sem_levantador else pd.DataFrame()
-            if not df_sem_lev_reg.empty:
-                df_sem_lev_reg.columns = ['Regional', 'Quantidade_Sem_Atribuicao']
-                df_sem_lev_reg = df_sem_lev_reg.sort_values('Quantidade_Sem_Atribuicao', ascending=False).head(15).sort_values('Quantidade_Sem_Atribuicao', ascending=True)
-                fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h', title="Top 15 - Obras Sem Levantador Atribuído por Regional", color_discrete_sequence=['#D9534F'])
-                fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
-                st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
-
-        df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
-        df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
-        
-        if not df_sla_chart.empty:
-            st.markdown("---")
-            st.markdown("### ⏳ Monitoramento de SLA por Regional")
-            df_group = df_sla_chart.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Quantidade')
-            if not df_group.empty and df_group['Quantidade'].sum() > 0:
-                ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
-                df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
-                df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
-                
-                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA',
-                                 title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group',
-                                 color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
-                fig_sla.update_traces(textposition='auto', textfont_size=14)
-                st.plotly_chart(fig_sla, use_container_width=True)
-
 # -----------------------------------------------------------------------------
-# VISÃO 2: LEITOR KMZ (NOVA ABA INSPIRADA NA IMAGEM GIS EARTH)
+# VISÃO 2: LEITOR KMZ (GIS EARTH CLONE)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Leitor KMZ':
     st.markdown("""
         <style>
         .gis-panel { background-color: #1a1a2e; color: #e0e0e0; padding: 15px; border-radius: 8px; border: 1px solid #2d2d44; height: 750px; overflow-y: auto;}
         .gis-header { font-size: 14px; font-weight: bold; color: #8282b9; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #2d2d44; padding-bottom: 5px;}
-        .gis-value { font-size: 13px; margin-bottom: 10px; color: #fff; background-color: #24243e; padding: 8px; border-radius: 4px;}
+        .gis-value { font-size: 13px; margin-bottom: 10px; color: #fff; background-color: #24243e; padding: 8px; border-radius: 4px; word-wrap: break-word;}
         </style>
     """, unsafe_allow_html=True)
     
@@ -852,96 +724,183 @@ elif menu_selecionado == 'Leitor KMZ':
     
     col_l, col_m, col_r = st.columns([2.5, 6, 2.5])
     
+    # PAINEL ESQUERDO
     with col_l:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
-        st.markdown("<div class='gis-header'>📂 Carregar KML / KMZ</div>", unsafe_allow_html=True)
+        st.markdown("<div class='gis-header'>📂 GERENCIADOR DE ARQUIVOS</div>", unsafe_allow_html=True)
         
-        camada_gis = st.file_uploader("", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
-        caminho_gis_temp = None
-        gdf_pontos_gis = gpd.GeoDataFrame()
+        # Puxar historico
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
         
-        if camada_gis is not None:
+        opcoes_hist = ["-- Usar Novo Upload --"] + df_hist['nome'].tolist()
+        hist_sel = st.selectbox("Histórico Salvo:", opcoes_hist)
+        
+        # Admin Apagar
+        if st.session_state.perfil_usuario == "ADMIN" and hist_sel != "-- Usar Novo Upload --":
+            if st.button("🗑️ Apagar Histórico", type="primary", use_container_width=True):
+                row_h = df_hist[df_hist['nome'] == hist_sel].iloc[0]
+                if os.path.exists(row_h['filepath']): os.remove(row_h['filepath'])
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                    conn.execute("DELETE FROM historico_kmz WHERE id=?", (int(row_h['id']),))
+                    conn.commit()
+                st.rerun()
+        
+        camada_gis = st.file_uploader("Ou Carregar KML / KMZ Local", type=['kml', 'kmz'], label_visibility="collapsed")
+        
+        caminho_ativo = None
+        nome_ativo = ""
+        
+        if hist_sel != "-- Usar Novo Upload --":
+            caminho_ativo = df_hist[df_hist['nome'] == hist_sel].iloc[0]['filepath']
+            nome_ativo = hist_sel
+        elif camada_gis is not None:
             extensao = camada_gis.name.split('.')[-1].lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
                 tmp.write(camada_gis.getvalue())
-                caminho_gis_temp = tmp.name
-            if extensao == 'kmz':
-                try:
-                    with zipfile.ZipFile(caminho_gis_temp, 'r') as kmz:
-                        kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
-                        if kml_files: 
-                            kml_filename = os.path.basename(kml_files[0])
-                            safe_extract_path = os.path.join(tempfile.gettempdir(), kml_filename)
-                            with open(safe_extract_path, 'wb') as out_file:
-                                out_file.write(kmz.read(kml_files[0]))
-                            caminho_gis_temp = safe_extract_path
-                except Exception: pass
+                caminho_ativo = tmp.name
                 
-            _, gdf_pontos_gis, _ = processar_camada_espacial(caminho_gis_temp)
+            nome_proj = st.text_input("Nome para Salvar o Projeto:")
+            if st.button("💾 Salvar no Histórico Permanente", use_container_width=True) and nome_proj:
+                caminho_dest = f"kmz_history/{nome_proj}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extensao}"
+                with open(caminho_dest, "wb") as f:
+                    f.write(camada_gis.getvalue())
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                    conn.execute("INSERT INTO historico_kmz (nome, data_upload, usuario, filepath) VALUES (?, ?, ?, ?)",
+                                 (nome_proj, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state.usuario_logado, caminho_dest))
+                    conn.commit()
+                st.success("Salvo! Selecione no Histórico.")
+                st.rerun()
+
+        gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
+        if caminho_ativo and os.path.exists(caminho_ativo):
+            gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
             
-        st.markdown("<div class='gis-header' style='margin-top:20px;'>📍 Camadas / Pontos</div>", unsafe_allow_html=True)
+        st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 PESQUISA & PONTOS</div>", unsafe_allow_html=True)
+        search_q = st.text_input("Buscar Nome ou Coordenadas:", "")
         
-        ponto_selecionado = None
-        if not gdf_pontos_gis.empty:
-            for col in ['Name', 'Description', 'Layer_Name']:
-                if col not in gdf_pontos_gis.columns:
-                    gdf_pontos_gis[col] = ''
-                    
-            lista_nomes = gdf_pontos_gis['Name'].replace('', 'Ponto Sem Nome').tolist()
-            escolha = st.selectbox("Selecione um elemento para visualizar detalhes:", ["Ver Todos"] + lista_nomes)
+        lista_nomes = []
+        if not gdf_points.empty:
+            lista_nomes = gdf_points['Name'].tolist()
+            if search_q:
+                # Se for busca por coordenada simplificada (lat, lon)
+                try:
+                    partes = search_q.replace(';', ',').split(',')
+                    if len(partes) >= 2:
+                        lat_s, lon_s = float(partes[0].strip()), float(partes[1].strip())
+                        gdf_points['dist_search'] = np.sqrt((gdf_points.geometry.y - lat_s)**2 + (gdf_points.geometry.x - lon_s)**2)
+                        gdf_points = gdf_points.sort_values('dist_search')
+                        lista_nomes = gdf_points['Name'].tolist()
+                    else:
+                        raise ValueError
+                except:
+                    # Busca por texto
+                    gdf_points = gdf_points[gdf_points['Name'].str.contains(search_q, case=False, na=False)]
+                    lista_nomes = gdf_points['Name'].tolist()
             
-            if escolha != "Ver Todos":
-                ponto_selecionado = gdf_pontos_gis[gdf_pontos_gis['Name'].replace('', 'Ponto Sem Nome') == escolha].iloc[0]
+            idx_selecionado = 0
+            if st.session_state.selected_ponto_gis in lista_nomes:
+                idx_selecionado = lista_nomes.index(st.session_state.selected_ponto_gis) + 1
+                
+            escolha = st.selectbox("📌 Pontos Mapeados", ["-- Ver Todos --"] + lista_nomes, index=idx_selecionado)
+            
+            if escolha != "-- Ver Todos --":
+                st.session_state.selected_ponto_gis = escolha
+            else:
+                st.session_state.selected_ponto_gis = None
+                
         else:
-            st.caption("Faça o upload de um arquivo para listar os elementos.")
+            st.caption("Nenhum ponto válido encontrado no arquivo ou vazio.")
             
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # PAINEL CENTRAL (MAPA)
     with col_m:
         mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Visão de Satélite', overlay=False, control=True).add_to(mapa_gis)
+        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite', overlay=False, control=True).add_to(mapa_gis)
+        folium.TileLayer('OpenStreetMap', name='Padrão', overlay=False, control=True).add_to(mapa_gis)
         
-        if not gdf_pontos_gis.empty:
+        mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
+        mapa_gis.add_child(Draw(export=True))
+        
+        ponto_foco = None
+        
+        if not gdf_lines.empty:
+            folium.GeoJson(gdf_lines, name="Linhas / Redes", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
+
+        if not gdf_points.empty:
+            # Ponto selecionado para dar foco
+            if st.session_state.selected_ponto_gis:
+                match = gdf_points[gdf_points['Name'] == st.session_state.selected_ponto_gis]
+                if not match.empty: ponto_foco = match.iloc[0]
+
             def get_point_style(feature):
-                return {'fillColor': '#007BFF', 'color': '#007BFF', 'weight': 1, 'fillOpacity': 0.9, 'radius': 4.0}
+                # Se for o ponto clicado/selecionado, pinta de Vermelho, senao Azul
+                if ponto_foco is not None and feature['properties'].get('Name') == ponto_foco['Name']:
+                    return {'fillColor': '#FF0000', 'color': '#FFFFFF', 'weight': 2, 'fillOpacity': 1, 'radius': 8.0}
+                return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 6.0}
             
             folium.GeoJson(
-                gdf_pontos_gis, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
-                style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name', 'Description'], aliases=['Nome:', 'Detalhes:'])
+                gdf_points, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
+                style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
             ).add_to(mapa_gis)
             
-            if ponto_selecionado is not None:
-                lat_foc, lon_foc = ponto_selecionado.geometry.y, ponto_selecionado.geometry.x
+            if ponto_foco is not None:
+                lat_foc, lon_foc = ponto_foco.geometry.y, ponto_foco.geometry.x
                 mapa_gis.location = [lat_foc, lon_foc]
-                mapa_gis.zoom_start = 17
-                folium.Marker(location=[lat_foc, lon_foc], icon=folium.Icon(color='red', icon='info-sign')).add_to(mapa_gis)
-            else:
-                b_gis = gdf_pontos_gis.total_bounds
-                mapa_gis.fit_bounds([[b_gis[1], b_gis[0]], [b_gis[3], b_gis[2]]])
+                mapa_gis.zoom_start = 18
+            elif bounds is not None:
+                mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
                 
-        st_folium(mapa_gis, use_container_width=True, height=750, returned_objects=[])
+        # st_folium captura o evento de clique
+        map_data = st_folium(mapa_gis, use_container_width=True, height=750, returned_objects=['last_active_drawing'])
+        
+        # Atualiza o selectbox pelo clique no mapa
+        if map_data and map_data.get('last_active_drawing'):
+            clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
+            if clicado and clicado != st.session_state.selected_ponto_gis:
+                st.session_state.selected_ponto_gis = clicado
+                st.rerun()
 
+    # PAINEL DIREITO (DETALHES E FOTOS)
     with col_r:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
-        if ponto_selecionado is not None:
-            st.markdown("<div class='gis-header'>📍 Detalhes do Ponto</div>", unsafe_allow_html=True)
-            
-            st.caption("NOME / IDENTIFICAÇÃO")
-            st.markdown(f"<div class='gis-value'>{ponto_selecionado.get('Name', 'N/A')}</div>", unsafe_allow_html=True)
-            
-            st.caption("COORDENADAS")
-            lat_txt = f"{ponto_selecionado.geometry.y:.6f}°"
-            lon_txt = f"{ponto_selecionado.geometry.x:.6f}°"
-            st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
-            
-            st.caption("DESCRIÇÃO / DADOS")
-            st.markdown(f"<div class='gis-value'>{ponto_selecionado.get('Description', 'Sem detalhes informados.')}</div>", unsafe_allow_html=True)
-            
-            st.caption("FOTOS (Se anexadas no HTML do KML)")
-            st.info("Para visualização completa de fotos de pastas internas (.kmz), clique diretamente no ícone do mapa no centro da tela.")
+        if st.session_state.selected_ponto_gis and not gdf_points.empty:
+            match_pt = gdf_points[gdf_points['Name'] == st.session_state.selected_ponto_gis]
+            if not match_pt.empty:
+                pt_dados = match_pt.iloc[0]
+                
+                st.markdown("<div class='gis-header'>📍 PONTO SELECIONADO</div>", unsafe_allow_html=True)
+                
+                st.caption("IDENTIFICAÇÃO")
+                st.markdown(f"<div class='gis-value'><b>{pt_dados.get('Name', 'N/A')}</b></div>", unsafe_allow_html=True)
+                
+                st.caption("COORDENADAS DE REDE")
+                lat_txt = f"{pt_dados.geometry.y:.6f}°"
+                lon_txt = f"{pt_dados.geometry.x:.6f}°"
+                st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
+                
+                st.caption("DESCRIÇÃO / OBSERVAÇÕES")
+                desc_html = pt_dados.get('Description', '')
+                clean_desc = re.sub(r'<[^>]+>', ' ', str(desc_html)).strip()
+                if not clean_desc: clean_desc = "Nenhum dado técnico preenchido no KML."
+                st.markdown(f"<div class='gis-value'>{clean_desc}</div>", unsafe_allow_html=True)
+                
+                st.markdown("<div class='gis-header' style='margin-top:15px;'>📸 FOTOS DO LEVANTAMENTO</div>", unsafe_allow_html=True)
+                
+                if temp_dir:
+                    imagens_achadas = get_images_from_desc(desc_html, temp_dir)
+                    if imagens_achadas:
+                        st.caption(f"{len(imagens_achadas)} foto(s) localizada(s):")
+                        for img in imagens_achadas:
+                            st.image(img, use_container_width=True)
+                    else:
+                        st.markdown("<div class='gis-value'>Nenhuma imagem associada a este ponto.</div>", unsafe_allow_html=True)
+                else:
+                    st.caption("Para visualizar as fotos, faça upload do arquivo em formato original ZIPado (.KMZ). Arquivos .KML simples não contêm as fotos internamente.")
         else:
             st.markdown("<div class='gis-header'>📍 Detalhes do Ponto</div>", unsafe_allow_html=True)
-            st.caption("Selecione um ponto na lista à esquerda para carregar seus dados e metadados.")
+            st.caption("Navegue no mapa ou use a lista ao lado para selecionar um ponto e carregar suas propriedades técnicas e banco de imagens.")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -1126,7 +1085,7 @@ elif menu_selecionado == 'Levantadores':
                 df_eq.to_sql('equipes', conn, if_exists='replace', index=False)
             
             get_processed_data.clear()
-            process_analytical_data.clear()
+            st.cache_data.clear()
             st.success("Residências atualizadas com sucesso!")
             st.rerun()
 
@@ -1156,7 +1115,7 @@ elif menu_selecionado == 'Levantadores':
                             conn.commit()
                         
                         get_processed_data.clear()
-                        process_analytical_data.clear()
+                        st.cache_data.clear()
                         st.success(f"✅ Levantador {novo_nome} cadastrado com sucesso e já está disponível!")
                         st.rerun()
                     except Exception as e:
