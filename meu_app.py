@@ -16,10 +16,7 @@ import zipfile
 import logging
 import shutil
 import html
-import re
-import hashlib
 from datetime import datetime, timedelta
-from PIL import Image
 
 # -----------------------------------------------------------------------------
 # CONSTANTES GLOBAIS E CONFIGURAÇÕES INICIAIS
@@ -61,20 +58,7 @@ def init_iam():
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
         conn.commit()
 
-def init_kmz_db():
-    os.makedirs("kmz_history", exist_ok=True)
-    os.makedirs("kmz_extracted", exist_ok=True)
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS historico_kmz 
-                        (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                         nome TEXT, 
-                         data_upload TEXT, 
-                         usuario TEXT, 
-                         filepath TEXT)''')
-        conn.commit()
-
 init_iam()
-init_kmz_db()
 
 def ensure_residencia_column():
     try:
@@ -174,6 +158,9 @@ if st.session_state.usuario_logado is None:
         st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
     st.stop() 
 
+if st.session_state.get('perfil_usuario') != 'ADMIN':
+    st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
+
 def atualizar_sessao():
     if st.session_state.usuario_logado:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -188,8 +175,6 @@ atualizar_sessao()
 
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
-if 'selected_ponto_gis' not in st.session_state:
-    st.session_state.selected_ponto_gis = None
 
 def filtrar_levantador_governanca(nome_lev):
     st.session_state.ui_lev = nome_lev
@@ -198,7 +183,7 @@ def filtrar_levantador_governanca(nome_lev):
     st.session_state.ui_lig = 'TODOS'
     st.session_state.ui_sap = 'TODOS'
     st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
-    st.session_state.menu_idx = 2
+    st.session_state.menu_idx = 1
     st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
 
 def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
@@ -211,7 +196,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE E GIS MAPPING
+# MOTORES DE ALTA PERFORMANCE E MAPPING
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     try:
@@ -289,7 +274,6 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
 
 @st.cache_data(show_spinner=False)
 def calcular_sla_vetorizado(df_notas_calc):
-    """Calcula o SLA dinamicamente"""
     df_sla = df_notas_calc.copy()
     tipo = df_sla.get('TIPO LIGACAO', pd.Series([''] * len(df_sla))).astype(str).str.strip().str.upper()
     g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
@@ -344,153 +328,6 @@ def calcular_sla_vetorizado(df_notas_calc):
     )
     df_sla['REGIONAL'] = df_sla.get('REGIONAL', pd.Series()).replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
     return df_sla
-
-@st.cache_data(show_spinner=False)
-def parse_kmz_advanced(file_path):
-    """Motor Extração de KMZ Seguro contra caracteres ocultos XML"""
-    import xml.etree.ElementTree as ET
-    from shapely.geometry import Point, LineString
-    
-    gdf_lines = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
-    gdf_points = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
-    bounds = None
-    
-    hash_name = hashlib.md5(file_path.encode()).hexdigest()
-    ext_dir = os.path.join("kmz_extracted", hash_name)
-    os.makedirs(ext_dir, exist_ok=True)
-    
-    kml_file = None
-    try:
-        if file_path.lower().endswith('.kmz'):
-            with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                zip_ref.extractall(ext_dir)
-            for root, dirs, files in os.walk(ext_dir):
-                for f in files:
-                    if f.lower().endswith('.kml'):
-                        kml_file = os.path.join(root, f)
-                        break
-                if kml_file: break
-        else:
-            kml_file = file_path 
-            
-        if kml_file:
-            with open(kml_file, 'rb') as f:
-                kml_bytes = f.read()
-            
-            kml_str = kml_bytes.decode('utf-8', errors='ignore')
-            kml_str = re.sub(r'\sxmlns="[^"]+"', '', kml_str, count=1)
-            kml_str = re.sub(r'\sxmlns:\w+="[^"]+"', '', kml_str)
-            kml_str = re.sub(r'<kml.*?>', '<kml>', kml_str, flags=re.IGNORECASE|re.DOTALL)
-            
-            try:
-                root = ET.fromstring(kml_str)
-            except ET.ParseError:
-                kml_str = re.sub(r'&(?!(?:apos|quot|amp|lt|gt);)', '&amp;', kml_str)
-                root = ET.fromstring(kml_str)
-                
-            for elem in root.iter():
-                if '}' in elem.tag:
-                    elem.tag = elem.tag.split('}', 1)[1]
-                    
-            points_list = []
-            lines_list = []
-            
-            for pm in root.findall('.//Placemark'):
-                name_node = pm.find('.//name')
-                pm_name = name_node.text.strip() if name_node is not None and name_node.text else "Ponto Sem Nome"
-                
-                desc_node = pm.find('.//description')
-                pm_desc = desc_node.text.strip() if desc_node is not None and desc_node.text else ""
-                
-                if not pm_desc:
-                    ext_data = pm.find('.//ExtendedData')
-                    if ext_data is not None:
-                        for data in ext_data.findall('.//Data'):
-                            d_name = data.get('name', '')
-                            v_node = data.find('value')
-                            d_val = v_node.text if v_node is not None and v_node.text else ''
-                            pm_desc += f"<b>{d_name}:</b> {d_val}<br>"
-
-                pt_node = pm.find('.//Point/coordinates')
-                if pt_node is not None and pt_node.text:
-                    coords = pt_node.text.strip().split(',')
-                    if len(coords) >= 2:
-                        try:
-                            points_list.append({
-                                'Name': pm_name,
-                                'Description': pm_desc,
-                                'geometry': Point(float(coords[0]), float(coords[1]))
-                            })
-                        except: pass
-                    continue
-                    
-                ls_node = pm.find('.//LineString/coordinates')
-                if ls_node is not None and ls_node.text:
-                    coords_str = ls_node.text.strip().split()
-                    line_coords = []
-                    for c in coords_str:
-                        parts = c.split(',')
-                        if len(parts) >= 2:
-                            try: line_coords.append((float(parts[0]), float(parts[1])))
-                            except: pass
-                    if len(line_coords) >= 2:
-                        lines_list.append({
-                            'Name': pm_name,
-                            'Description': pm_desc,
-                            'geometry': LineString(line_coords)
-                        })
-                        
-            if points_list:
-                gdf_points = gpd.GeoDataFrame(points_list, geometry='geometry')
-                gdf_points.crs = "EPSG:4326"
-            if lines_list:
-                gdf_lines = gpd.GeoDataFrame(lines_list, geometry='geometry')
-                gdf_lines.crs = "EPSG:4326"
-                
-            if not gdf_points.empty or not gdf_lines.empty:
-                all_geoms = pd.concat([gdf_points['geometry'] if not gdf_points.empty else pd.Series(dtype=object), 
-                                       gdf_lines['geometry'] if not gdf_lines.empty else pd.Series(dtype=object)])
-                bounds = gpd.GeoSeries(all_geoms).total_bounds
-                
-        return gdf_lines, gdf_points, bounds, ext_dir
-    except Exception as e:
-        logging.error(f"Erro no parse KMZ avançado: {e}")
-        return gdf_lines, gdf_points, None, ext_dir
-
-def get_images_from_desc(desc, extract_dir):
-    valid_imgs = []
-    if not os.path.exists(extract_dir): return valid_imgs
-    
-    arquivos_fisicos = []
-    for root, dirs, files in os.walk(extract_dir):
-        for f in files:
-            if f.lower().endswith(('.jpg', '.jpeg', '.png')):
-                arquivos_fisicos.append(os.path.join(root, f))
-                
-    if not desc or pd.isna(desc): return arquivos_fisicos[:5] 
-    
-    desc_str = str(desc)
-    
-    for img_path in arquivos_fisicos:
-        filename = os.path.basename(img_path)
-        if filename in desc_str:
-            valid_imgs.append(img_path)
-            
-    if not valid_imgs:
-        imgs_tags = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
-        if not imgs_tags:
-            imgs_tags = re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
-            
-        for img in imgs_tags:
-            if str(img).startswith('http'):
-                if img not in valid_imgs: valid_imgs.append(img)
-            else:
-                img_clean = img.replace('\\', '/')
-                img_path = os.path.join(extract_dir, img_clean)
-                if os.path.exists(img_path) and img_path not in valid_imgs:
-                    valid_imgs.append(img_path)
-                    
-    return valid_imgs
 
 @st.cache_data(show_spinner=False)
 def processar_camada_espacial(arquivo_espacial):
@@ -567,11 +404,6 @@ df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, m
 # -----------------------------------------------------------------------------
 # INTERFACE DE NAVEGAÇÃO LATERAL
 # -----------------------------------------------------------------------------
-# Sempre renderiza o menu para garantir que `menu_selecionado` seja criado.
-# Se o usuário for comum, escondemos com CSS.
-if st.session_state.get('perfil_usuario') != 'ADMIN':
-    st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
-    
 with st.sidebar:
     st.markdown("### 👤 Portal NIP")
     st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
@@ -587,16 +419,16 @@ with st.sidebar:
 
     st.markdown("---")
     
-    opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
-    icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
+    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Simulador de Alocação']
+    icones_menu = ['pie-chart-fill', 'sliders', 'calculator-fill']
     
     if st.session_state.perfil_usuario == "ADMIN":
-        opcoes_menu.insert(4, 'Carga de Lotes')
-        icones_menu.insert(4, 'cloud-upload-fill')
-        opcoes_menu.insert(5, 'Levantadores')
-        icones_menu.insert(5, 'person-vcard-fill')
-        opcoes_menu.insert(6, 'Gerenciamento de Acessos')
-        icones_menu.insert(6, 'shield-lock-fill')
+        opcoes_menu.insert(1, 'Carga de Lotes')
+        icones_menu.insert(1, 'cloud-upload-fill')
+        opcoes_menu.insert(2, 'Levantadores')
+        icones_menu.insert(2, 'person-vcard-fill')
+        opcoes_menu.insert(3, 'Gerenciamento de Acessos')
+        icones_menu.insert(3, 'shield-lock-fill')
         
     menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
     
@@ -732,7 +564,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
                 
-        # --- GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES E EXPORTAÇÃO KML/EXCEL) ---
+        # --- GERAÇÃO DE DEMANDA (EXCEL / KML) COM AS REGRAS ESTRITAS ---
         if st.session_state.get('show_demanda', False):
             st.markdown("---")
             st.markdown(f"#### 📋 Gerador de Demanda Otimizado - {lev_selecionado}")
@@ -780,7 +612,7 @@ if menu_selecionado == 'Painel Executivo':
                     
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
-                # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
+                # --- EXPORTAÇÃO BLINDADA ---
                 def is_valid_export(row):
                     t = str(row.get('TIPO LIGACAO', '')).strip().upper()
                     n = str(row.get('NOME DO SOLICITANTE', '')).strip().upper()
@@ -854,12 +686,12 @@ if menu_selecionado == 'Painel Executivo':
                     st.session_state.show_demanda = False
                     st.rerun()
             else:
-                st.warning("Nenhuma obra na fila de produtividade para este levantador. Utilize a Busca Governança para conferir o status.")
+                st.warning("Nenhuma obra na fila de produtividade para este levantador.")
                 if st.button("Fechar"):
                     st.session_state.show_demanda = False
                     st.rerun()
 
-        # BLINDAGEM DOS GRÁFICOS
+        # BLINDAGEM DOS GRÁFICOS E MAPA EXEC
         try:
             st.markdown("---")
             st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
@@ -1022,207 +854,7 @@ if menu_selecionado == 'Painel Executivo':
             pass
 
 # -----------------------------------------------------------------------------
-# VISÃO 2: LEITOR KMZ (GIS EARTH CLONE)
-# -----------------------------------------------------------------------------
-elif menu_selecionado == 'Leitor KMZ':
-    # Oculta o Sidebar padrão com injeção CSS
-    st.markdown("""
-        <style>
-        [data-testid="collapsedControl"] {display: none;}
-        section[data-testid="stSidebar"] {display: none;}
-        .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem; max-width: 100%;}
-        .gis-panel { background-color: #0b1120; color: #e2e8f0; padding: 15px; border-radius: 8px; border: 1px solid #1e293b; height: 85vh; overflow-y: auto;}
-        .gis-header { font-size: 13px; font-weight: bold; color: #94a3b8; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #1e293b; padding-bottom: 5px;}
-        .gis-value { font-size: 13px; margin-bottom: 10px; color: #f8fafc; background-color: #1e293b; padding: 10px; border-radius: 4px; word-wrap: break-word;}
-        .gis-title { color: #f8fafc; margin-bottom: 0px; padding-bottom: 10px; font-weight: 600;}
-        </style>
-    """, unsafe_allow_html=True)
-    
-    col_t1, col_t2 = st.columns([1, 10])
-    with col_t1:
-        if st.button("⬅ Voltar", use_container_width=True):
-            st.session_state.menu_idx = 0
-            st.rerun()
-    with col_t2:
-        st.markdown("<h4 class='gis-title'>🌍 GIS Earth - Leitor de Levantamentos</h4>", unsafe_allow_html=True)
-    
-    # 3 colunas emulando o painel real
-    col_l, col_m, col_r = st.columns([2, 7, 3])
-    
-    with col_l:
-        st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
-        st.markdown("<div class='gis-header'>📂 CARREGAR KML / KMZ</div>", unsafe_allow_html=True)
-        
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
-        
-        opcoes_hist = ["-- Usar Novo Upload --"] + df_hist['nome'].tolist()
-        hist_sel = st.selectbox("Histórico Salvo no Servidor:", opcoes_hist, label_visibility="collapsed")
-        
-        if st.session_state.perfil_usuario == "ADMIN" and hist_sel != "-- Usar Novo Upload --":
-            if st.button("🗑️ Apagar Projeto", type="primary", use_container_width=True):
-                row_h = df_hist[df_hist['nome'] == hist_sel].iloc[0]
-                if os.path.exists(row_h['filepath']): os.remove(row_h['filepath'])
-                with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                    conn.execute("DELETE FROM historico_kmz WHERE id=?", (int(row_h['id']),))
-                    conn.commit()
-                st.rerun()
-        
-        camada_gis = st.file_uploader("Upload de Arquivo Local", type=['kml', 'kmz'])
-        
-        caminho_ativo = None
-        
-        if hist_sel != "-- Usar Novo Upload --":
-            caminho_ativo = df_hist[df_hist['nome'] == hist_sel].iloc[0]['filepath']
-        elif camada_gis is not None:
-            extensao = camada_gis.name.split('.')[-1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
-                tmp.write(camada_gis.getvalue())
-                caminho_ativo = tmp.name
-                
-            nome_proj = st.text_input("Salvar novo Levantamento no Servidor:")
-            if st.button("💾 Gravar Historico", use_container_width=True) and nome_proj:
-                caminho_dest = f"kmz_history/{nome_proj}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extensao}"
-                with open(caminho_dest, "wb") as f:
-                    f.write(camada_gis.getvalue())
-                with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                    conn.execute("INSERT INTO historico_kmz (nome, data_upload, usuario, filepath) VALUES (?, ?, ?, ?)",
-                                 (nome_proj, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state.usuario_logado, caminho_dest))
-                    conn.commit()
-                st.success("Salvo! Selecione o arquivo acima.")
-                st.rerun()
-
-        gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
-        if caminho_ativo and os.path.exists(caminho_ativo):
-            with st.spinner("Lendo metadados espaciais e extraindo arquivos..."):
-                gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
-            
-        st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 BUSCA DE PONTOS</div>", unsafe_allow_html=True)
-        search_q = st.text_input("Nome do Cliente ou Coordenadas (Lat, Lng):", placeholder="Ex: -5.3, -45.1")
-        
-        lista_nomes = []
-        if not gdf_points.empty:
-            lista_nomes = gdf_points['Name'].tolist()
-            if search_q:
-                try:
-                    partes = search_q.replace(';', ',').split(',')
-                    if len(partes) >= 2:
-                        lat_s, lon_s = float(partes[0].strip()), float(partes[1].strip())
-                        gdf_points['dist_search'] = np.sqrt((gdf_points.geometry.y - lat_s)**2 + (gdf_points.geometry.x - lon_s)**2)
-                        gdf_points = gdf_points.sort_values('dist_search')
-                        lista_nomes = gdf_points['Name'].tolist()
-                    else:
-                        raise ValueError
-                except:
-                    gdf_points = gdf_points[gdf_points['Name'].str.contains(search_q, case=False, na=False)]
-                    lista_nomes = gdf_points['Name'].tolist()
-            
-            idx_selecionado = 0
-            if st.session_state.selected_ponto_gis in lista_nomes:
-                idx_selecionado = lista_nomes.index(st.session_state.selected_ponto_gis) + 1
-                
-            escolha = st.selectbox("📌 Pontos Mapeados", ["-- Visualizar Todos --"] + lista_nomes, index=idx_selecionado)
-            
-            if escolha != "-- Visualizar Todos --":
-                st.session_state.selected_ponto_gis = escolha
-            else:
-                st.session_state.selected_ponto_gis = None
-        else:
-            st.caption("Faça o upload do KMZ para carregar os pontos.")
-            
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col_m:
-        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
-        
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
-            attr='Esri', name='Satélite', overlay=False, control=False
-        ).add_to(mapa_gis)
-        
-        mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
-        mapa_gis.add_child(Draw(export=True))
-        
-        ponto_foco = None
-        
-        if not gdf_lines.empty:
-            folium.GeoJson(gdf_lines[['Name', 'geometry']], name="Linhas Desenhadas", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
-
-        if not gdf_points.empty:
-            if st.session_state.selected_ponto_gis:
-                match = gdf_points[gdf_points['Name'] == st.session_state.selected_ponto_gis]
-                if not match.empty: ponto_foco = match.iloc[0]
-
-            def get_point_style(feature):
-                if ponto_foco is not None and feature['properties'].get('Name') == ponto_foco['Name']:
-                    return {'fillColor': '#FF0000', 'color': '#FFFFFF', 'weight': 2, 'fillOpacity': 1, 'radius': 8.0}
-                return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 5.0}
-            
-            folium.GeoJson(
-                gdf_points[['Name', 'geometry']], name="Marcadores do Levantamento", marker=folium.CircleMarker(), 
-                style_function=get_point_style, tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Ponto: '])
-            ).add_to(mapa_gis)
-            
-            if ponto_foco is not None:
-                lat_foc, lon_foc = ponto_foco.geometry.y, ponto_foco.geometry.x
-                mapa_gis.location = [lat_foc, lon_foc]
-                mapa_gis.zoom_start = 18
-            elif bounds is not None:
-                mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-                
-        map_data = st_folium(mapa_gis, use_container_width=True, height=800, returned_objects=['last_active_drawing'])
-        
-        if map_data and map_data.get('last_active_drawing'):
-            clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
-            if clicado and clicado != st.session_state.selected_ponto_gis:
-                st.session_state.selected_ponto_gis = clicado
-                st.rerun()
-
-    with col_r:
-        st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
-        if st.session_state.selected_ponto_gis and not gdf_points.empty:
-            match_pt = gdf_points[gdf_points['Name'] == st.session_state.selected_ponto_gis]
-            if not match_pt.empty:
-                pt_dados = match_pt.iloc[0]
-                
-                st.markdown("<div class='gis-header'>📍 PONTO SELECIONADO</div>", unsafe_allow_html=True)
-                
-                st.caption("CLIENTE / NOME DO MARCADOR")
-                st.markdown(f"<div class='gis-value'><b>{pt_dados.get('Name', 'N/A')}</b></div>", unsafe_allow_html=True)
-                
-                st.caption("COORDENADAS DE REDE")
-                lat_txt = f"{pt_dados.geometry.y:.6f}°"
-                lon_txt = f"{pt_dados.geometry.x:.6f}°"
-                st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
-                
-                st.caption("DESCRIÇÃO TÉCNICA (HTML / OBS)")
-                desc_html = pt_dados.get('Description', '')
-                clean_desc = re.sub(r'<[^>]+>', ' ', str(desc_html)).strip()
-                if not clean_desc: clean_desc = "Sem detalhes adicionais inseridos no arquivo."
-                st.markdown(f"<div class='gis-value'>{clean_desc}</div>", unsafe_allow_html=True)
-                
-                st.markdown("<div class='gis-header' style='margin-top:20px;'>📸 FOTOS DO LEVANTAMENTO</div>", unsafe_allow_html=True)
-                
-                if temp_dir:
-                    imagens_achadas = get_images_from_desc(desc_html, temp_dir)
-                    if imagens_achadas:
-                        st.caption(f"{len(imagens_achadas)} foto(s) anexada(s) à nota:")
-                        for img_path in imagens_achadas:
-                            try:
-                                img_obj = Image.open(img_path)
-                                st.image(img_obj, use_container_width=True)
-                            except Exception: pass
-                    else:
-                        st.markdown("<div class='gis-value'>Este marcador não possui registro fotográfico atrelado.</div>", unsafe_allow_html=True)
-                else:
-                    st.caption("Para visualizar imagens, faça o upload de arquivos completos formato (.KMZ). Arquivos .KML não contêm a pasta interna de fotos.")
-        else:
-            st.markdown("<div class='gis-header'>📍 DADOS DO ELEMENTO</div>", unsafe_allow_html=True)
-            st.caption("Clique diretamente em um marcador azul no mapa ou busque pelo nome/coordenada na lista à esquerda para carregar o banco de imagens e os detalhes técnicos.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-# VISÃO 3: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
+# VISÃO 2: FILTROS E GOVERNANÇA (APENAS LEITURA PARA VISITANTES)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Busca e Governança':
     st.markdown("### 📝 Filtros e Governança Direta da Base")
@@ -1313,7 +945,7 @@ elif menu_selecionado == 'Busca e Governança':
                 st.rerun()
 
 # -----------------------------------------------------------------------------
-# VISÃO 4: CARGA DE LOTES (SOMENTE ADMIN)
+# VISÃO 3: CARGA DE LOTES (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Carga de Lotes':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1363,7 +995,7 @@ elif menu_selecionado == 'Carga de Lotes':
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
-# VISÃO 5: LEVANTADORES (MUDANÇA DE RESIDÊNCIA E CRIAÇÃO)
+# VISÃO 4: LEVANTADORES (MUDANÇA DE RESIDÊNCIA E CRIAÇÃO)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Levantadores':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1442,7 +1074,7 @@ elif menu_selecionado == 'Levantadores':
                 st.warning("⚠️ Preencha todos os campos obrigatórios (Nome, Equipe e Residência).")
 
 # -----------------------------------------------------------------------------
-# VISÃO 6: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
+# VISÃO 5: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Gerenciamento de Acessos':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -1511,7 +1143,7 @@ elif menu_selecionado == 'Gerenciamento de Acessos':
                 st.warning("Preencha todos os campos para continuar.")
 
 # -----------------------------------------------------------------------------
-# VISÃO 7: SIMULADOR DE ALOCAÇÃO
+# VISÃO 6: SIMULADOR DE ALOCAÇÃO
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Simulador de Alocação':
     st.markdown("""
@@ -1535,6 +1167,7 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
+    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
@@ -1637,27 +1270,26 @@ elif menu_selecionado == 'Simulador de Alocação':
 # -----------------------------------------------------------------------------
 # RODAPÉ: USUÁRIOS ONLINE (HEARTBEAT)
 # -----------------------------------------------------------------------------
-if menu_selecionado != 'Leitor KMZ':
-    st.markdown("---")
-    st.markdown("#### 🟢 Usuários Online Agora")
+st.markdown("---")
+st.markdown("#### 🟢 Usuários Online Agora")
 
-    try:
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-            ativos = pd.read_sql(f"""
-                SELECT username, role 
-                FROM usuarios 
-                WHERE last_active >= '{limite_inatividade}'
-                ORDER BY username ASC
-            """, conn)
+try:
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+        ativos = pd.read_sql(f"""
+            SELECT username, role 
+            FROM usuarios 
+            WHERE last_active >= '{limite_inatividade}'
+            ORDER BY username ASC
+        """, conn)
 
-        if not ativos.empty:
-            html_pills = "".join([
-                f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
-                for _, row in ativos.iterrows()
-            ])
-            st.markdown(html_pills, unsafe_allow_html=True)
-        else:
-            st.caption("Nenhum usuário ativo detectado no momento.")
-    except Exception:
-        st.caption("Status de usuários temporariamente indisponível.")
+    if not ativos.empty:
+        html_pills = "".join([
+            f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
+            for _, row in ativos.iterrows()
+        ])
+        st.markdown(html_pills, unsafe_allow_html=True)
+    else:
+        st.caption("Nenhum usuário ativo detectado no momento.")
+except Exception:
+    st.caption("Status de usuários temporariamente indisponível.")
