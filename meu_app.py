@@ -200,9 +200,6 @@ if st.session_state.usuario_logado is None:
         st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
     st.stop() 
 
-# -----------------------------------------------------------------------------
-# CONFIGURAÇÕES DE ESTADO GERAIS E NAVEGAÇÃO
-# -----------------------------------------------------------------------------
 def atualizar_sessao():
     if st.session_state.usuario_logado:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -283,6 +280,24 @@ def get_processed_data():
         df_e = pd.read_sql("SELECT * FROM equipes", conn)
     return auto_assign_levantador(df_n, df_e), df_e
 
+def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operação no Banco de Dados"):
+    try:
+        df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            df_notas_limpo.to_sql('notas_temp', conn, if_exists='replace', index=False)
+            conn.execute("BEGIN TRANSACTION;")
+            conn.execute("DROP TABLE IF EXISTS notas;")
+            conn.execute("ALTER TABLE notas_temp RENAME TO notas;")
+            conn.commit()
+            
+        registrar_auditoria(acao_auditoria, f"Tabela NOTAS atualizada. Volume final: {len(df_notas_limpo)} registros.")
+        get_processed_data.clear()
+        process_analytical_data.clear()
+        return True
+    except sqlite3.Error as e:
+        st.error(f"Falha Crítica no Banco de Dados: {e}")
+        return False
+
 df_notas_db, df_equipes_db = get_processed_data()
 
 def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
@@ -297,63 +312,6 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return R * c
     except (ValueError, TypeError):
         return pd.Series(99999, index=lat2_series.index)
-
-@st.cache_data(show_spinner=False)
-def calcular_sla_vetorizado(df_notas_calc):
-    df_sla = df_notas_calc.copy()
-    tipo = df_sla.get('TIPO LIGACAO', pd.Series([''] * len(df_sla))).astype(str).str.strip().str.upper()
-    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
-    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
-    g_niv = ['NIV']
-    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
-    
-    def blindar_datas(serie):
-        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
-        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
-        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
-
-    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla.get('DATA DE VENCIMENTO', pd.Series()))
-    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla.get('DATA CRIAÇAO SISCO', pd.Series()))
-    
-    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
-    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
-
-    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
-    cond_crono_v = cond_crono & (dias_para_vencer < 0)
-    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
-    cond_crono_np = cond_crono & (dias_para_vencer > 3)
-    
-    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
-    cond_g1 = tipo.isin(g1) & cond_base_dt
-    cond_g1_np = cond_g1 & (idade_dias <= 10)
-    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
-    cond_g1_v  = cond_g1 & (idade_dias > 15)
-    
-    cond_g2 = tipo.isin(g2) & cond_base_dt
-    cond_g2_np = cond_g2 & (idade_dias <= 16)
-    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
-    cond_g2_v  = cond_g2 & (idade_dias > 24)
-    
-    cond_niv = tipo.isin(g_niv) & cond_base_dt
-    cond_niv_np = cond_niv & (idade_dias <= 5)
-    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
-    cond_niv_v  = cond_niv & (idade_dias > 8)
-    
-    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
-    cond_def_np = cond_default & (idade_dias <= 15)
-    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
-    cond_def_v  = cond_default & (idade_dias > 20)
-
-    df_sla['Status_SLA'] = np.select(
-        [
-            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
-            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
-            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
-        ],
-        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
-    )
-    df_sla['REGIONAL'] = df_sla.get('REGIONAL', pd.Series()).replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
-    return df_sla
 
 @st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
@@ -525,7 +483,6 @@ def processar_camada_espacial(arquivo_espacial):
             gdf_final = pd.concat(gdfs, ignore_index=True)
             gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
             
-            # GARANTE AS COLUNAS PARA NÃO DAR KEYERROR NO FOLIUM.GEOJSON
             if 'Name' not in gdf_final.columns: gdf_final['Name'] = 'Sem Nome'
             else: gdf_final['Name'] = gdf_final['Name'].fillna('Sem Nome')
             
@@ -554,7 +511,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
     mun_por_lev = df_equipes_db.groupby('Levantador')['Município'].nunique().reset_index()
     mun_por_lev.columns = ['Levantador', 'Qtd_Municipios']
 
-    cond_list_real = df_notas_calc.get('STATUS LIST', pd.Series()).isin(STATUS_PRODUTIVIDADE)
+    cond_list_real = df_notas_calc['STATUS LIST'].isin(STATUS_PRODUTIVIDADE)
     df_filtrado_status = df_notas_calc[cond_list_real]
     contagem_prod = df_filtrado_status['LEVANTADOR'].value_counts().reset_index()
     contagem_prod.columns = ['Levantador', 'Total_Obras_Real']
@@ -576,45 +533,43 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL
+# INTERFACE DE NAVEGAÇÃO LATERAL (RENDERIZADA SEMPRE PARA EVITAR NAMEERROR)
 # -----------------------------------------------------------------------------
-# Habilita ou desabilita o menu nativo dependendo da Aba selecionada (Modo GIS Earth)
-if menu_selecionado != 'Leitor KMZ':
-    if st.session_state.get('perfil_usuario') != 'ADMIN':
-        st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
-        
-    with st.sidebar:
-        st.markdown("### 👤 Portal NIP")
-        st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
-        st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
-        
-        if st.button("🚪 Sair / Deslogar", use_container_width=True):
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
-                conn.commit()
-            st.session_state.usuario_logado = None
-            st.session_state.perfil_usuario = None
-            st.rerun()
+if st.session_state.get('perfil_usuario') != 'ADMIN':
+    st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
+    
+with st.sidebar:
+    st.markdown("### 👤 Portal NIP")
+    st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
+    st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
+    
+    if st.button("🚪 Sair / Deslogar", use_container_width=True):
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
+            conn.commit()
+        st.session_state.usuario_logado = None
+        st.session_state.perfil_usuario = None
+        st.rerun()
 
-        st.markdown("---")
+    st.markdown("---")
+    
+    opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
+    icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
+    
+    if st.session_state.perfil_usuario == "ADMIN":
+        opcoes_menu.insert(4, 'Carga de Lotes')
+        icones_menu.insert(4, 'cloud-upload-fill')
+        opcoes_menu.insert(5, 'Levantadores')
+        icones_menu.insert(5, 'person-vcard-fill')
+        opcoes_menu.insert(6, 'Gerenciamento de Acessos')
+        icones_menu.insert(6, 'shield-lock-fill')
         
-        opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
-        icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
-        
-        if st.session_state.perfil_usuario == "ADMIN":
-            opcoes_menu.insert(4, 'Carga de Lotes')
-            icones_menu.insert(4, 'cloud-upload-fill')
-            opcoes_menu.insert(5, 'Levantadores')
-            icones_menu.insert(5, 'person-vcard-fill')
-            opcoes_menu.insert(6, 'Gerenciamento de Acessos')
-            icones_menu.insert(6, 'shield-lock-fill')
-            
-        menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
-        
-        menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
-        
-        if menu_selecionado in opcoes_menu:
-            st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
+    menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
+    
+    menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
+    
+    if menu_selecionado in opcoes_menu:
+        st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO
@@ -870,7 +825,7 @@ if menu_selecionado == 'Painel Executivo':
                     st.session_state.show_demanda = False
                     st.rerun()
 
-        # BLINDAGEM DA PARTE INFERIOR DOS GRÁFICOS E MAPA
+        # BLINDAGEM DOS GRÁFICOS
         try:
             st.markdown("---")
             st.markdown("### 📊 Estatísticas e Distribuição da Carga Geral")
@@ -1023,7 +978,7 @@ if menu_selecionado == 'Painel Executivo':
                         fg_obras.add_to(mapa)
 
                 fg_equipes.add_to(mapa)
-                folium.LayerControl().add_to(mapa)
+                folium.LayerControl(position='bottomright').add_to(mapa)
                 return mapa
 
             with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
@@ -1036,7 +991,7 @@ if menu_selecionado == 'Painel Executivo':
 # VISÃO 2: LEITOR KMZ (GIS EARTH CLONE)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Leitor KMZ':
-    # Oculta completamente o menu lateral esquerdo (nativo) e ajusta as margens
+    # Oculta o Sidebar padrão com injeção CSS
     st.markdown("""
         <style>
         [data-testid="collapsedControl"] {display: none;}
@@ -1057,7 +1012,6 @@ elif menu_selecionado == 'Leitor KMZ':
     with col_t2:
         st.markdown("<h4 class='gis-title'>🌍 GIS Earth - Leitor de Levantamentos</h4>", unsafe_allow_html=True)
     
-    # 3 colunas dinâmicas emulando o painel real
     col_l, col_m, col_r = st.columns([2, 7, 3])
     
     with col_l:
@@ -1105,7 +1059,7 @@ elif menu_selecionado == 'Leitor KMZ':
 
         gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
         if caminho_ativo and os.path.exists(caminho_ativo):
-            with st.spinner("Lendo metadados espaciais..."):
+            with st.spinner("Lendo metadados espaciais e extraindo arquivos..."):
                 gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
             
         st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 BUSCA DE PONTOS</div>", unsafe_allow_html=True)
@@ -1146,13 +1100,11 @@ elif menu_selecionado == 'Leitor KMZ':
     with col_m:
         mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
         
-        # Padrão Esri Satélite Fixo
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
             attr='Esri', name='Satélite', overlay=False, control=False
         ).add_to(mapa_gis)
         
-        # Ferramentas GIS Reais
         mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
         mapa_gis.add_child(Draw(export=True))
         
@@ -1548,7 +1500,6 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
-    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
@@ -1651,26 +1602,27 @@ elif menu_selecionado == 'Simulador de Alocação':
 # -----------------------------------------------------------------------------
 # RODAPÉ: USUÁRIOS ONLINE (HEARTBEAT)
 # -----------------------------------------------------------------------------
-st.markdown("---")
-st.markdown("#### 🟢 Usuários Online Agora")
+if menu_selecionado != 'Leitor KMZ':
+    st.markdown("---")
+    st.markdown("#### 🟢 Usuários Online Agora")
 
-try:
-    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        ativos = pd.read_sql(f"""
-            SELECT username, role 
-            FROM usuarios 
-            WHERE last_active >= '{limite_inatividade}'
-            ORDER BY username ASC
-        """, conn)
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
+            ativos = pd.read_sql(f"""
+                SELECT username, role 
+                FROM usuarios 
+                WHERE last_active >= '{limite_inatividade}'
+                ORDER BY username ASC
+            """, conn)
 
-    if not ativos.empty:
-        html_pills = "".join([
-            f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
-            for _, row in ativos.iterrows()
-        ])
-        st.markdown(html_pills, unsafe_allow_html=True)
-    else:
-        st.caption("Nenhum usuário ativo detectado no momento.")
-except Exception:
-    st.caption("Status de usuários temporariamente indisponível.")
+        if not ativos.empty:
+            html_pills = "".join([
+                f"<span style='background-color: #d4edda; color: #155724; padding: 4px 10px; border-radius: 12px; margin-right: 8px; font-size: 13px; font-weight: bold; border: 1px solid #c3e6cb;'>👤 {row['username']} ({row['role']})</span>" 
+                for _, row in ativos.iterrows()
+            ])
+            st.markdown(html_pills, unsafe_allow_html=True)
+        else:
+            st.caption("Nenhum usuário ativo detectado no momento.")
+    except Exception as e:
+        st.caption("Status de usuários temporariamente indisponível.")
