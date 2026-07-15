@@ -17,7 +17,9 @@ import logging
 import shutil
 import html
 import re
+import hashlib
 from datetime import datetime, timedelta
+from PIL import Image
 
 # -----------------------------------------------------------------------------
 # CONSTANTES GLOBAIS E CONFIGURAÇÕES INICIAIS
@@ -61,6 +63,7 @@ def init_iam():
 
 def init_kmz_db():
     os.makedirs("kmz_history", exist_ok=True)
+    os.makedirs("kmz_extracted", exist_ok=True)
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS historico_kmz 
                         (id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -237,7 +240,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE (CACHE E VETORIZAÇÃO)
+# MOTORES DE ALTA PERFORMANCE E GIS
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     try:
@@ -315,18 +318,21 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
 
 @st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
-    """Extração avançada de KML/KMZ permitindo leitura de fotos da Description, imune a erros do GeoJSON Folium"""
+    """Extração avançada de KML/KMZ para uma pasta permanente para garantir leitura de fotos"""
     gdf_lines = gpd.GeoDataFrame()
     gdf_points = gpd.GeoDataFrame()
     bounds = None
-    temp_dir = tempfile.mkdtemp()
+    
+    hash_name = hashlib.md5(file_path.encode()).hexdigest()
+    ext_dir = os.path.join("kmz_extracted", hash_name)
+    os.makedirs(ext_dir, exist_ok=True)
     
     try:
         kml_file = None
         if file_path.endswith('.kmz'):
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                zip_ref.extractall(temp_dir)
-            for root, dirs, files in os.walk(temp_dir):
+                zip_ref.extractall(ext_dir)
+            for root, dirs, files in os.walk(ext_dir):
                 for f in files:
                     if f.lower().endswith('.kml'):
                         kml_file = os.path.join(root, f)
@@ -354,7 +360,7 @@ def parse_kmz_advanced(file_path):
                 
                 gdf_final['Name'] = gdf_final['Name'].fillna('Ponto Sem Nome').replace('', 'Ponto Sem Nome')
                 
-                # BLINDAGEM CONTRA O TYPEERROR DE JSON DUMPS NO FOLIUM GEOJSON
+                # BLINDAGEM CONTRA TYPEERROR DO FOLIUM GEOJSON
                 for col in gdf_final.columns:
                     if col != 'geometry':
                         gdf_final[col] = gdf_final[col].astype(str).replace({'nan': '', '<NA>': '', 'None': '', 'NaT': ''})
@@ -363,13 +369,35 @@ def parse_kmz_advanced(file_path):
                 gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
                 bounds = gdf_final.total_bounds
                 
-        return gdf_lines, gdf_points, bounds, temp_dir
+        return gdf_lines, gdf_points, bounds, ext_dir
     except Exception as e:
-        return gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, temp_dir
+        return gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, ext_dir
+
+def get_images_from_desc(desc, extract_dir):
+    """Varre HTML do KML e resgata fotos na pasta extraída permanentemente"""
+    if not desc or pd.isna(desc): return []
+    desc_str = str(desc)
+    
+    imgs = re.findall(r'src=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+    if not imgs:
+        imgs = re.findall(r'href=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+    if not imgs:
+        imgs = re.findall(r'([\w\-/\\]+\.(?:jpg|jpeg|png))', desc_str, re.IGNORECASE)
+        
+    valid_imgs = []
+    for img in imgs:
+        if str(img).startswith('http'):
+            if img not in valid_imgs: valid_imgs.append(img)
+        else:
+            img_clean = img.replace('\\', '/')
+            img_path = os.path.join(extract_dir, img_clean)
+            if os.path.exists(img_path) and img_path not in valid_imgs:
+                valid_imgs.append(img_path)
+    return valid_imgs
 
 @st.cache_data(show_spinner=False)
 def processar_camada_espacial(arquivo_espacial):
-    """Lógica simplificada e blindada para mapas de lote (Executivo)"""
+    """Leitura cega para o mapa do Painel Executivo"""
     gdf_lines = gpd.GeoDataFrame()
     gdf_points = gpd.GeoDataFrame()
     bounds = None
@@ -390,7 +418,6 @@ def processar_camada_espacial(arquivo_espacial):
             gdf_final = pd.concat(gdfs, ignore_index=True)
             gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
             
-            # BLINDAGEM CONTRA TYPEERROR DO FOLIUM GEOJSON
             for col in gdf_final.columns:
                 if col != 'geometry':
                     gdf_final[col] = gdf_final[col].astype(str).replace({'nan': '', '<NA>': '', 'None': '', 'NaT': ''})
@@ -400,28 +427,6 @@ def processar_camada_espacial(arquivo_espacial):
             bounds = gdf_final.total_bounds
     except Exception: pass
     return gdf_lines, gdf_points, bounds
-
-def get_images_from_desc(desc, temp_dir):
-    """Função robusta para varrer HTML do KML e resgatar as fotos atreladas"""
-    if not desc or pd.isna(desc): return []
-    desc_str = str(desc)
-    
-    imgs = re.findall(r'src=["\'](.*?)["\']', desc_str, re.IGNORECASE)
-    if not imgs:
-        imgs = re.findall(r'href=["\'](.*?)["\']', desc_str, re.IGNORECASE)
-    if not imgs:
-        imgs = re.findall(r'[\w\/\-]+\.(?:jpg|png|jpeg)', desc_str, re.IGNORECASE)
-        
-    valid_imgs = []
-    for img in imgs:
-        if str(img).startswith('http'):
-            valid_imgs.append(img)
-        else:
-            img_clean = img.replace('\\', '/')
-            img_path = os.path.join(temp_dir, img_clean)
-            if os.path.exists(img_path) and img_path not in valid_imgs:
-                valid_imgs.append(img_path)
-    return valid_imgs
 
 @st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
@@ -611,7 +616,7 @@ if menu_selecionado == 'Painel Executivo':
                             st.session_state.show_demanda = True
                             
                 else:
-                    st.warning("🔒 Acesso restrito. Módulo de atribuição exclusivo para Coordenação.")
+                    st.warning("🔒 Acesso restrito. Módulo exclusivo para Coordenação.")
                     
                 st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -739,7 +744,7 @@ if menu_selecionado == 'Painel Executivo':
                     st.session_state.show_demanda = False
                     st.rerun()
             else:
-                st.warning("Nenhuma obra na fila de produtividade para este levantador. Utilize a Busca Governança para conferir o status.")
+                st.warning("Nenhuma obra na fila de produtividade para este levantador.")
                 if st.button("Fechar"):
                     st.session_state.show_demanda = False
                     st.rerun()
@@ -764,24 +769,6 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h', title="Top 15 - Obras Sem Levantador Atribuído por Regional", color_discrete_sequence=['#D9534F'])
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
-
-        df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
-        df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
-        
-        if not df_sla_chart.empty:
-            st.markdown("---")
-            st.markdown("### ⏳ Monitoramento de SLA por Regional")
-            df_group = df_sla_chart.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Quantidade')
-            if not df_group.empty and df_group['Quantidade'].sum() > 0:
-                ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
-                df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
-                df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
-                
-                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA',
-                                 title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group',
-                                 color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
-                fig_sla.update_traces(textposition='auto', textfont_size=14)
-                st.plotly_chart(fig_sla, use_container_width=True)
 
         st.markdown("---")
         
@@ -847,20 +834,11 @@ if menu_selecionado == 'Painel Executivo':
                 if not gdf_lines.empty:
                     folium.GeoJson(gdf_lines, name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
                 if not gdf_points.empty:
-                    for col in ['Name', 'Description', 'Layer_Name']:
-                        if col not in gdf_points.columns: gdf_points[col] = ''
                     def get_point_style(feature):
-                        props = feature.get('properties', {})
-                        busca = (str(props.get('Name', '')) + " " + str(props.get('Description', '')) + " " + str(props.get('Layer_Name', ''))).lower()
-                        if 'poste' in busca: cor, raio = '#808080', 2.5
-                        elif any(k in busca for k in ['transformador', 'trafo', 'subestação', 'subestacao']): cor, raio = '#28a745', 5.0
-                        elif any(k in busca for k in ['chave', 'seccionador', 'fusivel']): cor, raio = '#ffc107', 4.0
-                        elif any(k in busca for k in ['medidor', 'consumidor', 'cliente']): cor, raio = '#17a2b8', 2.5
-                        else: cor, raio = '#dc3545', 2.5
-                        return {'fillColor': cor, 'color': cor, 'weight': 1, 'fillOpacity': 0.9, 'radius': raio}
+                        return {'fillColor': '#dc3545', 'color': '#dc3545', 'weight': 1, 'fillOpacity': 0.9, 'radius': 2.5}
                     folium.GeoJson(
                         gdf_points, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
-                        style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Layer_Name', 'Name', 'Description'], aliases=['Camada:', 'Nome:', 'Detalhes:'])
+                        style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
                     ).add_to(mapa)
                 if bounds is not None: mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
@@ -894,7 +872,6 @@ if menu_selecionado == 'Painel Executivo':
                         safe_protocolo = html.escape(str(row.get('PROTOCOLO', '')))
                         safe_municipio = html.escape(str(row.get('MUNICIPIO', '')))
                         safe_levantador = html.escape(str(row.get('LEVANTADOR', '')))
-                        
                         html_mini_card = f"""
                         <div style="font-family: Arial, sans-serif; font-size: 11px; width: 260px; line-height: 1.4; color: #222;">
                             <div style="background-color: #1A4F7C; color: white; padding: 5px; font-weight: bold; border-radius: 4px 4px 0 0; text-align: center;">INFORMAÇÕES DA OBRA</div>
@@ -911,7 +888,7 @@ if menu_selecionado == 'Painel Executivo':
                     fg_obras.add_to(mapa)
 
             fg_equipes.add_to(mapa)
-            folium.LayerControl().add_to(mapa)
+            folium.LayerControl(position='bottomright').add_to(mapa)
             return mapa
 
         with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
@@ -922,31 +899,34 @@ if menu_selecionado == 'Painel Executivo':
 # VISÃO 2: LEITOR KMZ (GIS EARTH CLONE)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Leitor KMZ':
+    # Injeção de CSS para recriar o ambiente imersivo estilo GIS escuro
     st.markdown("""
         <style>
-        .gis-panel { background-color: #1a1a2e; color: #e0e0e0; padding: 15px; border-radius: 8px; border: 1px solid #2d2d44; height: 750px; overflow-y: auto;}
-        .gis-header { font-size: 14px; font-weight: bold; color: #8282b9; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #2d2d44; padding-bottom: 5px;}
-        .gis-value { font-size: 13px; margin-bottom: 10px; color: #fff; background-color: #24243e; padding: 8px; border-radius: 4px; word-wrap: break-word;}
+        .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem; max-width: 100%;}
+        .gis-panel { background-color: #0b1120; color: #e2e8f0; padding: 15px; border-radius: 8px; border: 1px solid #1e293b; height: 82vh; overflow-y: auto;}
+        .gis-header { font-size: 13px; font-weight: bold; color: #94a3b8; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #1e293b; padding-bottom: 5px;}
+        .gis-value { font-size: 13px; margin-bottom: 10px; color: #f8fafc; background-color: #1e293b; padding: 10px; border-radius: 4px; word-wrap: break-word;}
+        .gis-title { color: #f8fafc; margin-bottom: 0px; padding-bottom: 10px; font-weight: 600;}
         </style>
     """, unsafe_allow_html=True)
     
-    st.markdown("### 🗺️ GIS Earth - Leitor de Levantamentos")
+    st.markdown("<h4 class='gis-title'>🌍 GIS Earth - Leitor de Levantamentos</h4>", unsafe_allow_html=True)
     
-    col_l, col_m, col_r = st.columns([2.5, 6, 2.5])
+    col_l, col_m, col_r = st.columns([2.5, 6.5, 3])
     
-    # PAINEL ESQUERDO
+    # PAINEL ESQUERDO: Gerenciador de Arquivos e Pontos
     with col_l:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
-        st.markdown("<div class='gis-header'>📂 GERENCIADOR DE ARQUIVOS</div>", unsafe_allow_html=True)
+        st.markdown("<div class='gis-header'>📂 CARREGAR KML / KMZ</div>", unsafe_allow_html=True)
         
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
         
         opcoes_hist = ["-- Usar Novo Upload --"] + df_hist['nome'].tolist()
-        hist_sel = st.selectbox("Histórico Salvo:", opcoes_hist)
+        hist_sel = st.selectbox("Histórico Salvo no Servidor:", opcoes_hist, label_visibility="collapsed")
         
         if st.session_state.perfil_usuario == "ADMIN" and hist_sel != "-- Usar Novo Upload --":
-            if st.button("🗑️ Apagar Histórico", type="primary", use_container_width=True):
+            if st.button("🗑️ Apagar Projeto do Servidor", type="primary", use_container_width=True):
                 row_h = df_hist[df_hist['nome'] == hist_sel].iloc[0]
                 if os.path.exists(row_h['filepath']): os.remove(row_h['filepath'])
                 with sqlite3.connect(DB_PATH, timeout=10) as conn:
@@ -954,22 +934,20 @@ elif menu_selecionado == 'Leitor KMZ':
                     conn.commit()
                 st.rerun()
         
-        camada_gis = st.file_uploader("Ou Carregar KML / KMZ Local", type=['kml', 'kmz'], label_visibility="collapsed")
+        camada_gis = st.file_uploader("Upload de Arquivo Local", type=['kml', 'kmz'])
         
         caminho_ativo = None
-        nome_ativo = ""
         
         if hist_sel != "-- Usar Novo Upload --":
             caminho_ativo = df_hist[df_hist['nome'] == hist_sel].iloc[0]['filepath']
-            nome_ativo = hist_sel
         elif camada_gis is not None:
             extensao = camada_gis.name.split('.')[-1].lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
                 tmp.write(camada_gis.getvalue())
                 caminho_ativo = tmp.name
                 
-            nome_proj = st.text_input("Nome para Salvar o Projeto:")
-            if st.button("💾 Salvar no Histórico Permanente", use_container_width=True) and nome_proj:
+            nome_proj = st.text_input("Salvar novo Levantamento no Servidor:")
+            if st.button("💾 Gravar Historico", use_container_width=True) and nome_proj:
                 caminho_dest = f"kmz_history/{nome_proj}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extensao}"
                 with open(caminho_dest, "wb") as f:
                     f.write(camada_gis.getvalue())
@@ -977,15 +955,16 @@ elif menu_selecionado == 'Leitor KMZ':
                     conn.execute("INSERT INTO historico_kmz (nome, data_upload, usuario, filepath) VALUES (?, ?, ?, ?)",
                                  (nome_proj, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state.usuario_logado, caminho_dest))
                     conn.commit()
-                st.success("Salvo! Selecione no Histórico.")
+                st.success("Salvo! Selecione o arquivo acima.")
                 st.rerun()
 
         gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
         if caminho_ativo and os.path.exists(caminho_ativo):
-            gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
+            with st.spinner("Lendo metadados espaciais..."):
+                gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
             
-        st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 PESQUISA & PONTOS</div>", unsafe_allow_html=True)
-        search_q = st.text_input("Buscar Nome ou Coordenadas:", "")
+        st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 BUSCA DE PONTOS</div>", unsafe_allow_html=True)
+        search_q = st.text_input("Nome do Cliente ou Coordenadas (Lat, Lng):", placeholder="Ex: -5.3, -45.1")
         
         lista_nomes = []
         if not gdf_points.empty:
@@ -1008,31 +987,38 @@ elif menu_selecionado == 'Leitor KMZ':
             if st.session_state.selected_ponto_gis in lista_nomes:
                 idx_selecionado = lista_nomes.index(st.session_state.selected_ponto_gis) + 1
                 
-            escolha = st.selectbox("📌 Pontos Mapeados", ["-- Ver Todos --"] + lista_nomes, index=idx_selecionado)
+            escolha = st.selectbox("📌 Pontos / Marcadores Encontrados", ["-- Visualizar Todos --"] + lista_nomes, index=idx_selecionado)
             
-            if escolha != "-- Ver Todos --":
+            if escolha != "-- Visualizar Todos --":
                 st.session_state.selected_ponto_gis = escolha
             else:
                 st.session_state.selected_ponto_gis = None
                 
         else:
-            st.caption("Nenhum ponto válido encontrado no arquivo ou vazio.")
+            st.caption("Faça o upload do KMZ para carregar os pontos.")
             
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # PAINEL CENTRAL (MAPA)
+    # PAINEL CENTRAL: O Mapa
     with col_m:
-        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        folium.TileLayer(tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite', overlay=False, control=True).add_to(mapa_gis)
-        folium.TileLayer('OpenStreetMap', name='Padrão', overlay=False, control=True).add_to(mapa_gis)
+        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
         
+        # Padrão Esri Satélite igual imagem
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+            attr='Esri', name='Satélite', overlay=False, control=True
+        ).add_to(mapa_gis)
+        
+        folium.TileLayer('OpenStreetMap', name='Padrão / Ruas', overlay=False, control=True).add_to(mapa_gis)
+        
+        # Ferramentas nativas na tela
         mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
         mapa_gis.add_child(Draw(export=True))
         
         ponto_foco = None
         
         if not gdf_lines.empty:
-            folium.GeoJson(gdf_lines, name="Linhas / Redes", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
+            folium.GeoJson(gdf_lines, name="Linhas Desenhadas", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
 
         if not gdf_points.empty:
             if st.session_state.selected_ponto_gis:
@@ -1042,11 +1028,12 @@ elif menu_selecionado == 'Leitor KMZ':
             def get_point_style(feature):
                 if ponto_foco is not None and feature['properties'].get('Name') == ponto_foco['Name']:
                     return {'fillColor': '#FF0000', 'color': '#FFFFFF', 'weight': 2, 'fillOpacity': 1, 'radius': 8.0}
-                return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 6.0}
+                return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 5.0}
             
+            # Adiciona os pontos no mapa com tooltips (hover) para leitura e permite Clique
             folium.GeoJson(
-                gdf_points, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
-                style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
+                gdf_points, name="Marcadores do Levantamento", marker=folium.CircleMarker(), 
+                style_function=get_point_style, tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Ponto: '])
             ).add_to(mapa_gis)
             
             if ponto_foco is not None:
@@ -1056,15 +1043,19 @@ elif menu_selecionado == 'Leitor KMZ':
             elif bounds is not None:
                 mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
                 
+        # Obrigatorio para poder alternar camadas
+        folium.LayerControl(position='bottomright').add_to(mapa_gis)
+        
         map_data = st_folium(mapa_gis, use_container_width=True, height=750, returned_objects=['last_active_drawing'])
         
+        # Intercepta o clique real do mouse num marcador do mapa para abrir as fotos
         if map_data and map_data.get('last_active_drawing'):
             clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
             if clicado and clicado != st.session_state.selected_ponto_gis:
                 st.session_state.selected_ponto_gis = clicado
                 st.rerun()
 
-    # PAINEL DIREITO (DETALHES E FOTOS)
+    # PAINEL DIREITO: Propriedades e Fotos
     with col_r:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
         if st.session_state.selected_ponto_gis and not gdf_points.empty:
@@ -1074,7 +1065,7 @@ elif menu_selecionado == 'Leitor KMZ':
                 
                 st.markdown("<div class='gis-header'>📍 PONTO SELECIONADO</div>", unsafe_allow_html=True)
                 
-                st.caption("IDENTIFICAÇÃO")
+                st.caption("CLIENTE / NOME DO MARCADOR")
                 st.markdown(f"<div class='gis-value'><b>{pt_dados.get('Name', 'N/A')}</b></div>", unsafe_allow_html=True)
                 
                 st.caption("COORDENADAS DE REDE")
@@ -1082,27 +1073,30 @@ elif menu_selecionado == 'Leitor KMZ':
                 lon_txt = f"{pt_dados.geometry.x:.6f}°"
                 st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
                 
-                st.caption("DESCRIÇÃO / OBSERVAÇÕES")
+                st.caption("DESCRIÇÃO TÉCNICA (HTML / OBS)")
                 desc_html = pt_dados.get('Description', '')
                 clean_desc = re.sub(r'<[^>]+>', ' ', str(desc_html)).strip()
-                if not clean_desc: clean_desc = "Nenhum dado técnico preenchido no KML."
+                if not clean_desc: clean_desc = "Sem detalhes adicionais inseridos no arquivo."
                 st.markdown(f"<div class='gis-value'>{clean_desc}</div>", unsafe_allow_html=True)
                 
-                st.markdown("<div class='gis-header' style='margin-top:15px;'>📸 FOTOS DO LEVANTAMENTO</div>", unsafe_allow_html=True)
+                st.markdown("<div class='gis-header' style='margin-top:20px;'>📸 FOTOS DO LEVANTAMENTO</div>", unsafe_allow_html=True)
                 
                 if temp_dir:
                     imagens_achadas = get_images_from_desc(desc_html, temp_dir)
                     if imagens_achadas:
-                        st.caption(f"{len(imagens_achadas)} foto(s) localizada(s):")
-                        for img in imagens_achadas:
-                            st.image(img, use_container_width=True)
+                        st.caption(f"{len(imagens_achadas)} foto(s) anexada(s) à nota:")
+                        for img_path in imagens_achadas:
+                            try:
+                                img_obj = Image.open(img_path)
+                                st.image(img_obj, use_container_width=True)
+                            except Exception: pass
                     else:
-                        st.markdown("<div class='gis-value'>Nenhuma imagem associada a este ponto.</div>", unsafe_allow_html=True)
+                        st.markdown("<div class='gis-value'>Este marcador não possui registro fotográfico atrelado.</div>", unsafe_allow_html=True)
                 else:
-                    st.caption("Para visualizar as fotos, faça upload do arquivo em formato original ZIPado (.KMZ).")
+                    st.caption("Para visualizar imagens, faça o upload de arquivos completos formato (.KMZ). Arquivos .KML não contêm a pasta interna de fotos.")
         else:
-            st.markdown("<div class='gis-header'>📍 Detalhes do Ponto</div>", unsafe_allow_html=True)
-            st.caption("Navegue no mapa ou use a lista ao lado para selecionar um ponto e carregar suas propriedades técnicas e banco de imagens.")
+            st.markdown("<div class='gis-header'>📍 DADOS DO ELEMENTO</div>", unsafe_allow_html=True)
+            st.caption("Clique diretamente em um marcador azul no mapa ou busque pelo nome/coordenada na lista à esquerda para carregar o banco de imagens e os detalhes técnicos.")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
