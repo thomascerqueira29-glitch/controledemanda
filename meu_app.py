@@ -73,7 +73,8 @@ def init_kmz_db():
                          filepath TEXT)''')
         conn.commit()
 
-# Inicialização movida para setup_application() com st.cache_resource
+init_iam()
+init_kmz_db()
 
 def update_residencias_hardcoded():
     mapeamento_residencias = {
@@ -154,17 +155,12 @@ def init_business_db():
     except Exception:
         pass
 
-@st.cache_resource
-def setup_application():
-    init_iam()
-    init_kmz_db()
+if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
     init_business_db()
     ensure_residencia_column()
     update_residencias_hardcoded()
-    return True
-
-# Garante a inicialização do banco em cada execução para evitar tabelas ausentes
-setup_application()
+    st.session_state.db_initialized = True
+    st.cache_data.clear()
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -322,14 +318,14 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
 
 @st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
-    import defusedxml.ElementTree as ET
+    import xml.etree.ElementTree as ET
     from shapely.geometry import Point, LineString
     
     gdf_lines = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
     gdf_points = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
     bounds = None
     
-    hash_name = hashlib.sha256(file_path.encode()).hexdigest()
+    hash_name = hashlib.md5(file_path.encode()).hexdigest()
     ext_dir = os.path.join("kmz_extracted", hash_name)
     os.makedirs(ext_dir, exist_ok=True)
     
@@ -451,34 +447,23 @@ def get_images_from_desc(desc, extract_dir):
     # Tenta achar os nomes literais dos arquivos fisicos dentro do HTML da descricao
     for img_path in arquivos_fisicos:
         filename = os.path.basename(img_path)
-        # Verifica se o nome do arquivo ou parte dele está na descrição
-        if filename in desc_str or html.escape(filename) in desc_str:
+        if filename in desc_str:
             valid_imgs.append(img_path)
             
-    # Fallback 1: Varre tags src/href
-    imgs_tags = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["\']?', desc_str, re.IGNORECASE)
-    imgs_tags += re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["\']?', desc_str, re.IGNORECASE)
-    
-    for img in set(imgs_tags):
-        if str(img).startswith('http'):
-            if img not in valid_imgs: valid_imgs.append(img)
-        else:
-            img_clean = img.replace('\\', '/').strip()
-            # Tenta resolver o caminho relativo dentro do KMZ
-            possiveis_caminhos = [
-                os.path.join(extract_dir, img_clean),
-                os.path.join(extract_dir, os.path.basename(img_clean))
-            ]
-            for p in possiveis_caminhos:
-                if os.path.exists(p) and p not in valid_imgs:
-                    valid_imgs.append(p)
-                    break
-    
-    # Fallback 2: Se ainda não achou nada e o KMZ tem imagens, tenta associar por proximidade de texto (se houver IDs)
-    if not valid_imgs and arquivos_fisicos:
-        # Se houver apenas uma imagem no KMZ e um ponto selecionado, assume que é dele (comum em alguns apps de campo)
-        if len(arquivos_fisicos) == 1:
-            valid_imgs.append(arquivos_fisicos[0])
+    # Fallback: Se não achou por nome literal, varre tags src/href
+    if not valid_imgs:
+        imgs_tags = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
+        if not imgs_tags:
+            imgs_tags = re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
+            
+        for img in imgs_tags:
+            if str(img).startswith('http'):
+                if img not in valid_imgs: valid_imgs.append(img)
+            else:
+                img_clean = img.replace('\\', '/')
+                img_path = os.path.join(extract_dir, img_clean)
+                if os.path.exists(img_path) and img_path not in valid_imgs:
+                    valid_imgs.append(img_path)
                     
     return valid_imgs
 
@@ -844,34 +829,14 @@ elif menu_selecionado == 'Leitor KMZ':
         [data-testid="collapsedControl"] {display: none;}
         section[data-testid="stSidebar"] {display: none;}
         .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem; max-width: 100%;}
-        .gis-panel { background-color: #f8f9fa; color: #333; padding: 12px; border-radius: 8px; border: 1px solid #dee2e6; height: 88vh; overflow-y: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
-        .gis-header { font-size: 11px; font-weight: bold; color: #4A4F7C; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 5px;}
-        .gis-value { font-size: 12px; margin-bottom: 8px; color: #333; background-color: #fff; padding: 8px; border-radius: 4px; border-left: 3px solid #4A4F7C; border: 1px solid #eee;}
-        .stButton>button { background-color: #fff; color: #333; border: 1px solid #dee2e6; font-size: 12px;}
-        .stButton>button:hover { border-color: #4A4F7C; color: #4A4F7C;}
-        .gis-sidebar-item { padding: 8px; border-radius: 4px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 12px; display: flex; align-items: center; gap: 8px; background: white; margin-bottom: 4px;}
-        .gis-sidebar-item:hover { background-color: #f1f3f5;}
-        .gis-photo-card { border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 10px; overflow: hidden; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
-        .gis-top-bar { display: flex; gap: 10px; background: #fff; padding: 8px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #dee2e6; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
+        .gis-panel { background-color: #0b1120; color: #e2e8f0; padding: 15px; border-radius: 8px; border: 1px solid #1e293b; height: 85vh; overflow-y: auto;}
+        .gis-header { font-size: 13px; font-weight: bold; color: #94a3b8; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #1e293b; padding-bottom: 5px;}
+        .gis-value { font-size: 13px; margin-bottom: 10px; color: #f8fafc; background-color: #1e293b; padding: 10px; border-radius: 4px; word-wrap: break-word;}
+        .gis-title { color: #f8fafc; margin-bottom: 0px; padding-bottom: 10px; font-weight: 600;}
         </style>
     """, unsafe_allow_html=True)
     
-    # Barra de Ferramentas Superior
-    t1, t2 = st.columns([8, 2])
-    with t1:
-        st.markdown("""
-            <div class='gis-top-bar'>
-                <span style='color:#4A4F7C; font-weight:bold; margin-right:15px;'>🌍 Portal GIS NIP</span>
-                <span style='color:#666; font-size:12px; cursor:pointer;'>🧭 Navegar</span>
-                <span style='color:#666; font-size:12px; cursor:pointer;'>📏 Distância</span>
-                <span style='color:#666; font-size:12px; cursor:pointer;'>⬜ Área</span>
-                <span style='color:#666; font-size:12px; cursor:pointer;'>📷 Street View</span>
-            </div>
-        """, unsafe_allow_html=True)
-    with t2:
-        st.button("📥 Exportar", use_container_width=True)
-
-    col_l, col_m, col_r = st.columns([2.2, 6.8, 3])
+    col_l, col_m, col_r = st.columns([2, 7, 3])
     
     with col_l:
         if st.button("⬅ Voltar ao Menu Inicial", use_container_width=True):
@@ -879,173 +844,134 @@ elif menu_selecionado == 'Leitor KMZ':
             st.rerun()
             
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
+        st.markdown("<div class='gis-header'>📂 CARREGAR KML / KMZ</div>", unsafe_allow_html=True)
         
-        # Botão de Carregar (Estilo da imagem)
-        if st.button("📤 Carregar KML / KMZ", use_container_width=True, type="primary"):
-            st.session_state.show_upload = not st.session_state.get('show_upload', False)
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
         
-        if st.session_state.get('show_upload', False):
-            with st.expander("Gerenciar Arquivos", expanded=True):
-                try:
-                    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                        df_hist_exp = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
-                    opcoes_hist = ["-- Novo Upload --"] + df_hist_exp['nome'].tolist()
-                except Exception:
-                    opcoes_hist = ["-- Novo Upload --"]
-                hist_sel = st.selectbox("Histórico:", opcoes_hist)
-                camada_gis = st.file_uploader("Arquivo:", type=['kml', 'kmz'])
-                if camada_gis:
-                    nome_proj = st.text_input("Nome do Projeto:")
-                    if st.button("Salvar no Servidor"):
-                        ext = camada_gis.name.split('.')[-1]
-                        dest = f"kmz_history/{nome_proj}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
-                        with open(dest, "wb") as f: f.write(camada_gis.getvalue())
-                        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                            conn.execute("INSERT INTO historico_kmz (nome, data_upload, usuario, filepath) VALUES (?, ?, ?, ?)",
-                                         (nome_proj, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state.usuario_logado, dest))
-                            conn.commit()
-                        st.rerun()
+        opcoes_hist = ["-- Usar Novo Upload --"] + df_hist['nome'].tolist()
+        hist_sel = st.selectbox("Histórico Salvo no Servidor:", opcoes_hist, label_visibility="collapsed")
         
-        # Lógica de carregamento do arquivo ativo com tratamento de erro
+        if st.session_state.perfil_usuario == "ADMIN" and hist_sel != "-- Usar Novo Upload --":
+            if st.button("🗑️ Apagar Projeto", type="primary", use_container_width=True):
+                row_h = df_hist[df_hist['nome'] == hist_sel].iloc[0]
+                if os.path.exists(row_h['filepath']): os.remove(row_h['filepath'])
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                    conn.execute("DELETE FROM historico_kmz WHERE id=?", (int(row_h['id']),))
+                    conn.commit()
+                st.rerun()
+        
+        camada_gis = st.file_uploader("Upload de Arquivo Local", type=['kml', 'kmz'])
+        
         caminho_ativo = None
-        try:
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
-            if not df_hist.empty:
-                caminho_ativo = df_hist.iloc[0]['filepath']
-        except Exception:
-            df_hist = pd.DataFrame()
-            
+        
+        if hist_sel != "-- Usar Novo Upload --":
+            caminho_ativo = df_hist[df_hist['nome'] == hist_sel].iloc[0]['filepath']
+        elif camada_gis is not None:
+            extensao = camada_gis.name.split('.')[-1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
+                tmp.write(camada_gis.getvalue())
+                caminho_ativo = tmp.name
+                
+            nome_proj = st.text_input("Salvar novo Levantamento no Servidor:")
+            if st.button("💾 Gravar Historico", use_container_width=True) and nome_proj:
+                caminho_dest = f"kmz_history/{nome_proj}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{extensao}"
+                with open(caminho_dest, "wb") as f:
+                    f.write(camada_gis.getvalue())
+                with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                    conn.execute("INSERT INTO historico_kmz (nome, data_upload, usuario, filepath) VALUES (?, ?, ?, ?)",
+                                 (nome_proj, datetime.now().strftime("%Y-%m-%d %H:%M"), st.session_state.usuario_logado, caminho_dest))
+                    conn.commit()
+                st.success("Salvo! Selecione o arquivo acima.")
+                st.rerun()
+
         gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
         if caminho_ativo and os.path.exists(caminho_ativo):
-            gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
-
-        # Barra de Busca (Estilo da imagem)
-        st.markdown("<div style='margin-top:15px;'></div>", unsafe_allow_html=True)
-        search_col1, search_col2 = st.columns([8, 2])
-        with search_col1:
-            search_q = st.text_input("Buscar por nome...", label_visibility="collapsed", placeholder="Buscar por nome...")
-        with search_col2:
-            st.button("🔍", key="btn_search")
+            with st.spinner("Lendo metadados espaciais..."):
+                gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
+            
+        st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 BUSCA DE PONTOS</div>", unsafe_allow_html=True)
+        search_q = st.text_input("Nome do Cliente ou Coordenadas (Lat, Lng):", placeholder="Ex: -5.3, -45.1")
         
-        lat_lng_q = st.text_input("lat, lng", label_visibility="collapsed", placeholder="lat, lng")
-        
-        # Filtros de Categoria (Estilo da imagem: Todos, Pontos, Linhas, Polígonos)
-        f_cols = st.columns(4)
-        f_cols[0].button("🌐 Todos", use_container_width=True)
-        f_cols[1].button("📍 Pontos", use_container_width=True)
-        f_cols[2].button("📏 Linhas", use_container_width=True)
-        f_cols[3].button("⬠ Políg.", use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Lista de Elementos (Estilo Árvore da imagem)
+        lista_nomes = []
         if not gdf_points.empty:
-            st.markdown(f"<div style='font-size:11px; color:#64748b; margin-bottom:10px;'>📂 {os.path.basename(caminho_ativo)}</div>", unsafe_allow_html=True)
-            
-            # Filtro de busca na lista
-            df_display = gdf_points.copy()
+            lista_nomes = gdf_points['Name'].tolist()
             if search_q:
-                df_display = df_display[df_display['Name'].str.contains(search_q, case=False, na=False)]
+                try:
+                    partes = search_q.replace(';', ',').split(',')
+                    if len(partes) >= 2:
+                        lat_s, lon_s = float(partes[0].strip()), float(partes[1].strip())
+                        gdf_points['dist_search'] = np.sqrt((gdf_points.geometry.y - lat_s)**2 + (gdf_points.geometry.x - lon_s)**2)
+                        gdf_points = gdf_points.sort_values('dist_search')
+                        lista_nomes = gdf_points['Name'].tolist()
+                    else:
+                        raise ValueError
+                except:
+                    gdf_points = gdf_points[gdf_points['Name'].str.contains(search_q, case=False, na=False)]
+                    lista_nomes = gdf_points['Name'].tolist()
             
-            for _, row in df_display.iterrows():
-                is_active = "active" if st.session_state.selected_ponto_gis == row['Name'] else ""
-                if st.button(f"📍 {row['Name']}", key=f"list_{row['Name']}", use_container_width=True):
-                    st.session_state.selected_ponto_gis = row['Name']
-                    st.rerun()
+            idx_selecionado = 0
+            if st.session_state.selected_ponto_gis in lista_nomes:
+                idx_selecionado = lista_nomes.index(st.session_state.selected_ponto_gis) + 1
+                
+            escolha = st.selectbox("📌 Pontos Mapeados", ["-- Visualizar Todos --"] + lista_nomes, index=idx_selecionado)
+            
+            if escolha != "-- Visualizar Todos --":
+                st.session_state.selected_ponto_gis = escolha
+            else:
+                st.session_state.selected_ponto_gis = None
         else:
-            st.caption("Nenhum elemento carregado.")
+            st.caption("Faça o upload do KMZ para carregar os pontos.")
             
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_m:
-        # Coordenadas centrais do Maranhão: -5.42, -45.44
-        mapa_gis = folium.Map(location=[-5.42, -45.44], zoom_start=7, tiles=None, control_scale=True)
+        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
         
-        # Camada Google Satélite (Mais parecida com a da imagem)
+        # Padrão Esri Satélite Fixo
         folium.TileLayer(
-            tiles='https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 
-            attr='Google', name='Google Satélite', overlay=False, control=False
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+            attr='Esri', name='Satélite', overlay=False, control=False
         ).add_to(mapa_gis)
         
-        # Marcadores com Rótulos (Estilo da imagem: Marcador 1, Marcador 2...)
+        # Ferramentas GIS Reais
+        mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
+        mapa_gis.add_child(Draw(export=True))
+        
         ponto_foco = None
+        
+        if not gdf_lines.empty:
+            folium.GeoJson(gdf_lines[['Name', 'geometry']], name="Linhas Desenhadas", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
+
         if not gdf_points.empty:
             if st.session_state.selected_ponto_gis:
                 match = gdf_points[gdf_points['Name'] == st.session_state.selected_ponto_gis]
                 if not match.empty: ponto_foco = match.iloc[0]
 
-            for _, row in gdf_points.iterrows():
-                is_selected = ponto_foco is not None and row['Name'] == ponto_foco['Name']
-                color = '#3b82f6' if not is_selected else '#ef4444'
-                
-                # Adiciona o marcador
-                folium.CircleMarker(
-                    location=[row.geometry.y, row.geometry.x],
-                    radius=6 if not is_selected else 8,
-                    color='#ffffff',
-                    weight=1,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.9,
-                    tooltip=row['Name']
-                ).add_to(mapa_gis)
-                
-                # Adiciona o rótulo fixo (Estilo da imagem)
-                folium.Marker(
-                    location=[row.geometry.y, row.geometry.x],
-                    icon=folium.DivIcon(
-                        html=f"""<div style="font-family: sans-serif; color: white; font-size: 9px; font-weight: bold; background: rgba(0,0,0,0.6); padding: 2px 4px; border-radius: 2px; white-space: nowrap; border: 1px solid rgba(255,255,255,0.2);">{row['Name']}</div>""",
-                        icon_anchor=(0, 0)
-                    )
-                ).add_to(mapa_gis)
-
+            def get_point_style(feature):
+                if ponto_foco is not None and feature['properties'].get('Name') == ponto_foco['Name']:
+                    return {'fillColor': '#FF0000', 'color': '#FFFFFF', 'weight': 2, 'fillOpacity': 1, 'radius': 8.0}
+                return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 5.0}
+            
+            folium.GeoJson(
+                gdf_points[['Name', 'geometry']], name="Marcadores do Levantamento", marker=folium.CircleMarker(), 
+                style_function=get_point_style, tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Ponto: '])
+            ).add_to(mapa_gis)
+            
             if ponto_foco is not None:
-                mapa_gis.location = [ponto_foco.geometry.y, ponto_foco.geometry.x]
-                mapa_gis.zoom_start = 19
+                lat_foc, lon_foc = ponto_foco.geometry.y, ponto_foco.geometry.x
+                mapa_gis.location = [lat_foc, lon_foc]
+                mapa_gis.zoom_start = 18
             elif bounds is not None:
                 mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
-            else:
-                # Fallback para o Maranhão se não houver dados
-                mapa_gis.location = [-5.42, -45.44]
-                mapa_gis.zoom_start = 7
-        
-        # Barra de controles flutuantes no rodapé do mapa (Estilo da imagem)
-        st.markdown("""
-            <div style='position: relative; top: -60px; left: 20px; z-index: 1000; display: flex; gap: 5px;'>
-                <div style='background: #0b1120; padding: 5px 10px; border-radius: 4px; border: 1px solid #1e293b; color: white; font-size: 11px; display: flex; align-items: center; gap: 8px;'>
-                    <span>📍 Pontos</span>
-                    <span>📏 Linhas</span>
-                    <span>⬠ Polígonos</span>
-                    <span>🏷️ Rótulos</span>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
                 
-        map_data = st_folium(
-            mapa_gis, 
-            use_container_width=True, 
-            height=820, 
-            returned_objects=['last_object_clicked', 'last_active_drawing']
-        )
+        map_data = st_folium(mapa_gis, use_container_width=True, height=800, returned_objects=['last_active_drawing'])
         
-        # Lógica de clique no marcador (CircleMarker ou GeoJson)
-        ponto_clicado = None
-        if map_data:
-            if map_data.get('last_object_clicked'):
-                # Tenta encontrar o ponto mais próximo das coordenadas clicadas
-                click_lat = map_data['last_object_clicked'].get('lat')
-                click_lng = map_data['last_object_clicked'].get('lng')
-                if click_lat and click_lng and not gdf_points.empty:
-                    gdf_points['dist_click'] = np.sqrt((gdf_points.geometry.y - click_lat)**2 + (gdf_points.geometry.x - click_lng)**2)
-                    ponto_clicado = gdf_points.sort_values('dist_click').iloc[0]['Name']
-            
-            if not ponto_clicado and map_data.get('last_active_drawing'):
-                ponto_clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
-
-        if ponto_clicado and ponto_clicado != st.session_state.selected_ponto_gis:
-            st.session_state.selected_ponto_gis = ponto_clicado
-            st.rerun()
+        if map_data and map_data.get('last_active_drawing'):
+            clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
+            if clicado and clicado != st.session_state.selected_ponto_gis:
+                st.session_state.selected_ponto_gis = clicado
+                st.rerun()
 
     with col_r:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
@@ -1054,50 +980,40 @@ elif menu_selecionado == 'Leitor KMZ':
             if not match_pt.empty:
                 pt_dados = match_pt.iloc[0]
                 
-                # Cabeçalho do Ponto (Estilo da imagem)
-                st.markdown(f"""
-                    <div style='background: #1e293b; padding: 10px; border-radius: 4px; border-left: 4px solid #3b82f6; margin-bottom: 15px;'>
-                        <div style='font-size: 10px; color: #94a3b8; text-transform: uppercase;'>📍 Ponto</div>
-                        <div style='font-size: 13px; font-weight: bold; color: white;'>{pt_dados.get('Name', 'N/A')}</div>
-                    </div>
-                """, unsafe_allow_html=True)
+                st.markdown("<div class='gis-header'>📍 PONTO SELECIONADO</div>", unsafe_allow_html=True)
                 
-                # Descrição (Estilo da imagem)
-                st.markdown("<div class='gis-header'>DESCRIÇÃO</div>", unsafe_allow_html=True)
+                st.caption("CLIENTE / NOME DO MARCADOR")
+                st.markdown(f"<div class='gis-value'><b>{pt_dados.get('Name', 'N/A')}</b></div>", unsafe_allow_html=True)
+                
+                st.caption("COORDENADAS DE REDE")
+                lat_txt = f"{pt_dados.geometry.y:.6f}°"
+                lon_txt = f"{pt_dados.geometry.x:.6f}°"
+                st.markdown(f"<div class='gis-value'><b>Lat:</b> {lat_txt}<br><b>Lng:</b> {lon_txt}</div>", unsafe_allow_html=True)
+                
+                st.caption("DESCRIÇÃO TÉCNICA (HTML / OBS)")
                 desc_html = pt_dados.get('Description', '')
                 clean_desc = re.sub(r'<[^>]+>', ' ', str(desc_html)).strip()
-                if not clean_desc: clean_desc = "Sem detalhes adicionais."
-                st.markdown(f"<div style='font-size:12px; color:#cbd5e1; margin-bottom:20px;'>{clean_desc}</div>", unsafe_allow_html=True)
+                if not clean_desc: clean_desc = "Sem detalhes adicionais inseridos no arquivo."
+                st.markdown(f"<div class='gis-value'>{clean_desc}</div>", unsafe_allow_html=True)
                 
-                # Galeria de Fotos
+                st.markdown("<div class='gis-header' style='margin-top:20px;'>📸 FOTOS DO LEVANTAMENTO</div>", unsafe_allow_html=True)
+                
                 if temp_dir:
                     imagens_achadas = get_images_from_desc(desc_html, temp_dir)
-                    st.markdown(f"<div class='gis-header'>FOTOS ({len(imagens_achadas)}) <span style='float:right; cursor:pointer;'>🔍 📷</span></div>", unsafe_allow_html=True)
-                    
                     if imagens_achadas:
-                        for i, img_path in enumerate(imagens_achadas):
+                        st.caption(f"{len(imagens_achadas)} foto(s) anexada(s) à nota:")
+                        for img_path in imagens_achadas:
                             try:
                                 img_obj = Image.open(img_path)
-                                # Adiciona um título para a foto baseado no índice ou nome
-                                st.markdown(f"<div style='font-size:10px; color:#666; margin-bottom:2px;'>REGISTRO FOTOGRÁFICO #{i+1}</div>", unsafe_allow_html=True)
-                                st.markdown("<div class='gis-photo-card'>", unsafe_allow_html=True)
-                                st.image(img_obj, use_container_width=True, caption=os.path.basename(img_path))
-                                st.markdown("</div>", unsafe_allow_html=True)
+                                st.image(img_obj, use_container_width=True)
                             except Exception: pass
                     else:
-                        st.warning("Nenhuma foto vinculada a este ponto no arquivo KMZ.")
+                        st.markdown("<div class='gis-value'>Este marcador não possui registro fotográfico atrelado.</div>", unsafe_allow_html=True)
                 else:
-                    st.markdown("<div class='gis-header'>FOTOS (0)</div>", unsafe_allow_html=True)
-                    st.caption("Arquivos .KML não contêm fotos internas. Utilize .KMZ para ver as fotos do levantamento.")
-                
-                # Rodapé de Ações (Estilo da imagem)
-                st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
-                if st.button("🚩 Fechar", use_container_width=True, type="primary"):
-                    st.session_state.selected_ponto_gis = None
-                    st.rerun()
+                    st.caption("Para visualizar imagens, faça o upload de arquivos completos formato (.KMZ). Arquivos .KML não contêm a pasta interna de fotos.")
         else:
-            st.markdown("<div class='gis-header'>📍 SELECIONE UM ELEMENTO</div>", unsafe_allow_html=True)
-            st.caption("Clique em um marcador no mapa ou na lista lateral para ver os detalhes técnicos e fotos.")
+            st.markdown("<div class='gis-header'>📍 DADOS DO ELEMENTO</div>", unsafe_allow_html=True)
+            st.caption("Clique diretamente em um marcador azul no mapa ou busque pelo nome/coordenada na lista à esquerda para carregar o banco de imagens e os detalhes técnicos.")
         st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -1523,11 +1439,12 @@ st.markdown("#### 🟢 Usuários Online Agora")
 try:
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         limite_inatividade = (datetime.now() - timedelta(minutes=5)).strftime("%Y-%m-%d %H:%M:%S")
-        ativos = pd.read_sql(
-            "SELECT username, role FROM usuarios WHERE last_active >= ? ORDER BY username ASC",
-            conn,
-            params=(limite_inatividade,)
-        )
+        ativos = pd.read_sql(f"""
+            SELECT username, role 
+            FROM usuarios 
+            WHERE last_active >= '{limite_inatividade}'
+            ORDER BY username ASC
+        """, conn)
 
     if not ativos.empty:
         html_pills = "".join([
