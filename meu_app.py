@@ -98,7 +98,7 @@ def update_residencias_hardcoded():
             for lev, res in mapeamento_residencias.items():
                 conn.execute("UPDATE equipes SET Residencia = ? WHERE UPPER(TRIM(Levantador)) = ?", (res.upper(), lev.upper()))
             conn.commit()
-    except Exception as e:
+    except Exception:
         pass
 
 def ensure_residencia_column():
@@ -118,7 +118,7 @@ def ensure_residencia_column():
                             for lev, res in map_res.items():
                                 conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (str(res).upper().strip(), lev))
                     conn.commit()
-    except Exception as e:
+    except Exception:
         pass
 
 def init_business_db():
@@ -152,7 +152,7 @@ def init_business_db():
                 else:
                     pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
         st.session_state.db_initialized = True
-    except Exception as e:
+    except Exception:
         pass
 
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
@@ -240,7 +240,7 @@ def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
     """
 
 # -----------------------------------------------------------------------------
-# MOTORES DE ALTA PERFORMANCE E GIS
+# MOTORES DE ALTA PERFORMANCE E GIS MAPPING
 # -----------------------------------------------------------------------------
 def registrar_auditoria(acao, detalhes):
     try:
@@ -318,18 +318,21 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
 
 @st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
-    """Extração avançada de KML/KMZ para uma pasta permanente para garantir leitura de fotos"""
-    gdf_lines = gpd.GeoDataFrame()
-    gdf_points = gpd.GeoDataFrame()
+    """Motor Robusto de Extração de KML/KMZ nativo em XML imune a quebras do Pandas/Fiona"""
+    import xml.etree.ElementTree as ET
+    from shapely.geometry import Point, LineString
+    
+    gdf_lines = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
+    gdf_points = gpd.GeoDataFrame(columns=['Name', 'Description', 'geometry'], geometry='geometry')
     bounds = None
     
     hash_name = hashlib.md5(file_path.encode()).hexdigest()
     ext_dir = os.path.join("kmz_extracted", hash_name)
     os.makedirs(ext_dir, exist_ok=True)
     
+    kml_file = None
     try:
-        kml_file = None
-        if file_path.endswith('.kmz'):
+        if file_path.lower().endswith('.kmz'):
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
                 zip_ref.extractall(ext_dir)
             for root, dirs, files in os.walk(ext_dir):
@@ -342,47 +345,99 @@ def parse_kmz_advanced(file_path):
             kml_file = file_path 
             
         if kml_file:
-            import fiona
-            camadas = fiona.listlayers(kml_file)
-            gdfs = []
-            for camada in camadas:
-                try:
-                    gdf_temp = gpd.read_file(kml_file, driver='KML', layer=camada)
-                    if not gdf_temp.empty:
-                        gdf_temp['Layer_Name'] = camada
-                        gdfs.append(gdf_temp)
-                except: pass
+            with open(kml_file, 'rb') as f:
+                kml_bytes = f.read()
             
-            if gdfs:
-                gdf_final = pd.concat(gdfs, ignore_index=True)
-                if 'Name' not in gdf_final.columns: gdf_final['Name'] = 'Sem Nome'
-                if 'Description' not in gdf_final.columns: gdf_final['Description'] = ''
+            kml_str = kml_bytes.decode('utf-8', errors='ignore')
+            kml_str = re.sub(r'\sxmlns="[^"]+"', '', kml_str, count=1)
+            kml_str = re.sub(r'\sxmlns:\w+="[^"]+"', '', kml_str)
+            kml_str = re.sub(r'<kml.*?>', '<kml>', kml_str, flags=re.IGNORECASE|re.DOTALL)
+            
+            try:
+                root = ET.fromstring(kml_str)
+            except ET.ParseError:
+                kml_str = re.sub(r'&(?!(?:apos|quot|amp|lt|gt);)', '&amp;', kml_str)
+                root = ET.fromstring(kml_str)
                 
-                gdf_final['Name'] = gdf_final['Name'].fillna('Ponto Sem Nome').replace('', 'Ponto Sem Nome')
+            for elem in root.iter():
+                if '}' in elem.tag:
+                    elem.tag = elem.tag.split('}', 1)[1]
+                    
+            points_list = []
+            lines_list = []
+            
+            for pm in root.findall('.//Placemark'):
+                name_node = pm.find('.//name')
+                pm_name = name_node.text.strip() if name_node is not None and name_node.text else "Ponto Sem Nome"
                 
-                # BLINDAGEM CONTRA TYPEERROR DO FOLIUM GEOJSON
-                for col in gdf_final.columns:
-                    if col != 'geometry':
-                        gdf_final[col] = gdf_final[col].astype(str).replace({'nan': '', '<NA>': '', 'None': '', 'NaT': ''})
+                desc_node = pm.find('.//description')
+                pm_desc = desc_node.text.strip() if desc_node is not None and desc_node.text else ""
                 
-                gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
-                gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
-                bounds = gdf_final.total_bounds
+                if not pm_desc:
+                    ext_data = pm.find('.//ExtendedData')
+                    if ext_data is not None:
+                        for data in ext_data.findall('.//Data'):
+                            d_name = data.get('name', '')
+                            v_node = data.find('value')
+                            d_val = v_node.text if v_node is not None and v_node.text else ''
+                            pm_desc += f"<b>{d_name}:</b> {d_val}<br>"
+
+                pt_node = pm.find('.//Point/coordinates')
+                if pt_node is not None and pt_node.text:
+                    coords = pt_node.text.strip().split(',')
+                    if len(coords) >= 2:
+                        try:
+                            points_list.append({
+                                'Name': pm_name,
+                                'Description': pm_desc,
+                                'geometry': Point(float(coords[0]), float(coords[1]))
+                            })
+                        except: pass
+                    continue
+                    
+                ls_node = pm.find('.//LineString/coordinates')
+                if ls_node is not None and ls_node.text:
+                    coords_str = ls_node.text.strip().split()
+                    line_coords = []
+                    for c in coords_str:
+                        parts = c.split(',')
+                        if len(parts) >= 2:
+                            try: line_coords.append((float(parts[0]), float(parts[1])))
+                            except: pass
+                    if len(line_coords) >= 2:
+                        lines_list.append({
+                            'Name': pm_name,
+                            'Description': pm_desc,
+                            'geometry': LineString(line_coords)
+                        })
+                        
+            if points_list:
+                gdf_points = gpd.GeoDataFrame(points_list, geometry='geometry')
+                gdf_points.crs = "EPSG:4326"
+            if lines_list:
+                gdf_lines = gpd.GeoDataFrame(lines_list, geometry='geometry')
+                gdf_lines.crs = "EPSG:4326"
+                
+            if not gdf_points.empty or not gdf_lines.empty:
+                all_geoms = pd.concat([gdf_points['geometry'] if not gdf_points.empty else pd.Series(dtype=object), 
+                                       gdf_lines['geometry'] if not gdf_lines.empty else pd.Series(dtype=object)])
+                bounds = gpd.GeoSeries(all_geoms).total_bounds
                 
         return gdf_lines, gdf_points, bounds, ext_dir
     except Exception as e:
-        return gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, ext_dir
+        logging.error(f"Erro no parse KMZ avançado: {e}")
+        return gdf_lines, gdf_points, None, ext_dir
 
 def get_images_from_desc(desc, extract_dir):
-    """Varre HTML do KML e resgata fotos na pasta extraída permanentemente"""
+    """Procura fotos tanto via HTML nativo quanto buscando os arquivos pela extensão no KMZ"""
     if not desc or pd.isna(desc): return []
     desc_str = str(desc)
     
-    imgs = re.findall(r'src=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+    imgs = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png|gif))["\']?', desc_str, re.IGNORECASE)
     if not imgs:
-        imgs = re.findall(r'href=["\'](.*?)["\']', desc_str, re.IGNORECASE)
+        imgs = re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png|gif))["\']?', desc_str, re.IGNORECASE)
     if not imgs:
-        imgs = re.findall(r'([\w\-/\\]+\.(?:jpg|jpeg|png))', desc_str, re.IGNORECASE)
+        imgs = re.findall(r'([\w\-/\\]+\.(?:jpg|jpeg|png|gif))', desc_str, re.IGNORECASE)
         
     valid_imgs = []
     for img in imgs:
@@ -391,42 +446,17 @@ def get_images_from_desc(desc, extract_dir):
         else:
             img_clean = img.replace('\\', '/')
             img_path = os.path.join(extract_dir, img_clean)
-            if os.path.exists(img_path) and img_path not in valid_imgs:
-                valid_imgs.append(img_path)
+            if os.path.exists(img_path):
+                if img_path not in valid_imgs: valid_imgs.append(img_path)
+            else:
+                filename = os.path.basename(img_clean)
+                for root, dirs, files in os.walk(extract_dir):
+                    if filename in files:
+                        found_path = os.path.join(root, filename)
+                        if found_path not in valid_imgs:
+                            valid_imgs.append(found_path)
+                            break
     return valid_imgs
-
-@st.cache_data(show_spinner=False)
-def processar_camada_espacial(arquivo_espacial):
-    """Leitura cega para o mapa do Painel Executivo"""
-    gdf_lines = gpd.GeoDataFrame()
-    gdf_points = gpd.GeoDataFrame()
-    bounds = None
-    if not arquivo_espacial: return gdf_lines, gdf_points, bounds
-    import fiona
-    try:
-        camadas = fiona.listlayers(arquivo_espacial)
-        gdfs = []
-        for camada in camadas:
-            try:
-                gdf_temp = gpd.read_file(arquivo_espacial, driver='KML', layer=camada)
-                if not gdf_temp.empty:
-                    gdf_temp['Layer_Name'] = camada
-                    gdfs.append(gdf_temp)
-            except Exception: continue
-                
-        if gdfs:
-            gdf_final = pd.concat(gdfs, ignore_index=True)
-            gdf_final['geometry'] = gdf_final['geometry'].simplify(tolerance=0.0001, preserve_topology=True)
-            
-            for col in gdf_final.columns:
-                if col != 'geometry':
-                    gdf_final[col] = gdf_final[col].astype(str).replace({'nan': '', '<NA>': '', 'None': '', 'NaT': ''})
-                    
-            gdf_lines = gdf_final[gdf_final.geometry.type.isin(['LineString', 'MultiLineString', 'Polygon', 'MultiPolygon'])]
-            gdf_points = gdf_final[gdf_final.geometry.type == 'Point']
-            bounds = gdf_final.total_bounds
-    except Exception: pass
-    return gdf_lines, gdf_points, bounds
 
 @st.cache_data(show_spinner=False)
 def process_analytical_data(df_notas_db, df_equipes_db):
@@ -770,6 +800,24 @@ if menu_selecionado == 'Painel Executivo':
                 fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                 st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
 
+        df_sla_chart = calcular_sla_vetorizado(df_notas_calc)
+        df_sla_chart = df_sla_chart[df_sla_chart['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
+        
+        if not df_sla_chart.empty:
+            st.markdown("---")
+            st.markdown("### ⏳ Monitoramento de SLA por Regional")
+            df_group = df_sla_chart.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Quantidade')
+            if not df_group.empty and df_group['Quantidade'].sum() > 0:
+                ordem_cat = ['No Prazo', 'Vencimento Próximo', 'Vencida']
+                df_group['Status_SLA'] = pd.Categorical(df_group['Status_SLA'], categories=ordem_cat, ordered=True)
+                df_group = df_group.sort_values(['REGIONAL', 'Status_SLA'])
+                
+                fig_sla = px.bar(df_group, x='REGIONAL', y='Quantidade', color='Status_SLA',
+                                 title="Status Operacional de SLA por Regional", text='Quantidade', barmode='group',
+                                 color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
+                fig_sla.update_traces(textposition='auto', textfont_size=14)
+                st.plotly_chart(fig_sla, use_container_width=True)
+
         st.markdown("---")
         
         st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
@@ -807,17 +855,6 @@ if menu_selecionado == 'Painel Executivo':
             with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{extensao}') as tmp:
                 tmp.write(camada_upload.getvalue())
                 caminho_camada_temp = tmp.name
-            if extensao == 'kmz':
-                try:
-                    with zipfile.ZipFile(caminho_camada_temp, 'r') as kmz:
-                        kml_files = [name for name in kmz.namelist() if name.lower().endswith('.kml')]
-                        if kml_files: 
-                            kml_filename = os.path.basename(kml_files[0])
-                            safe_extract_path = os.path.join(tempfile.gettempdir(), kml_filename)
-                            with open(safe_extract_path, 'wb') as out_file:
-                                out_file.write(kmz.read(kml_files[0]))
-                            caminho_camada_temp = safe_extract_path
-                except Exception: pass
         
         df_eq_mapa_view = df_equipes_db.copy()
         if filtro_map_lev != "TODOS" and 'Levantador' in df_eq_mapa_view: df_eq_mapa_view = df_eq_mapa_view[df_eq_mapa_view['Levantador'].astype(str).str.upper() == filtro_map_lev.upper()]
@@ -830,17 +867,17 @@ if menu_selecionado == 'Painel Executivo':
             folium.TileLayer('OpenStreetMap', name='Mapa Padrão', overlay=False, control=True).add_to(mapa)
             
             if arquivo_espacial:
-                gdf_lines, gdf_points, bounds = processar_camada_espacial(arquivo_espacial)
-                if not gdf_lines.empty:
-                    folium.GeoJson(gdf_lines, name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
-                if not gdf_points.empty:
+                gdf_lines_e, gdf_points_e, bounds_e, _ = parse_kmz_advanced(arquivo_espacial)
+                if not gdf_lines_e.empty:
+                    folium.GeoJson(gdf_lines_e[['Name', 'geometry']], name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
+                if not gdf_points_e.empty:
                     def get_point_style(feature):
                         return {'fillColor': '#dc3545', 'color': '#dc3545', 'weight': 1, 'fillOpacity': 0.9, 'radius': 2.5}
                     folium.GeoJson(
-                        gdf_points, name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
+                        gdf_points_e[['Name', 'geometry']], name="Equipamentos (Pontos)", marker=folium.CircleMarker(), 
                         style_function=get_point_style, popup=folium.GeoJsonPopup(fields=['Name'], labels=False)
                     ).add_to(mapa)
-                if bounds is not None: mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+                if bounds_e is not None: mapa.fit_bounds([[bounds_e[1], bounds_e[0]], [bounds_e[3], bounds_e[2]]])
 
             fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
             records_equipes = df_eq.drop_duplicates(subset=['Município', 'Levantador']).to_dict('records')
@@ -960,7 +997,7 @@ elif menu_selecionado == 'Leitor KMZ':
 
         gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
         if caminho_ativo and os.path.exists(caminho_ativo):
-            with st.spinner("Lendo metadados espaciais..."):
+            with st.spinner("Lendo metadados espaciais e forçando extração HTML/XML..."):
                 gdf_lines, gdf_points, bounds, temp_dir = parse_kmz_advanced(caminho_ativo)
             
         st.markdown("<div class='gis-header' style='margin-top:20px;'>🔍 BUSCA DE PONTOS</div>", unsafe_allow_html=True)
@@ -1003,7 +1040,6 @@ elif menu_selecionado == 'Leitor KMZ':
     with col_m:
         mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
         
-        # Padrão Esri Satélite igual imagem
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
             attr='Esri', name='Satélite', overlay=False, control=True
@@ -1011,14 +1047,13 @@ elif menu_selecionado == 'Leitor KMZ':
         
         folium.TileLayer('OpenStreetMap', name='Padrão / Ruas', overlay=False, control=True).add_to(mapa_gis)
         
-        # Ferramentas nativas na tela
         mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
         mapa_gis.add_child(Draw(export=True))
         
         ponto_foco = None
         
         if not gdf_lines.empty:
-            folium.GeoJson(gdf_lines, name="Linhas Desenhadas", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
+            folium.GeoJson(gdf_lines[['Name', 'geometry']], name="Linhas Desenhadas", style_function=lambda feature: {'color': '#FFD700', 'weight': 3, 'opacity': 0.8}).add_to(mapa_gis)
 
         if not gdf_points.empty:
             if st.session_state.selected_ponto_gis:
@@ -1030,9 +1065,8 @@ elif menu_selecionado == 'Leitor KMZ':
                     return {'fillColor': '#FF0000', 'color': '#FFFFFF', 'weight': 2, 'fillOpacity': 1, 'radius': 8.0}
                 return {'fillColor': '#007BFF', 'color': '#FFFFFF', 'weight': 1, 'fillOpacity': 0.8, 'radius': 5.0}
             
-            # Adiciona os pontos no mapa com tooltips (hover) para leitura e permite Clique
             folium.GeoJson(
-                gdf_points, name="Marcadores do Levantamento", marker=folium.CircleMarker(), 
+                gdf_points[['Name', 'geometry']], name="Marcadores do Levantamento", marker=folium.CircleMarker(), 
                 style_function=get_point_style, tooltip=folium.GeoJsonTooltip(fields=['Name'], aliases=['Ponto: '])
             ).add_to(mapa_gis)
             
@@ -1043,12 +1077,10 @@ elif menu_selecionado == 'Leitor KMZ':
             elif bounds is not None:
                 mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
                 
-        # Obrigatorio para poder alternar camadas
         folium.LayerControl(position='bottomright').add_to(mapa_gis)
         
         map_data = st_folium(mapa_gis, use_container_width=True, height=750, returned_objects=['last_active_drawing'])
         
-        # Intercepta o clique real do mouse num marcador do mapa para abrir as fotos
         if map_data and map_data.get('last_active_drawing'):
             clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
             if clicado and clicado != st.session_state.selected_ponto_gis:
