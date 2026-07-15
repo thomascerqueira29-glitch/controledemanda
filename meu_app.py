@@ -631,18 +631,24 @@ if menu_selecionado == 'Painel Executivo':
                     
                 df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
                 
-                # SEGURO CONTRA KEYERROR: Garantir que as colunas existam no dataframe antes do subconjunto
+                # Garante que não ocorra KeyError na visualização se a planilha faltar com alguma coluna
                 cols_view = ['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']
-                for col in cols_view:
-                    if col not in df_demanda.columns:
-                        df_demanda[col] = ""
+                for c in cols_view:
+                    if c not in df_demanda.columns:
+                        df_demanda[c] = ""
                         
                 df_demanda_view = df_demanda[cols_view].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
-                df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].round(1)
+                
+                dist_series = df_demanda_view['Distancia_KM'].copy() # Salva valores para calcular as cores
+                
+                # Aplica Formato BR encurtado apenas na visualização (Ex: 123.800 -> 123,8)
+                df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].apply(
+                    lambda x: f"{x:.1f}".replace('.', ',') if pd.notnull(x) else ""
+                )
                 
                 def color_rules(row):
-                    dist = row['Distancia_KM']
+                    dist = dist_series.loc[row.name]
                     if pd.isna(dist): color = ''
                     elif dist <= 50: color = 'background-color: #00B050; color: white;' 
                     elif dist <= 100: color = 'background-color: #FFFF00; color: black;' 
@@ -652,23 +658,26 @@ if menu_selecionado == 'Painel Executivo':
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
                 # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
-                def clean_str(s):
-                    return s.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0.0': '0'})
+                def is_valid_export(row):
+                    def is_valid(val):
+                        s = str(val).strip().upper()
+                        # Ignora espaços vazios, nulos, e lixos de conversão
+                        if s in ['', 'NAN', 'NONE', '<NA>', 'NULL', 'NAT']: return False
+                        # Ignora marcações zeradas numéricas
+                        if s in ['0', '0.0', '0,0', '0.00']: return False
+                        return True
+                    
+                    t = is_valid(row.get('TIPO LIGACAO'))
+                    n = is_valid(row.get('NOME DO SOLICITANTE'))
+                    lat = is_valid(row.get('LATITUDE'))
+                    lon = is_valid(row.get('LONGITUDE'))
+                    return t and n and lat and lon
 
-                cond_tipo = clean_str(df_demanda.get('TIPO LIGACAO', pd.Series([''] * len(df_demanda))))
-                cond_nome = clean_str(df_demanda.get('NOME DO SOLICITANTE', pd.Series([''] * len(df_demanda))))
-                cond_lat = clean_str(df_demanda.get('LATITUDE', pd.Series([''] * len(df_demanda))))
-                cond_lon = clean_str(df_demanda.get('LONGITUDE', pd.Series([''] * len(df_demanda))))
-
-                valid_mask = (
-                    (cond_tipo != '') & (cond_tipo != '0') &
-                    (cond_nome != '') & (cond_nome != '0') &
-                    (cond_lat != '') & (cond_lat != '0') &
-                    (cond_lon != '') & (cond_lon != '0')
-                )
-
+                # Aplica validação linha por linha
+                valid_mask = df_demanda.apply(is_valid_export, axis=1)
                 df_export_base = df_demanda[valid_mask].copy().sort_values('Distancia_KM')
 
+                # Colunas Exatas da Imagem Exigida Pelo Usuario
                 cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
                                        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
                                        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
@@ -680,6 +689,7 @@ if menu_selecionado == 'Painel Executivo':
                         
                 df_export = df_export[cols_export_oficial]
                 
+                # APLICA ESTILO NO EXCEL IGUAL O DA TELA
                 dist_export_series = df_export_base['Distancia_KM'] 
                 
                 def style_excel(row):
@@ -690,6 +700,7 @@ if menu_selecionado == 'Painel Executivo':
                     else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                 
+                # Aplica as cores nas colunas antes de exportar
                 styled_df_export = df_export.style.apply(style_excel, axis=1)
 
                 buffer_excel = io.BytesIO()
@@ -702,6 +713,7 @@ if menu_selecionado == 'Painel Executivo':
                     pms = []
                     for _, row in df.iterrows():
                         try:
+                            # Prevenção contra vírgula em coordenadas BR
                             lat = float(str(row.get('LATITUDE', '')).replace(',','.'))
                             lon = float(str(row.get('LONGITUDE', '')).replace(',','.'))
                             if not pd.isna(lat) and not pd.isna(lon):
@@ -719,6 +731,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome devidamente preenchidos na base).")
                 
+                # Nomenclatura do arquivo acompanha o dia atual
                 hoje_str_file = datetime.now().strftime('%d_%m_%Y')
                 col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
                 
@@ -739,21 +752,29 @@ if menu_selecionado == 'Painel Executivo':
         
         col_c1, col_c2 = st.columns([1, 3])
         with col_c1:
-            data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today())
+            data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today(), format="DD/MM/YYYY")
             
         with col_c2:
             st.caption("Filtra e contabiliza as obras baseando-se **EXCLUSIVAMENTE** na extração da data preenchida na coluna **DATA DE LEVANTAMENTO LIST** (Ignorando qual seja o Status List do SAP).")
             
         df_concluidas = df_notas_calc.copy()
         
-        def safe_date_parse_robust(serie):
-            s = serie.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0': '', 'NAT': ''})
-            s = s.str.split(' ').str[0]
-            s = s.str.replace(r'[\.\-]', '/', regex=True)
-            return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
+        def parse_data_br(val):
+            """Limpador universal para resgatar apenas o formato de Data Brasileira"""
+            if pd.isna(val): return pd.NaT
+            if isinstance(val, (datetime, pd.Timestamp)): return val.date()
+            s = str(val).strip().upper()
+            if s in ['NAN', 'NONE', 'NAT', '<NA>', '']: return pd.NaT
+            
+            s = s.split(' ')[0].split('T')[0]
+            s = s.replace('.', '/').replace('-', '/')
+            try:
+                return pd.to_datetime(s, dayfirst=True).date()
+            except:
+                return pd.NaT
             
         if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
-            df_concluidas['DATA_REF'] = safe_date_parse_robust(df_concluidas['DATA DE LEVANTAMENTO LIST'])
+            df_concluidas['DATA_REF'] = df_concluidas['DATA DE LEVANTAMENTO LIST'].apply(parse_data_br)
         else:
             df_concluidas['DATA_REF'] = pd.NaT
             
