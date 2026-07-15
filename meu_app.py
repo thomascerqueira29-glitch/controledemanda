@@ -39,39 +39,55 @@ except ImportError:
     logging.warning("Módulo fiona não instalado. Suporte a KML pode estar limitado.")
 
 # -----------------------------------------------------------------------------
-# 1. MOTOR DE IDENTIDADE (RODA INCONDICIONALMENTE PARA GARANTIR LOGIN)
+# 1. MOTOR DE IDENTIDADE E COLUNAS CRÍTICAS DE NEGÓCIOS
 # -----------------------------------------------------------------------------
 def init_iam():
     """Garante que as tabelas de segurança existam, independentemente do estado do servidor Cloud"""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        # Tabela de Usuários
         conn.execute('''CREATE TABLE IF NOT EXISTS usuarios 
                         (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
-        
-        # Adiciona coluna last_active (ignora se já existir)
         try:
             conn.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
         except sqlite3.OperationalError:
             pass
             
-        # Tabela de Auditoria
         conn.execute('''CREATE TABLE IF NOT EXISTS auditoria_log 
                         (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, 
                          data_hora TEXT, acao TEXT, detalhes TEXT)''')
 
-        # Injeção segura dos usuários padrão (Ignora se já existirem)
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('THOMAS', 'admin123', 'ADMIN')")
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', '123', 'LEITURA')")
         conn.commit()
 
 init_iam()
 
+def ensure_residencia_column():
+    """Garante que a coluna Residencia exista na tabela equipes para a lógica de 'Gerar Demanda'"""
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(equipes)")
+                columns = [col[1] for col in cursor.fetchall()]
+                if 'Residencia' not in columns:
+                    conn.execute("ALTER TABLE equipes ADD COLUMN Residencia TEXT")
+                    
+                    # Tenta extrair da planilha base levantador se ela existir no ambiente
+                    if os.path.exists('base levantador.xlsx'):
+                        df_base = pd.read_excel('base levantador.xlsx')
+                        if 'Residencia' in df_base.columns:
+                            map_res = df_base.set_index('Levantador')['Residencia'].dropna().to_dict()
+                            for lev, res in map_res.items():
+                                conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (str(res).upper().strip(), lev))
+                    conn.commit()
+    except Exception as e:
+        logging.error(f"Erro ao adicionar Residencia: {e}")
+
 # -----------------------------------------------------------------------------
 # 2. MOTOR DE NEGÓCIOS E CARGA DO LEGADO (NOTAS E EQUIPES)
 # -----------------------------------------------------------------------------
 def init_business_db():
-    """Inicializa as tabelas de dados apenas se for uma sessão virgem"""
-    # Adicionada a nova coluna DATA DE LEVANTAMENTO LIST
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
         'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
@@ -98,10 +114,13 @@ def init_business_db():
             # Validação Tabela de Equipes
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
             if not cursor.fetchone():
-                if os.path.exists('EQUIPES.xlsx'):
+                # Usa a base_levantador caso não encontre equipes genérica
+                if os.path.exists('base levantador.xlsx'):
+                    pd.read_excel('base levantador.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
+                elif os.path.exists('EQUIPES.xlsx'):
                     pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 else:
-                    pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
+                    pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
                     
         st.session_state.db_initialized = True
     except Exception as e:
@@ -109,6 +128,7 @@ def init_business_db():
 
 if 'db_initialized' not in st.session_state or not st.session_state.db_initialized: 
     init_business_db()
+    ensure_residencia_column()
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -138,7 +158,6 @@ if st.session_state.usuario_logado is None:
                     if result:
                         st.session_state.usuario_logado = username
                         st.session_state.perfil_usuario = result[0]
-                        # Registra o primeiro login no Heartbeat
                         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, username))
                         conn.commit()
@@ -147,9 +166,8 @@ if st.session_state.usuario_logado is None:
                         st.error("Credenciais inválidas ou acesso revogado.")
         
         st.info("💡 **Aviso:** Insira suas credenciais corporativas para acessar o sistema.")
-    st.stop() # Interrompe a renderização para usuários não logados
+    st.stop() 
 
-# Injeta CSS para ocultar menus nativos se o usuário não for ADMIN
 if st.session_state.get('perfil_usuario') != 'ADMIN':
     st.markdown("""
         <style>
@@ -158,9 +176,6 @@ if st.session_state.get('perfil_usuario') != 'ADMIN':
         </style>
     """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 4. MOTOR DE SESSÃO (HEARTBEAT) - RASTREIA USUÁRIOS ONLINE
-# -----------------------------------------------------------------------------
 def atualizar_sessao():
     if st.session_state.usuario_logado:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -169,7 +184,7 @@ def atualizar_sessao():
                 conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (now_str, st.session_state.usuario_logado))
                 conn.commit()
         except sqlite3.OperationalError:
-            pass # Ignora erro silencioso se o banco estiver temporariamente travado na nuvem
+            pass 
 
 atualizar_sessao()
 
@@ -429,8 +444,10 @@ with st.sidebar:
     if st.session_state.perfil_usuario == "ADMIN":
         opcoes_menu.insert(2, 'Carga de Lotes')
         icones_menu.insert(2, 'cloud-upload-fill')
-        opcoes_menu.insert(3, 'Gerenciamento de Acessos')
-        icones_menu.insert(3, 'shield-lock-fill')
+        opcoes_menu.insert(3, 'Levantadores')
+        icones_menu.insert(3, 'person-vcard-fill')
+        opcoes_menu.insert(4, 'Gerenciamento de Acessos')
+        icones_menu.insert(4, 'shield-lock-fill')
         
     menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
     
@@ -441,20 +458,6 @@ with st.sidebar:
     
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
-
-    if menu_selecionado == 'Painel Executivo':
-        st.markdown("---")
-        st.markdown("### 🗺️ Filtros do Mapa")
-        op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('LEVANTADOR', pd.Series()).dropna().unique()])
-        filtro_map_lev = st.selectbox("Levantador:", op_map_lev, key='map_lev')
-        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('REGIONAL', pd.Series()).dropna().unique()])
-        filtro_map_reg = st.selectbox("Regional:", op_map_reg, key='map_reg')
-        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('MUNICIPIO', pd.Series()).dropna().unique()])
-        filtro_map_mun = st.selectbox("Município:", op_map_mun, key='map_mun')
-        op_map_sap = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('STATUS SAP', pd.Series()).dropna().unique()])
-        filtro_map_sap = st.selectbox("Status SAP:", op_map_sap, key='map_sap')
-        op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
-        filtro_map_list = st.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO E MAPAS
@@ -499,6 +502,13 @@ if menu_selecionado == 'Painel Executivo':
             with central_col:
                 st.markdown("<div style='padding: 20px; border: 1px solid #EAEAEA; border-radius: 8px; background: #FAFAFA;'>", unsafe_allow_html=True)
                 lev_selecionado = st.selectbox("Levantador:", todos_levantadores, label_visibility="collapsed")
+                
+                # Zera a etapa de confirmação se mudarmos o levantador selecionado
+                if st.session_state.get('last_lev_selecionado') != lev_selecionado:
+                    st.session_state.assign_step = 0
+                    st.session_state.show_demanda = False
+                    st.session_state.last_lev_selecionado = lev_selecionado
+                
                 obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_selecionado]['Total_Obras_Real'].iloc[0])
                 saldo_necessario = max(0, 45 - obras_do_lev)
                 
@@ -506,35 +516,128 @@ if menu_selecionado == 'Painel Executivo':
                 
                 if st.session_state.perfil_usuario == "ADMIN":
                     if obras_do_lev < 45:
-                        if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Próximas", use_container_width=True, type="primary"):
-                            cond_livres_reais = (df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
-                            df_livres = df_notas_db[cond_livres_reais].copy()
-                            
-                            if len(df_livres) == 0: st.error("Fila vazia! Sem demandas livres no momento.")
-                            else:
-                                with st.spinner(f"Calculando rotas otimizadas para {lev_selecionado}..."):
-                                    tech_coords = df_equipes_db[df_equipes_db['Levantador'] == lev_selecionado].iloc[0]
-                                    df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
-                                    df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
-                                    df_livres['Distancia_KM'] = vectorized_haversine(tech_coords['Latitude'], tech_coords['Longitude'], df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
-                                    df_livres = df_livres.sort_values('Distancia_KM')
+                        # Etapa 0: Exibe o botão principal de Atribuir
+                        if st.session_state.get('assign_step', 0) == 0:
+                            if st.button(f"⚡ Atribuir +{saldo_necessario} Obras Próximas", use_container_width=True, type="primary"):
+                                st.session_state.assign_step = 1
+                                st.rerun()
+                                
+                        # Etapa 1: Aguardando a Confirmação de Segurança
+                        elif st.session_state.assign_step == 1:
+                            st.warning(f"Confirmar atribuição de +{saldo_necessario} obras para {lev_selecionado}?")
+                            col_conf1, col_conf2 = st.columns(2)
+                            if col_conf1.button("✅ Confirmar Ação", use_container_width=True, type="primary"):
+                                cond_livres_reais = (df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
+                                df_livres = df_notas_db[cond_livres_reais].copy()
+                                
+                                if len(df_livres) == 0: 
+                                    st.error("Fila vazia! Sem demandas livres no momento.")
+                                    st.session_state.assign_step = 0
+                                else:
+                                    with st.spinner(f"Calculando rotas otimizadas para {lev_selecionado}..."):
+                                        tech_rows = df_equipes_db[df_equipes_db['Levantador'] == lev_selecionado]
+                                        tech_residencia = tech_rows['Residencia'].iloc[0] if 'Residencia' in tech_rows.columns else None
+                                        
+                                        res_lat, res_lon = np.nan, np.nan
+                                        if pd.notna(tech_residencia) and str(tech_residencia).strip() != "":
+                                            res_lat = mapa_lat.get(str(tech_residencia).strip().upper())
+                                            res_lon = mapa_lon.get(str(tech_residencia).strip().upper())
+                                            
+                                        if pd.isna(res_lat) or pd.isna(res_lon):
+                                            res_lat = tech_rows.iloc[0]['Latitude']
+                                            res_lon = tech_rows.iloc[0]['Longitude']
+                                            
+                                        df_livres['Lat_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
+                                        df_livres['Lon_Mapa'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
+                                        df_livres['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
+                                        df_livres = df_livres.sort_values('Distancia_KM')
 
-                                    df_notas_update = df_notas_db.copy()
-                                    qtd_atribuir = min(saldo_necessario, len(df_livres))
-                                    indices_para_mudar = df_livres.head(qtd_atribuir).index
-                                    
-                                    df_notas_update.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
-                                    
-                                    if save_notas_to_db(df_notas_update, acao_auditoria=f"Atribuição Geo-otimizada: {qtd_atribuir} obras para {lev_selecionado}"):
-                                        st.toast("Rotas designadas com sucesso!", icon="✅")
-                                        st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
-                                        st.rerun()
-                    else: st.success("✅ Meta Atingida.")
+                                        df_notas_update = df_notas_db.copy()
+                                        qtd_atribuir = min(saldo_necessario, len(df_livres))
+                                        indices_para_mudar = df_livres.head(qtd_atribuir).index
+                                        
+                                        df_notas_update.loc[indices_para_mudar, 'LEVANTADOR'] = lev_selecionado
+                                        
+                                        if save_notas_to_db(df_notas_update, acao_auditoria=f"Atribuição Geo-otimizada: {qtd_atribuir} obras para {lev_selecionado}"):
+                                            st.toast("Rotas designadas com sucesso!", icon="✅")
+                                            st.success(f"{qtd_atribuir} obras vinculadas a {lev_selecionado}.")
+                                            st.session_state.assign_step = 2
+                                            st.rerun()
+                                            
+                            if col_conf2.button("❌ Cancelar", use_container_width=True):
+                                st.session_state.assign_step = 0
+                                st.rerun()
+                                
+                        # Etapa 2: Exibe o botão de Gerar Demanda (Roteirização/Cor) após a confirmação
+                        elif st.session_state.assign_step == 2:
+                            st.success("✅ Atribuição confirmada.")
+                            if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"):
+                                st.session_state.show_demanda = True
+                                st.session_state.assign_step = 0
+                                st.rerun()
+                    else: 
+                        st.success("✅ Meta Atingida.")
+                        # Se já tem as metas, o botão de gerar demanda pode ser acessado livremente
+                        if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"):
+                            st.session_state.show_demanda = True
+                            
                 else:
                     st.warning("🔒 Acesso restrito. Módulo de atribuição exclusivo para Coordenação.")
                     
-                st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
+                st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
+                
+        # --- NOVO PAINEL: GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES) ---
+        if st.session_state.get('show_demanda', False):
+            st.markdown("---")
+            st.markdown(f"#### 📋 Gerador de Demanda Otimizado - {lev_selecionado}")
+            st.caption("A distância é calculada em linha reta a partir da cidade-base de **Residência** cadastrada para o levantador.")
+            
+            cond_demanda = (df_notas_calc['LEVANTADOR'] == lev_selecionado) & (df_notas_calc['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))
+            df_demanda = df_notas_calc[cond_demanda].copy()
+            
+            if len(df_demanda) > 0:
+                tech_rows = df_equipes_db[df_equipes_db['Levantador'] == lev_selecionado]
+                tech_residencia = tech_rows['Residencia'].iloc[0] if 'Residencia' in tech_rows.columns else None
+                
+                res_lat, res_lon = np.nan, np.nan
+                if pd.notna(tech_residencia) and str(tech_residencia).strip() != "":
+                    res_lat = mapa_lat.get(str(tech_residencia).strip().upper())
+                    res_lon = mapa_lon.get(str(tech_residencia).strip().upper())
+                    
+                if pd.isna(res_lat) or pd.isna(res_lon):
+                    res_lat = tech_rows.iloc[0]['Latitude']
+                    res_lon = tech_rows.iloc[0]['Longitude']
+                    
+                df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
+                
+                df_demanda_view = df_demanda[['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']].copy()
+                df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
+                df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].round(1)
+                
+                # Regras de Coloração Baseada na Planilha
+                def color_rules(row):
+                    dist = row['Distancia_KM']
+                    if pd.isna(dist):
+                        color = ''
+                    elif dist <= 50:
+                        color = 'background-color: #d4edda; color: #155724;' # Verde (Até 50km)
+                    elif dist <= 100:
+                        color = 'background-color: #fff3cd; color: #856404;' # Amarelo (Até 100km)
+                    else:
+                        color = 'background-color: #f8d7da; color: #721C24;' # Vermelho (150 a 250km+)
+                    return [color] * len(row)
+                    
+                st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
+                
+                if st.button("Fechar Aba de Demanda"):
+                    st.session_state.show_demanda = False
+                    st.rerun()
+            else:
+                st.warning("Nenhuma obra na fila de produtividade para este levantador. Utilize a Busca Governança para conferir o status.")
+                if st.button("Fechar"):
+                    st.session_state.show_demanda = False
+                    st.rerun()
 
         st.markdown("---")
         st.markdown("#### 🏆 Obras em Levantamento Concluído")
@@ -544,17 +647,19 @@ if menu_selecionado == 'Painel Executivo':
             data_filtro_conclusao = st.date_input("Filtrar por Data de Conclusão", value=datetime.today())
             
         with col_c2:
-            st.caption("Filtra e contabiliza as obras baseando-se no preenchimento da coluna **DATA DE LEVANTAMENTO LIST** de acordo com o novo formato da planilha.")
+            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE no preenchimento da coluna **DATA DE LEVANTAMENTO LIST** correspondente à data selecionada.")
             
-        df_concluidas = df_notas_calc[df_notas_calc['STATUS LIST'].astype(str).str.upper().str.strip() == 'LEVANTAMENTO CONCLUIDO'].copy()
+        df_concluidas = df_notas_calc.copy()
         
         def safe_date_parse(serie):
             s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
             s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
-        # UTILIZANDO A NOVA COLUNA DO TEMPLATE (DATA DE LEVANTAMENTO LIST)
-        df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA DE LEVANTAMENTO LIST'])
+        if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
+            df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA DE LEVANTAMENTO LIST'])
+        else:
+            df_concluidas['DATA_REF'] = pd.NaT
             
         df_concluidas_dia = df_concluidas[df_concluidas['DATA_REF'] == data_filtro_conclusao]
         
@@ -620,6 +725,23 @@ if menu_selecionado == 'Painel Executivo':
 
         st.markdown("---")
         
+        st.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
+        
+        op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('LEVANTADOR', pd.Series()).dropna().unique()])
+        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('REGIONAL', pd.Series()).dropna().unique()])
+        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('MUNICIPIO', pd.Series()).dropna().unique()])
+        op_map_sap = ["TODOS"] + sorted([str(x) for x in df_notas_calc.get('STATUS SAP', pd.Series()).dropna().unique()])
+        op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
+        
+        col_f1, col_f2, col_f3 = st.columns(3)
+        with col_f1: filtro_map_lev = st.selectbox("Filtro Mapa Levantador:", op_map_lev, key='map_lev')
+        with col_f2: filtro_map_reg = st.selectbox("Filtro Mapa Regional:", op_map_reg, key='map_reg')
+        with col_f3: filtro_map_mun = st.selectbox("Filtro Mapa Município:", op_map_mun, key='map_mun')
+        
+        col_f4, col_f5, col_f6 = st.columns(3)
+        with col_f4: filtro_map_sap = st.selectbox("Filtro Mapa Status SAP:", op_map_sap, key='map_sap')
+        with col_f5: filtro_map_list = st.multiselect("Filtro Mapa Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
+        
         df_notas_mapa_view = df_notas_calc.copy()
         if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
         if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
@@ -628,10 +750,9 @@ if menu_selecionado == 'Painel Executivo':
         if len(filtro_map_list) > 0 and 'STATUS LIST' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['STATUS LIST'].isin(filtro_map_list)]
 
         col_m1, col_m2 = st.columns([8, 2])
-        col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
         col_m1.info(f"📍 **Obras localizadas no mapa:** {len(df_notas_mapa_view)}")
         
-        camada_upload = col_m2.file_uploader("Sobrepor Camada (KML/KMZ/GeoJSON)", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
+        camada_upload = col_m2.file_uploader("Sobrepor Camada (KML/KMZ)", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
             
         caminho_camada_temp = None
         if camada_upload is not None:
@@ -845,7 +966,7 @@ elif menu_selecionado == 'Carga de Lotes':
         "TIPO LIGACAO": pa.Column(pa.String, coerce=True, required=False, nullable=True),
         "STATUS SAP": pa.Column(pa.String, coerce=True, required=False, nullable=True),
         "ID SISCO": pa.Column(pa.String, coerce=True, required=False, nullable=True),
-        "DATA DE LEVANTAMENTO LIST": pa.Column(pa.String, coerce=True, required=False, nullable=True) # Validado no envio
+        "DATA DE LEVANTAMENTO LIST": pa.Column(pa.String, coerce=True, required=False, nullable=True) 
     }, strict=False)
 
     arquivo_upload = st.file_uploader("Selecione o arquivo de demandas", type=["csv", "xlsx"])
@@ -879,7 +1000,52 @@ elif menu_selecionado == 'Carga de Lotes':
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
-# VISÃO 4: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
+# VISÃO 4: LEVANTADORES (NOVA ABA - MUDANÇA DE RESIDÊNCIA)
+# -----------------------------------------------------------------------------
+elif menu_selecionado == 'Levantadores':
+    if st.session_state.perfil_usuario != "ADMIN":
+        st.error("Acesso Negado. Módulo restrito à Coordenação.")
+        st.stop()
+        
+    st.markdown("### 👷 Gestão de Levantadores e Residências")
+    st.caption("Defina a cidade de residência de cada levantador para otimizar a distribuição de obras e a roteirização pela função 'Gerar Demanda'.")
+    
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        df_eq = pd.read_sql("SELECT * FROM equipes", conn)
+        
+    if 'Residencia' not in df_eq.columns:
+        df_eq['Residencia'] = ""
+        
+    df_levs = df_eq[['Levantador', 'Equipe', 'Residencia']].drop_duplicates(subset=['Levantador']).copy()
+    opcoes_mun = [""] + sorted([str(x).upper() for x in df_eq['Município'].dropna().unique()])
+    
+    edited_levs = st.data_editor(
+        df_levs,
+        column_config={
+            "Levantador": st.column_config.TextColumn("Levantador", disabled=True),
+            "Equipe": st.column_config.TextColumn("Equipe", disabled=True),
+            "Residencia": st.column_config.SelectboxColumn("Município-Base (Residência)", options=opcoes_mun)
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="editor_levantadores"
+    )
+    
+    if st.button("💾 Salvar Alterações de Residência", type="primary"):
+        with st.spinner("Atualizando base de residências..."):
+            map_residencia = edited_levs.set_index('Levantador')['Residencia'].to_dict()
+            df_eq['Residencia'] = df_eq['Levantador'].map(map_residencia)
+            
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                df_eq.to_sql('equipes', conn, if_exists='replace', index=False)
+            
+            get_processed_data.clear()
+            process_analytical_data.clear()
+            st.success("Residências atualizadas com sucesso!")
+            st.rerun()
+
+# -----------------------------------------------------------------------------
+# VISÃO 5: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Gerenciamento de Acessos':
     if st.session_state.perfil_usuario != "ADMIN":
@@ -889,8 +1055,7 @@ elif menu_selecionado == 'Gerenciamento de Acessos':
     st.markdown("### 🔐 Gerenciamento de Acessos")
     
     st.markdown("#### Usuários do Sistema")
-    # Ponto Crítico de Correção: Removida a seleção da coluna 'last_active' para o data_editor.
-    # O Heartbeat atualiza o last_active no banco constantemente, forçando a tabela a piscar e perder a seleção se fosse mantida.
+    
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         df_users = pd.read_sql("SELECT username, role FROM usuarios", conn)
     
@@ -949,7 +1114,7 @@ elif menu_selecionado == 'Gerenciamento de Acessos':
                 st.warning("Preencha todos os campos para continuar.")
 
 # -----------------------------------------------------------------------------
-# VISÃO 5: SIMULADOR DE ALOCAÇÃO
+# VISÃO 6: SIMULADOR DE ALOCAÇÃO
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Simulador de Alocação':
     st.markdown("""
@@ -973,7 +1138,7 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
-    # Injeta Placeholders Visualmente - Serão Preenchidos APÓS os cálculos na parte debaixo do código
+    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
@@ -996,13 +1161,11 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     df_edited = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
 
-    # Cálculos Matemáticos Pós-Edição da Tabela
     df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
     df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
     df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
     df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
     
-    # Atualiza Dinamicamente os Cards do Topo preenchendo os espaços vazios com os novos valores
     total_mun_novo = int(df_edited['Total Municípios'].sum())
     total_com_novo = int(df_edited['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum())
     total_sem_novo = int(df_edited['Gap Restante'].sum())
@@ -1012,7 +1175,6 @@ elif menu_selecionado == 'Simulador de Alocação':
     ph_com.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com_novo}</span></div>", unsafe_allow_html=True)
     ph_sem.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem_novo}</span></div>", unsafe_allow_html=True)
     ph_cob.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual_nova:.1f}%</span></div>", unsafe_allow_html=True)
-
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Projeção Atualizada e Representatividade</h4>", unsafe_allow_html=True)
     col_proj_tab, col_proj_chart = st.columns([2.5, 1.5])
@@ -1056,7 +1218,6 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Resumo de Impacto</h4>", unsafe_allow_html=True)
     
-    # Recalculando cob_atual original apenas para comparar a Variação (Antes vs Depois)
     total_mun_orig, total_com_orig = int(df_sim['Total Municípios'].sum()), int(df_sim['Com Levantador'].sum())
     cob_atual_orig = (total_com_orig / total_mun_orig * 100) if total_mun_orig > 0 else 0
     
