@@ -77,7 +77,6 @@ init_iam()
 init_kmz_db()
 
 def ensure_residencia_column():
-    """Garante que a coluna Residencia exista na tabela equipes. (Popula 1 única vez se nao existir)"""
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             cursor = conn.cursor()
@@ -87,17 +86,13 @@ def ensure_residencia_column():
                 columns = [col[1] for col in cursor.fetchall()]
                 if 'Residencia' not in columns:
                     conn.execute("ALTER TABLE equipes ADD COLUMN Residencia TEXT")
-                    
-                    df_eq = pd.read_sql("SELECT * FROM equipes", conn)
-                    df_eq['Residencia'] = ""
                     if os.path.exists('base levantador.xlsx'):
                         df_base = pd.read_excel('base levantador.xlsx')
                         if 'Residencia' in df_base.columns:
-                            map_res = {str(k).strip().upper(): str(v).strip().upper() for k, v in df_base.set_index('Levantador')['Residencia'].dropna().to_dict().items()}
-                            df_eq['Lev_clean'] = df_eq['Levantador'].astype(str).str.strip().str.upper()
-                            df_eq['Residencia'] = df_eq['Lev_clean'].map(map_res).fillna("")
-                            df_eq = df_eq.drop(columns=['Lev_clean'])
-                    df_eq.to_sql('equipes', conn, if_exists='replace', index=False)
+                            map_res = df_base.set_index('Levantador')['Residencia'].dropna().to_dict()
+                            for lev, res in map_res.items():
+                                conn.execute("UPDATE equipes SET Residencia = ? WHERE Levantador = ?", (str(res).upper().strip(), lev))
+                    conn.commit()
     except Exception:
         pass
 
@@ -572,40 +567,43 @@ df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, m
 # -----------------------------------------------------------------------------
 # INTERFACE DE NAVEGAÇÃO LATERAL
 # -----------------------------------------------------------------------------
-# Mostra o Sidebar padrao somente se não for a aba do Leitor KMZ
-if menu_selecionado != 'Leitor KMZ':
-    with st.sidebar:
-        st.markdown("### 👤 Portal NIP")
-        st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
-        st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
-        
-        if st.button("🚪 Sair / Deslogar", use_container_width=True):
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
-                conn.commit()
-            st.session_state.usuario_logado = None
-            st.session_state.perfil_usuario = None
-            st.rerun()
+# Sempre renderiza o menu para garantir que `menu_selecionado` seja criado.
+# Se o usuário for comum, escondemos com CSS.
+if st.session_state.get('perfil_usuario') != 'ADMIN':
+    st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
+    
+with st.sidebar:
+    st.markdown("### 👤 Portal NIP")
+    st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
+    st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
+    
+    if st.button("🚪 Sair / Deslogar", use_container_width=True):
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
+            conn.commit()
+        st.session_state.usuario_logado = None
+        st.session_state.perfil_usuario = None
+        st.rerun()
 
-        st.markdown("---")
+    st.markdown("---")
+    
+    opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
+    icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
+    
+    if st.session_state.perfil_usuario == "ADMIN":
+        opcoes_menu.insert(4, 'Carga de Lotes')
+        icones_menu.insert(4, 'cloud-upload-fill')
+        opcoes_menu.insert(5, 'Levantadores')
+        icones_menu.insert(5, 'person-vcard-fill')
+        opcoes_menu.insert(6, 'Gerenciamento de Acessos')
+        icones_menu.insert(6, 'shield-lock-fill')
         
-        opcoes_menu = ['Painel Executivo', 'Leitor KMZ', 'Busca e Governança', 'Simulador de Alocação']
-        icones_menu = ['pie-chart-fill', 'map-fill', 'sliders', 'calculator-fill']
-        
-        if st.session_state.perfil_usuario == "ADMIN":
-            opcoes_menu.insert(4, 'Carga de Lotes')
-            icones_menu.insert(4, 'cloud-upload-fill')
-            opcoes_menu.insert(5, 'Levantadores')
-            icones_menu.insert(5, 'person-vcard-fill')
-            opcoes_menu.insert(6, 'Gerenciamento de Acessos')
-            icones_menu.insert(6, 'shield-lock-fill')
-            
-        menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
-        
-        menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
-        
-        if menu_selecionado in opcoes_menu:
-            st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
+    menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
+    
+    menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
+    
+    if menu_selecionado in opcoes_menu:
+        st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO
@@ -734,7 +732,7 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
                 
-        # --- GERAÇÃO DE DEMANDA (EXCEL / KML) COM AS REGRAS ESTRITAS ---
+        # --- GERAÇÃO DE DEMANDA POR ROTEIRIZAÇÃO (CORES E EXPORTAÇÃO KML/EXCEL) ---
         if st.session_state.get('show_demanda', False):
             st.markdown("---")
             st.markdown(f"#### 📋 Gerador de Demanda Otimizado - {lev_selecionado}")
@@ -782,7 +780,7 @@ if menu_selecionado == 'Painel Executivo':
                     
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
-                # --- EXPORTAÇÃO BLINDADA ---
+                # --- PREPARAÇÃO DA EXPORTAÇÃO EXCEL/KML COM OS DEVIDOS FILTROS RÍGIDOS ---
                 def is_valid_export(row):
                     t = str(row.get('TIPO LIGACAO', '')).strip().upper()
                     n = str(row.get('NOME DO SOLICITANTE', '')).strip().upper()
@@ -883,7 +881,7 @@ if menu_selecionado == 'Painel Executivo':
                     fig_bar_sem_lev = px.bar(df_sem_lev_reg, x='Quantidade_Sem_Atribuicao', y='Regional', orientation='h', title="Top 15 - Obras Sem Levantador Atribuído por Regional", color_discrete_sequence=['#D9534F'])
                     fig_bar_sem_lev.update_layout(xaxis_title="Volume Pendente", yaxis_title="")
                     st.plotly_chart(fig_bar_sem_lev, use_container_width=True)
-        except Exception as e:
+        except Exception:
             pass
 
         try:
@@ -904,7 +902,7 @@ if menu_selecionado == 'Painel Executivo':
                                      color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'})
                     fig_sla.update_traces(textposition='auto', textfont_size=14)
                     st.plotly_chart(fig_sla, use_container_width=True)
-        except Exception as e:
+        except Exception:
             pass
 
         try:
@@ -1020,8 +1018,8 @@ if menu_selecionado == 'Painel Executivo':
             with st.spinner("Decodificando geometrias e renderizando mapa de alta performance..."):
                 mapa_pronto = construir_mapa(df_eq_mapa_view, df_notas_mapa_view, tuple(levantadores_criticos), caminho_camada_temp)
                 st_folium(mapa_pronto, use_container_width=True, height=850, returned_objects=[])
-        except Exception as e:
-            st.error("Erro crítico ao desenhar o mapa do executivo. Verifique as configurações das colunas.")
+        except Exception:
+            pass
 
 # -----------------------------------------------------------------------------
 # VISÃO 2: LEITOR KMZ (GIS EARTH CLONE)
