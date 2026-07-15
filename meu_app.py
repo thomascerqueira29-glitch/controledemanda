@@ -163,9 +163,8 @@ def setup_application():
     update_residencias_hardcoded()
     return True
 
-if 'app_ready' not in st.session_state:
-    setup_application()
-    st.session_state.app_ready = True
+# Garante a inicialização do banco em cada execução para evitar tabelas ausentes
+setup_application()
 
 # -----------------------------------------------------------------------------
 # 3. MÓDULO DE SEGURANÇA E AUTENTICAÇÃO (LOGIN)
@@ -879,9 +878,12 @@ elif menu_selecionado == 'Leitor KMZ':
         
         if st.session_state.get('show_upload', False):
             with st.expander("Gerenciar Arquivos", expanded=True):
-                with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                    df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
-                opcoes_hist = ["-- Novo Upload --"] + df_hist['nome'].tolist()
+                try:
+                    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                        df_hist_exp = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
+                    opcoes_hist = ["-- Novo Upload --"] + df_hist_exp['nome'].tolist()
+                except Exception:
+                    opcoes_hist = ["-- Novo Upload --"]
                 hist_sel = st.selectbox("Histórico:", opcoes_hist)
                 camada_gis = st.file_uploader("Arquivo:", type=['kml', 'kmz'])
                 if camada_gis:
@@ -896,13 +898,15 @@ elif menu_selecionado == 'Leitor KMZ':
                             conn.commit()
                         st.rerun()
         
-        # Lógica de carregamento do arquivo ativo
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
-        
+        # Lógica de carregamento do arquivo ativo com tratamento de erro
         caminho_ativo = None
-        if not df_hist.empty:
-            caminho_ativo = df_hist.iloc[0]['filepath'] # Padrão: último carregado
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                df_hist = pd.read_sql("SELECT * FROM historico_kmz ORDER BY id DESC", conn)
+            if not df_hist.empty:
+                caminho_ativo = df_hist.iloc[0]['filepath']
+        except Exception:
+            df_hist = pd.DataFrame()
             
         gdf_lines, gdf_points, bounds, temp_dir = gpd.GeoDataFrame(), gpd.GeoDataFrame(), None, None
         if caminho_ativo and os.path.exists(caminho_ativo):
