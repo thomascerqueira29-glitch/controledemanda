@@ -451,23 +451,34 @@ def get_images_from_desc(desc, extract_dir):
     # Tenta achar os nomes literais dos arquivos fisicos dentro do HTML da descricao
     for img_path in arquivos_fisicos:
         filename = os.path.basename(img_path)
-        if filename in desc_str:
+        # Verifica se o nome do arquivo ou parte dele está na descrição
+        if filename in desc_str or html.escape(filename) in desc_str:
             valid_imgs.append(img_path)
             
-    # Fallback: Se não achou por nome literal, varre tags src/href
-    if not valid_imgs:
-        imgs_tags = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
-        if not imgs_tags:
-            imgs_tags = re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png))["\']?', desc_str, re.IGNORECASE)
-            
-        for img in imgs_tags:
-            if str(img).startswith('http'):
-                if img not in valid_imgs: valid_imgs.append(img)
-            else:
-                img_clean = img.replace('\\', '/')
-                img_path = os.path.join(extract_dir, img_clean)
-                if os.path.exists(img_path) and img_path not in valid_imgs:
-                    valid_imgs.append(img_path)
+    # Fallback 1: Varre tags src/href
+    imgs_tags = re.findall(r'src=["\']?(.*?\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["\']?', desc_str, re.IGNORECASE)
+    imgs_tags += re.findall(r'href=["\']?(.*?\.(?:jpg|jpeg|png|JPG|JPEG|PNG))["\']?', desc_str, re.IGNORECASE)
+    
+    for img in set(imgs_tags):
+        if str(img).startswith('http'):
+            if img not in valid_imgs: valid_imgs.append(img)
+        else:
+            img_clean = img.replace('\\', '/').strip()
+            # Tenta resolver o caminho relativo dentro do KMZ
+            possiveis_caminhos = [
+                os.path.join(extract_dir, img_clean),
+                os.path.join(extract_dir, os.path.basename(img_clean))
+            ]
+            for p in possiveis_caminhos:
+                if os.path.exists(p) and p not in valid_imgs:
+                    valid_imgs.append(p)
+                    break
+    
+    # Fallback 2: Se ainda não achou nada e o KMZ tem imagens, tenta associar por proximidade de texto (se houver IDs)
+    if not valid_imgs and arquivos_fisicos:
+        # Se houver apenas uma imagem no KMZ e um ponto selecionado, assume que é dele (comum em alguns apps de campo)
+        if len(arquivos_fisicos) == 1:
+            valid_imgs.append(arquivos_fisicos[0])
                     
     return valid_imgs
 
@@ -833,31 +844,28 @@ elif menu_selecionado == 'Leitor KMZ':
         [data-testid="collapsedControl"] {display: none;}
         section[data-testid="stSidebar"] {display: none;}
         .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1rem; padding-right: 1rem; max-width: 100%;}
-        .gis-panel { background-color: #0b1120; color: #e2e8f0; padding: 12px; border-radius: 4px; border: 1px solid #1e293b; height: 88vh; overflow-y: auto;}
-        .main { background-color: #020617; }
-        .stApp { background-color: #020617; }
-        .gis-header { font-size: 11px; font-weight: bold; color: #64748b; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px;}
-        .gis-value { font-size: 12px; margin-bottom: 8px; color: #f8fafc; background-color: #1e293b; padding: 8px; border-radius: 4px; border-left: 3px solid #3b82f6;}
-        .stButton>button { background-color: #1e293b; color: white; border: 1px solid #334155; font-size: 12px;}
-        .stButton>button:hover { border-color: #3b82f6; color: #3b82f6;}
-        .gis-sidebar-item { padding: 8px; border-radius: 4px; cursor: pointer; border-bottom: 1px solid #1e293b; font-size: 12px; display: flex; align-items: center; gap: 8px;}
-        .gis-sidebar-item:hover { background-color: #1e293b;}
-        .gis-sidebar-item.active { background-color: #3b82f622; border-left: 3px solid #3b82f6;}
-        .gis-photo-card { border-radius: 4px; border: 1px solid #1e293b; margin-bottom: 10px; overflow: hidden; background: #0f172a;}
-        .gis-top-bar { display: flex; gap: 10px; background: #0b1120; padding: 8px; border-radius: 4px; margin-bottom: 10px; border: 1px solid #1e293b;}
+        .gis-panel { background-color: #f8f9fa; color: #333; padding: 12px; border-radius: 8px; border: 1px solid #dee2e6; height: 88vh; overflow-y: auto; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
+        .gis-header { font-size: 11px; font-weight: bold; color: #4A4F7C; text-transform: uppercase; margin-bottom: 10px; letter-spacing: 0.5px; border-bottom: 1px solid #eee; padding-bottom: 5px;}
+        .gis-value { font-size: 12px; margin-bottom: 8px; color: #333; background-color: #fff; padding: 8px; border-radius: 4px; border-left: 3px solid #4A4F7C; border: 1px solid #eee;}
+        .stButton>button { background-color: #fff; color: #333; border: 1px solid #dee2e6; font-size: 12px;}
+        .stButton>button:hover { border-color: #4A4F7C; color: #4A4F7C;}
+        .gis-sidebar-item { padding: 8px; border-radius: 4px; cursor: pointer; border-bottom: 1px solid #eee; font-size: 12px; display: flex; align-items: center; gap: 8px; background: white; margin-bottom: 4px;}
+        .gis-sidebar-item:hover { background-color: #f1f3f5;}
+        .gis-photo-card { border-radius: 8px; border: 1px solid #dee2e6; margin-bottom: 10px; overflow: hidden; background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
+        .gis-top-bar { display: flex; gap: 10px; background: #fff; padding: 8px; border-radius: 8px; margin-bottom: 10px; border: 1px solid #dee2e6; box-shadow: 0 2px 4px rgba(0,0,0,0.05);}
         </style>
     """, unsafe_allow_html=True)
     
-    # Barra de Ferramentas Superior (Simulando a da imagem)
+    # Barra de Ferramentas Superior
     t1, t2 = st.columns([8, 2])
     with t1:
         st.markdown("""
             <div class='gis-top-bar'>
-                <span style='color:#3b82f6; font-weight:bold; margin-right:15px;'>🌍 GIS Earth</span>
-                <span style='color:#94a3b8; font-size:12px; cursor:pointer;'>🧭 Navegar</span>
-                <span style='color:#94a3b8; font-size:12px; cursor:pointer;'>📏 Distância</span>
-                <span style='color:#94a3b8; font-size:12px; cursor:pointer;'>⬜ Área</span>
-                <span style='color:#94a3b8; font-size:12px; cursor:pointer;'>📷 Street View</span>
+                <span style='color:#4A4F7C; font-weight:bold; margin-right:15px;'>🌍 Portal GIS NIP</span>
+                <span style='color:#666; font-size:12px; cursor:pointer;'>🧭 Navegar</span>
+                <span style='color:#666; font-size:12px; cursor:pointer;'>📏 Distância</span>
+                <span style='color:#666; font-size:12px; cursor:pointer;'>⬜ Área</span>
+                <span style='color:#666; font-size:12px; cursor:pointer;'>📷 Street View</span>
             </div>
         """, unsafe_allow_html=True)
     with t2:
@@ -951,7 +959,8 @@ elif menu_selecionado == 'Leitor KMZ':
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_m:
-        mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None, control_scale=True)
+        # Coordenadas centrais do Maranhão: -5.42, -45.44
+        mapa_gis = folium.Map(location=[-5.42, -45.44], zoom_start=7, tiles=None, control_scale=True)
         
         # Camada Google Satélite (Mais parecida com a da imagem)
         folium.TileLayer(
@@ -996,6 +1005,10 @@ elif menu_selecionado == 'Leitor KMZ':
                 mapa_gis.zoom_start = 19
             elif bounds is not None:
                 mapa_gis.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+            else:
+                # Fallback para o Maranhão se não houver dados
+                mapa_gis.location = [-5.42, -45.44]
+                mapa_gis.zoom_start = 7
         
         # Barra de controles flutuantes no rodapé do mapa (Estilo da imagem)
         st.markdown("""
@@ -1009,13 +1022,30 @@ elif menu_selecionado == 'Leitor KMZ':
             </div>
         """, unsafe_allow_html=True)
                 
-        map_data = st_folium(mapa_gis, use_container_width=True, height=820, returned_objects=['last_active_drawing'])
+        map_data = st_folium(
+            mapa_gis, 
+            use_container_width=True, 
+            height=820, 
+            returned_objects=['last_object_clicked', 'last_active_drawing']
+        )
         
-        if map_data and map_data.get('last_active_drawing'):
-            clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
-            if clicado and clicado != st.session_state.selected_ponto_gis:
-                st.session_state.selected_ponto_gis = clicado
-                st.rerun()
+        # Lógica de clique no marcador (CircleMarker ou GeoJson)
+        ponto_clicado = None
+        if map_data:
+            if map_data.get('last_object_clicked'):
+                # Tenta encontrar o ponto mais próximo das coordenadas clicadas
+                click_lat = map_data['last_object_clicked'].get('lat')
+                click_lng = map_data['last_object_clicked'].get('lng')
+                if click_lat and click_lng and not gdf_points.empty:
+                    gdf_points['dist_click'] = np.sqrt((gdf_points.geometry.y - click_lat)**2 + (gdf_points.geometry.x - click_lng)**2)
+                    ponto_clicado = gdf_points.sort_values('dist_click').iloc[0]['Name']
+            
+            if not ponto_clicado and map_data.get('last_active_drawing'):
+                ponto_clicado = map_data['last_active_drawing'].get('properties', {}).get('Name')
+
+        if ponto_clicado and ponto_clicado != st.session_state.selected_ponto_gis:
+            st.session_state.selected_ponto_gis = ponto_clicado
+            st.rerun()
 
     with col_r:
         st.markdown("<div class='gis-panel'>", unsafe_allow_html=True)
@@ -1039,23 +1069,26 @@ elif menu_selecionado == 'Leitor KMZ':
                 if not clean_desc: clean_desc = "Sem detalhes adicionais."
                 st.markdown(f"<div style='font-size:12px; color:#cbd5e1; margin-bottom:20px;'>{clean_desc}</div>", unsafe_allow_html=True)
                 
-                # Galeria de Fotos (Estilo da imagem)
-                st.markdown("<div class='gis-header'>FOTOS (4) <span style='float:right; cursor:pointer;'>🔍 📷</span></div>", unsafe_allow_html=True)
-                
+                # Galeria de Fotos
                 if temp_dir:
                     imagens_achadas = get_images_from_desc(desc_html, temp_dir)
+                    st.markdown(f"<div class='gis-header'>FOTOS ({len(imagens_achadas)}) <span style='float:right; cursor:pointer;'>🔍 📷</span></div>", unsafe_allow_html=True)
+                    
                     if imagens_achadas:
-                        for img_path in imagens_achadas:
+                        for i, img_path in enumerate(imagens_achadas):
                             try:
                                 img_obj = Image.open(img_path)
+                                # Adiciona um título para a foto baseado no índice ou nome
+                                st.markdown(f"<div style='font-size:10px; color:#666; margin-bottom:2px;'>REGISTRO FOTOGRÁFICO #{i+1}</div>", unsafe_allow_html=True)
                                 st.markdown("<div class='gis-photo-card'>", unsafe_allow_html=True)
-                                st.image(img_obj, use_container_width=True)
+                                st.image(img_obj, use_container_width=True, caption=os.path.basename(img_path))
                                 st.markdown("</div>", unsafe_allow_html=True)
                             except Exception: pass
                     else:
-                        st.info("Nenhuma foto vinculada a este ponto.")
+                        st.warning("Nenhuma foto vinculada a este ponto no arquivo KMZ.")
                 else:
-                    st.caption("Arquivos .KML não contêm fotos internas.")
+                    st.markdown("<div class='gis-header'>FOTOS (0)</div>", unsafe_allow_html=True)
+                    st.caption("Arquivos .KML não contêm fotos internas. Utilize .KMZ para ver as fotos do levantamento.")
                 
                 # Rodapé de Ações (Estilo da imagem)
                 st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
