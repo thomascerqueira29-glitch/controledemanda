@@ -314,6 +314,64 @@ def vectorized_haversine(lat1, lon1, lat2_series, lon2_series):
         return pd.Series(99999, index=lat2_series.index)
 
 @st.cache_data(show_spinner=False)
+def calcular_sla_vetorizado(df_notas_calc):
+    """Calcula o SLA dinamicamente (Recuperado)"""
+    df_sla = df_notas_calc.copy()
+    tipo = df_sla.get('TIPO LIGACAO', pd.Series([''] * len(df_sla))).astype(str).str.strip().str.upper()
+    g1, g2 = ['ASC', 'UNI', 'UNO'], ['SEG', 'SID', 'EUR', 'MGD', 'MTP', 'UNR', 'UNP']
+    g_crono = ['LPT', 'REG', 'PMC', 'ERD', 'SEQ', 'BCP', 'BRE', 'BRT', 'DIG', 'DIS', 'DLD', 'INT', 'MEL', 'OCP', 'TRI', 'EQP', 'FIM', 'MBT', 'MMT']
+    g_niv = ['NIV']
+    hoje = pd.Timestamp.now(tz='America/Sao_Paulo').tz_localize(None).normalize()
+    
+    def blindar_datas(serie):
+        s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
+        s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
+        return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.tz_localize(None)
+
+    df_sla['DATA DE VENCIMENTO_DT'] = blindar_datas(df_sla.get('DATA DE VENCIMENTO', pd.Series()))
+    df_sla['DATA CRIAÇAO SISCO_DT'] = blindar_datas(df_sla.get('DATA CRIAÇAO SISCO', pd.Series()))
+    
+    dias_para_vencer = (df_sla['DATA DE VENCIMENTO_DT'] - hoje).dt.days
+    idade_dias = (hoje - df_sla['DATA CRIAÇAO SISCO_DT']).dt.days
+
+    cond_crono = tipo.isin(g_crono) & df_sla['DATA DE VENCIMENTO_DT'].notna()
+    cond_crono_v = cond_crono & (dias_para_vencer < 0)
+    cond_crono_p = cond_crono & (dias_para_vencer >= 0) & (dias_para_vencer <= 3)
+    cond_crono_np = cond_crono & (dias_para_vencer > 3)
+    
+    cond_base_dt = df_sla['DATA CRIAÇAO SISCO_DT'].notna()
+    cond_g1 = tipo.isin(g1) & cond_base_dt
+    cond_g1_np = cond_g1 & (idade_dias <= 10)
+    cond_g1_p  = cond_g1 & (idade_dias > 10) & (idade_dias <= 15)
+    cond_g1_v  = cond_g1 & (idade_dias > 15)
+    
+    cond_g2 = tipo.isin(g2) & cond_base_dt
+    cond_g2_np = cond_g2 & (idade_dias <= 16)
+    cond_g2_p  = cond_g2 & (idade_dias > 16) & (idade_dias <= 24)
+    cond_g2_v  = cond_g2 & (idade_dias > 24)
+    
+    cond_niv = tipo.isin(g_niv) & cond_base_dt
+    cond_niv_np = cond_niv & (idade_dias <= 5)
+    cond_niv_p  = cond_niv & (idade_dias > 5) & (idade_dias <= 8)
+    cond_niv_v  = cond_niv & (idade_dias > 8)
+    
+    cond_default = ~tipo.isin(g_crono + g1 + g2 + g_niv) & cond_base_dt
+    cond_def_np = cond_default & (idade_dias <= 15)
+    cond_def_p  = cond_default & (idade_dias > 15) & (idade_dias <= 20)
+    cond_def_v  = cond_default & (idade_dias > 20)
+
+    df_sla['Status_SLA'] = np.select(
+        [
+            cond_crono_v | cond_g1_v | cond_g2_v | cond_niv_v | cond_def_v,
+            cond_crono_p | cond_g1_p | cond_g2_p | cond_niv_p | cond_def_p,
+            cond_crono_np | cond_g1_np | cond_g2_np | cond_niv_np | cond_def_np
+        ],
+        ['Vencida', 'Vencimento Próximo', 'No Prazo'], default='Sem Data/Inválida'
+    )
+    df_sla['REGIONAL'] = df_sla.get('REGIONAL', pd.Series()).replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA')
+    return df_sla
+
+@st.cache_data(show_spinner=False)
 def parse_kmz_advanced(file_path):
     """Motor Extração de KMZ Seguro contra caracteres ocultos XML"""
     import xml.etree.ElementTree as ET
@@ -511,7 +569,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
     mun_por_lev = df_equipes_db.groupby('Levantador')['Município'].nunique().reset_index()
     mun_por_lev.columns = ['Levantador', 'Qtd_Municipios']
 
-    cond_list_real = df_notas_calc['STATUS LIST'].isin(STATUS_PRODUTIVIDADE)
+    cond_list_real = df_notas_calc.get('STATUS LIST', pd.Series()).isin(STATUS_PRODUTIVIDADE)
     df_filtrado_status = df_notas_calc[cond_list_real]
     contagem_prod = df_filtrado_status['LEVANTADOR'].value_counts().reset_index()
     contagem_prod.columns = ['Levantador', 'Total_Obras_Real']
@@ -533,7 +591,7 @@ def process_analytical_data(df_notas_db, df_equipes_db):
 df_notas_calc, resumo_levantadores, levantadores_criticos, mapa_lat, mapa_lon, municipios_por_levantador, todos_levantadores = process_analytical_data(df_notas_db, df_equipes_db)
 
 # -----------------------------------------------------------------------------
-# INTERFACE DE NAVEGAÇÃO LATERAL (RENDERIZADA SEMPRE PARA EVITAR NAMEERROR)
+# INTERFACE DE NAVEGAÇÃO LATERAL
 # -----------------------------------------------------------------------------
 if st.session_state.get('perfil_usuario') != 'ADMIN':
     st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
@@ -1100,11 +1158,13 @@ elif menu_selecionado == 'Leitor KMZ':
     with col_m:
         mapa_gis = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
         
+        # Padrão Esri Satélite Fixo
         folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
             attr='Esri', name='Satélite', overlay=False, control=False
         ).add_to(mapa_gis)
         
+        # Ferramentas GIS Reais
         mapa_gis.add_child(MeasureControl(primary_length_unit='meters', primary_area_unit='sqmeters'))
         mapa_gis.add_child(Draw(export=True))
         
@@ -1500,6 +1560,7 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
+    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
@@ -1624,5 +1685,5 @@ if menu_selecionado != 'Leitor KMZ':
             st.markdown(html_pills, unsafe_allow_html=True)
         else:
             st.caption("Nenhum usuário ativo detectado no momento.")
-    except Exception as e:
+    except Exception:
         st.caption("Status de usuários temporariamente indisponível.")
