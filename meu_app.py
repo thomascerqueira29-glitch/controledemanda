@@ -646,22 +646,52 @@ if menu_selecionado == 'Painel Executivo':
                     
                 st.dataframe(df_demanda_view.style.apply(color_rules, axis=1), use_container_width=True, hide_index=True)
                 
+                # PREPARAÇÃO PARA EXPORTAÇÃO (APLICAÇÃO DOS FILTROS RÍGIDOS)
+                def clean_str(s):
+                    return s.astype(str).str.strip().replace({'nan': '', 'None': '', '<NA>': ''})
+
+                cond_tipo = clean_str(df_demanda['TIPO LIGACAO'])
+                cond_nome = clean_str(df_demanda['NOME DO SOLICITANTE'])
+                cond_lat = clean_str(df_demanda['LATITUDE'])
+                cond_lon = clean_str(df_demanda['LONGITUDE'])
+
+                valid_mask = (
+                    (cond_tipo != '') & (cond_tipo != '0') &
+                    (cond_nome != '') &
+                    (cond_lat != '') & (cond_lat != '0') & (cond_lat != '0.0') &
+                    (cond_lon != '') & (cond_lon != '0') & (cond_lon != '0.0')
+                )
+
+                df_export_base = df_demanda[valid_mask].copy().sort_values('Distancia_KM')
+
                 # Prepara o DataFrame Oficial exigido na exportação (Imagem do usuário)
                 cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
                                        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
                                        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
                 
-                df_export = df_demanda.copy()
-                # Garante colunas caso a base original venha sem alguma delas
+                df_export = df_export_base.copy()
                 for c in cols_export_oficial:
                     if c not in df_export.columns:
                         df_export[c] = ""
                         
-                df_export = df_export[cols_export_oficial].sort_index()
+                df_export = df_export[cols_export_oficial]
                 
+                # APLICA ESTILO NO EXCEL
+                dist_export_series = df_export_base['Distancia_KM'] # Para consultar na hora de colorir
+                
+                def style_excel(row):
+                    dist = dist_export_series.loc[row.name]
+                    if pd.isna(dist): color = ''
+                    elif dist <= 50: color = 'background-color: #d4edda; color: #155724;' 
+                    elif dist <= 100: color = 'background-color: #fff3cd; color: #856404;' 
+                    else: color = 'background-color: #f8d7da; color: #721C24;' 
+                    return [color] * len(row)
+                
+                styled_df_export = df_export.style.apply(style_excel, axis=1)
+
                 buffer_excel = io.BytesIO()
                 with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
-                    df_export.to_excel(writer, index=False, sheet_name='Demanda')
+                    styled_df_export.to_excel(writer, index=False, sheet_name='Demanda')
                 
                 def gerar_kml_demanda(df):
                     header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
@@ -684,10 +714,13 @@ if menu_selecionado == 'Painel Executivo':
                 kml_data = gerar_kml_demanda(df_export)
 
                 st.markdown("<br>", unsafe_allow_html=True)
+                st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome preenchidos).")
+                
+                hoje_str_file = datetime.now().strftime('%d_%m_%Y')
                 col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
                 
-                col_btn1.download_button("📥 Planilha Oficial (Excel)", data=buffer_excel.getvalue(), file_name=f"Demanda_{lev_selecionado}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-                col_btn2.download_button("🗺️ Pontos de Rota (KML)", data=kml_data, file_name=f"Demanda_{lev_selecionado}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
+                col_btn1.download_button("📥 Planilha Oficial (Excel)", data=buffer_excel.getvalue(), file_name=f"Demanda_{lev_selecionado}_{hoje_str_file}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                col_btn2.download_button("🗺️ Pontos de Rota (KML)", data=kml_data, file_name=f"Demanda_{lev_selecionado}_{hoje_str_file}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
                 if col_btn3.button("Fechar Aba de Demanda", use_container_width=True):
                     st.session_state.show_demanda = False
                     st.rerun()
@@ -698,7 +731,7 @@ if menu_selecionado == 'Painel Executivo':
                     st.rerun()
 
         st.markdown("---")
-        # --- PAINEL PRODUÇÃO DIÁRIA (Totalmente Corrigido e Limpo) ---
+        # --- PAINEL PRODUÇÃO DIÁRIA ---
         st.markdown("#### 🏆 PRODUÇÃO DIÁRIA")
         
         col_c1, col_c2 = st.columns([1, 3])
@@ -706,15 +739,14 @@ if menu_selecionado == 'Painel Executivo':
             data_filtro_conclusao = st.date_input("Filtrar por Data", value=datetime.today())
             
         with col_c2:
-            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE na extração das datas preenchidas na coluna **DATA DE LEVANTAMENTO LIST**.")
+            st.caption("Filtra e contabiliza as obras baseando-se EXCLUSIVAMENTE na extração das datas preenchidas na coluna **DATA DE LEVANTAMENTO LIST** (Ignorando qualquer Status List).")
             
         df_concluidas = df_notas_calc.copy()
         
         def safe_date_parse_robust(serie):
-            # Limpa lixo oculto, nulos e troca traços e pontos por barras
+            # Limpa formatos anormais, espaços e nulos para extrair a data pura
             s = serie.astype(str).str.strip().replace({'nan': '', 'None': '', 'NaT': '', '<NA>': '', '0': '', '': None})
             s = s.str.replace(r'[\.\-]', '/', regex=True).str.split(' ').str[0]
-            # Converte forcando os que não passarem a virar NaT
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
         if 'DATA DE LEVANTAMENTO LIST' in df_concluidas.columns:
@@ -735,7 +767,6 @@ if menu_selecionado == 'Painel Executivo':
         resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
         resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
         
-        # O layout problemático foi resolvido removendo a ProgressColumn esticada
         st.dataframe(
             resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
             use_container_width=True, hide_index=True, height=320,
