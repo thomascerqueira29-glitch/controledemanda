@@ -82,7 +82,6 @@ def update_residencias_hardcoded():
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             for lev, res in mapeamento_residencias.items():
-                # Usa UPPER e TRIM para garantir que os nomes lidos do Excel deem match perfeito no banco
                 conn.execute("UPDATE equipes SET Residencia = ? WHERE UPPER(TRIM(Levantador)) = ?", (res.upper(), lev.upper()))
             conn.commit()
     except Exception as e:
@@ -125,7 +124,6 @@ def init_business_db():
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             cursor = conn.cursor()
             
-            # Validação Tabela de Notas
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notas';")
             if not cursor.fetchone():
                 if os.path.exists('NOTAS.xlsx'):
@@ -137,7 +135,6 @@ def init_business_db():
                 else:
                     pd.DataFrame(columns=colunas_template_oficial).to_sql('notas', conn, if_exists='replace', index=False)
                     
-            # Validação Tabela de Equipes
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='equipes';")
             if not cursor.fetchone():
                 if os.path.exists('base levantador.xlsx'):
@@ -155,7 +152,6 @@ if 'db_initialized' not in st.session_state or not st.session_state.db_initializ
     init_business_db()
     ensure_residencia_column()
     update_residencias_hardcoded()
-    # Limpeza de cache obrigatória após update forçado no banco de dados
     st.session_state.db_initialized = True
     st.cache_data.clear()
 
@@ -635,7 +631,13 @@ if menu_selecionado == 'Painel Executivo':
                     
                 df_demanda['Distancia_KM'] = vectorized_haversine(res_lat, res_lon, df_demanda['Lat_Mapa'], df_demanda['Lon_Mapa'])
                 
-                df_demanda_view = df_demanda[['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']].copy()
+                # SEGURO CONTRA KEYERROR: Garantir que as colunas existam no dataframe antes do subconjunto
+                cols_view = ['PROTOCOLO', 'MUNICIPIO', 'ENDEREÇO', 'STATUS LIST', 'TIPO LIGACAO', 'Distancia_KM']
+                for col in cols_view:
+                    if col not in df_demanda.columns:
+                        df_demanda[col] = ""
+                        
+                df_demanda_view = df_demanda[cols_view].copy()
                 df_demanda_view = df_demanda_view.sort_values('Distancia_KM')
                 df_demanda_view['Distancia_KM'] = df_demanda_view['Distancia_KM'].round(1)
                 
@@ -653,12 +655,11 @@ if menu_selecionado == 'Painel Executivo':
                 def clean_str(s):
                     return s.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0.0': '0'})
 
-                cond_tipo = clean_str(df_demanda['TIPO LIGACAO'])
-                cond_nome = clean_str(df_demanda['NOME DO SOLICITANTE'])
-                cond_lat = clean_str(df_demanda['LATITUDE'])
-                cond_lon = clean_str(df_demanda['LONGITUDE'])
+                cond_tipo = clean_str(df_demanda.get('TIPO LIGACAO', pd.Series([''] * len(df_demanda))))
+                cond_nome = clean_str(df_demanda.get('NOME DO SOLICITANTE', pd.Series([''] * len(df_demanda))))
+                cond_lat = clean_str(df_demanda.get('LATITUDE', pd.Series([''] * len(df_demanda))))
+                cond_lon = clean_str(df_demanda.get('LONGITUDE', pd.Series([''] * len(df_demanda))))
 
-                # Só passa se TIPO LIGACAO != vazio/0 E NOME != vazio/0 E LAT/LON != vazio/0
                 valid_mask = (
                     (cond_tipo != '') & (cond_tipo != '0') &
                     (cond_nome != '') & (cond_nome != '0') &
@@ -668,7 +669,6 @@ if menu_selecionado == 'Painel Executivo':
 
                 df_export_base = df_demanda[valid_mask].copy().sort_values('Distancia_KM')
 
-                # Colunas Exatas da Imagem Exigida Pelo Usuario
                 cols_export_oficial = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
                                        'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
                                        'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
@@ -680,7 +680,6 @@ if menu_selecionado == 'Painel Executivo':
                         
                 df_export = df_export[cols_export_oficial]
                 
-                # APLICA ESTILO NO EXCEL IGUAL O DA TELA
                 dist_export_series = df_export_base['Distancia_KM'] 
                 
                 def style_excel(row):
@@ -691,7 +690,6 @@ if menu_selecionado == 'Painel Executivo':
                     else: color = 'background-color: #FF0000; color: white;' 
                     return [color] * len(row)
                 
-                # Aplica as cores nas colunas antes de exportar
                 styled_df_export = df_export.style.apply(style_excel, axis=1)
 
                 buffer_excel = io.BytesIO()
@@ -721,7 +719,6 @@ if menu_selecionado == 'Painel Executivo':
                 st.markdown("<br>", unsafe_allow_html=True)
                 st.info(f"⚡ **{len(df_export)} obras validadas** para exportação (Tipo Ligação, Coordenadas e Nome devidamente preenchidos na base).")
                 
-                # Nomenclatura do arquivo acompanha o dia atual
                 hoje_str_file = datetime.now().strftime('%d_%m_%Y')
                 col_btn1, col_btn2, col_btn3 = st.columns([2.5, 2.5, 4])
                 
@@ -750,11 +747,8 @@ if menu_selecionado == 'Painel Executivo':
         df_concluidas = df_notas_calc.copy()
         
         def safe_date_parse_robust(serie):
-            # Limpa formatos anormais, lixos e extrai a data pura independente do relógio do Excel
             s = serie.astype(str).str.strip().str.upper().replace({'NAN': '', 'NONE': '', '<NA>': '', '0': '', 'NAT': ''})
-            # Puxa só a primeira parte ignorando Timestamp
             s = s.str.split(' ').str[0]
-            # Troca todos os marcadores por /
             s = s.str.replace(r'[\.\-]', '/', regex=True)
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
@@ -776,7 +770,6 @@ if menu_selecionado == 'Painel Executivo':
         resumo_concluidas['Equipe'] = resumo_concluidas['Levantador'].map(mapa_lev_equipe).fillna('SEM EQUIPE')
         resumo_concluidas = resumo_concluidas.sort_values('Obras_Concluidas', ascending=False)
         
-        # Coluna convertida em Número para não esticar a interface (antiga barra de progresso do visual)
         st.dataframe(
             resumo_concluidas[['Levantador', 'Equipe', 'Obras_Concluidas']], 
             use_container_width=True, hide_index=True, height=320,
@@ -1275,6 +1268,7 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
+    # Placeholders que serão alimentados pelos cálculos após a tabela
     c1, c2, c3, c4 = st.columns(4)
     ph_mun = c1.empty()
     ph_com = c2.empty()
