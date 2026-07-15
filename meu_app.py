@@ -71,10 +71,11 @@ init_iam()
 # -----------------------------------------------------------------------------
 def init_business_db():
     """Inicializa as tabelas de dados apenas se for uma sessão virgem"""
+    # Adicionada a nova coluna DATA DE LEVANTAMENTO LIST
     colunas_template_oficial = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
         'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 
-        'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
+        'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 
         'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 
         'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
     ]
@@ -238,7 +239,7 @@ def auto_assign_levantador(df_notas, df_equipes):
     if 'MUNICIPIO' in df_notas.columns:
         df_notas.loc[mask_sem_levantador, 'LEVANTADOR'] = df_notas.loc[mask_sem_levantador, 'MUNICIPIO'].map(mapa_levantadores).fillna(SEM_LEVANTADOR)
     
-    for col in ['STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 'STATUS SISCO', 'DATA CRIAÇAO SISCO', 'DATA DE VENCIMENTO']:
+    for col in ['STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'STATUS SISCO', 'DATA CRIAÇAO SISCO', 'DATA DE VENCIMENTO']:
         if col not in df_notas.columns: df_notas[col] = ""
             
     df_notas['STATUS LIST'] = df_notas['STATUS LIST'].astype(str).str.upper().str.strip()
@@ -428,6 +429,8 @@ with st.sidebar:
     if st.session_state.perfil_usuario == "ADMIN":
         opcoes_menu.insert(2, 'Carga de Lotes')
         icones_menu.insert(2, 'cloud-upload-fill')
+        opcoes_menu.insert(3, 'Gerenciamento de Acessos')
+        icones_menu.insert(3, 'shield-lock-fill')
         
     menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
     
@@ -452,67 +455,6 @@ with st.sidebar:
         filtro_map_sap = st.selectbox("Status SAP:", op_map_sap, key='map_sap')
         op_map_list = sorted([str(x) for x in df_notas_calc.get('STATUS LIST', pd.Series()).dropna().unique() if str(x).strip() != ""])
         filtro_map_list = st.multiselect("Status List (Vazio = Mostrar Todos):", options=op_map_list, key='map_list')
-
-    if st.session_state.perfil_usuario == "ADMIN":
-        st.markdown("---")
-        with st.expander("⚙️ Gerenciar Acessos"):
-            st.markdown("#### Usuários do Sistema")
-            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                df_users = pd.read_sql("SELECT username, role, last_active FROM usuarios", conn)
-            
-            df_users['Remover'] = False
-            
-            edited_users = st.data_editor(
-                df_users, 
-                column_config={
-                    "username": st.column_config.TextColumn("Usuário", disabled=True),
-                    "last_active": st.column_config.TextColumn("Último Acesso", disabled=True),
-                    "role": st.column_config.SelectboxColumn("Perfil", options=["ADMIN", "LEITURA"], required=True),
-                    "Remover": st.column_config.CheckboxColumn("Apagar", default=False)
-                },
-                hide_index=True,
-                key="user_editor"
-            )
-            
-            if st.button("Salvar Alterações de Acesso", type="primary", use_container_width=True):
-                with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                    for _, row in edited_users.iterrows():
-                        user = row['username']
-                        new_role = row['role']
-                        to_delete = row['Remover']
-                        
-                        if to_delete:
-                            if user != st.session_state.usuario_logado:
-                                conn.execute("DELETE FROM usuarios WHERE username=?", (user,))
-                                registrar_auditoria("Exclusão de Usuário", f"O Administrador removeu o usuário {user}.")
-                            else:
-                                st.warning("Você não pode apagar seu próprio usuário logado.")
-                        else:
-                            conn.execute("UPDATE usuarios SET role=? WHERE username=?", (new_role, user))
-                    conn.commit()
-                st.success("Configurações atualizadas com sucesso!")
-                st.rerun()
-
-            st.markdown("---")
-            st.markdown("#### Criar Novo Usuário")
-            with st.form("new_user_form"):
-                col_n1, col_n2 = st.columns(2)
-                new_user = col_n1.text_input("Novo Usuário").strip().upper()
-                new_pass = col_n2.text_input("Senha", type="password")
-                new_role = st.selectbox("Perfil de Acesso", ["LEITURA", "ADMIN"])
-                
-                if st.form_submit_button("Criar Conta", use_container_width=True):
-                    if new_user and new_pass:
-                        try:
-                            with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                                conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", (new_user, new_pass, new_role))
-                            st.success(f"Conta {new_user} criada!")
-                            registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} ({new_role}).")
-                            st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("Usuário já existe no banco de dados.")
-                    else:
-                        st.warning("Preencha todos os campos para continuar.")
 
 # -----------------------------------------------------------------------------
 # VISÃO 1: PAINEL EXECUTIVO E MAPAS
@@ -577,7 +519,6 @@ if menu_selecionado == 'Painel Executivo':
                                     df_livres['Distancia_KM'] = vectorized_haversine(tech_coords['Latitude'], tech_coords['Longitude'], df_livres['Lat_Mapa'], df_livres['Lon_Mapa'])
                                     df_livres = df_livres.sort_values('Distancia_KM')
 
-                                    # CORREÇÃO: Usando cópia para evitar travamentos de cache mutável
                                     df_notas_update = df_notas_db.copy()
                                     qtd_atribuir = min(saldo_necessario, len(df_livres))
                                     indices_para_mudar = df_livres.head(qtd_atribuir).index
@@ -595,7 +536,6 @@ if menu_selecionado == 'Painel Executivo':
                 st.button("🔍 Ver Base de Obras (Governança)", on_click=filtrar_levantador_governanca, args=(lev_selecionado,), use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-        # NOVO PAINEL: Desempenho e Levantamentos Concluídos
         st.markdown("---")
         st.markdown("#### 🏆 Obras em Levantamento Concluído")
         
@@ -604,7 +544,7 @@ if menu_selecionado == 'Painel Executivo':
             data_filtro_conclusao = st.date_input("Filtrar por Data de Conclusão", value=datetime.today())
             
         with col_c2:
-            st.caption("Filtra e contabiliza as obras com o **STATUS LIST** igual a `LEVANTAMENTO CONCLUIDO` baseando-se na data informada na coluna correspondente ao envio.")
+            st.caption("Filtra e contabiliza as obras baseando-se no preenchimento da coluna **DATA DE LEVANTAMENTO LIST** de acordo com o novo formato da planilha.")
             
         df_concluidas = df_notas_calc[df_notas_calc['STATUS LIST'].astype(str).str.upper().str.strip() == 'LEVANTAMENTO CONCLUIDO'].copy()
         
@@ -613,8 +553,9 @@ if menu_selecionado == 'Painel Executivo':
             s = s.str.replace('.', '/', regex=False).str.replace('-', '/', regex=False).str.split(' ').str[0]
             return pd.to_datetime(s, errors='coerce', dayfirst=True).dt.date
             
-        # Utilizamos a DATA ENVIO A CAMPO - LIST para bater com a data vigente do status
-        df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA ENVIO A CAMPO - LIST'])
+        # UTILIZANDO A NOVA COLUNA DO TEMPLATE (DATA DE LEVANTAMENTO LIST)
+        df_concluidas['DATA_REF'] = safe_date_parse(df_concluidas['DATA DE LEVANTAMENTO LIST'])
+            
         df_concluidas_dia = df_concluidas[df_concluidas['DATA_REF'] == data_filtro_conclusao]
         
         contagem_concluidas = df_concluidas_dia['LEVANTADOR'].value_counts().reset_index()
@@ -679,7 +620,6 @@ if menu_selecionado == 'Painel Executivo':
 
         st.markdown("---")
         
-        # Filtros e geração do Map View
         df_notas_mapa_view = df_notas_calc.copy()
         if filtro_map_lev != "TODOS" and 'LEVANTADOR' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['LEVANTADOR'] == filtro_map_lev]
         if filtro_map_reg != "TODOS" and 'REGIONAL' in df_notas_mapa_view: df_notas_mapa_view = df_notas_mapa_view[df_notas_mapa_view['REGIONAL'] == filtro_map_reg]
@@ -689,8 +629,6 @@ if menu_selecionado == 'Painel Executivo':
 
         col_m1, col_m2 = st.columns([8, 2])
         col_m1.markdown("### 🗺️ Roteirização e Camadas Espaciais Georreferenciadas")
-        
-        # CORREÇÃO: Contador de obras nos filtros exibido antes do mapa
         col_m1.info(f"📍 **Obras localizadas no mapa:** {len(df_notas_mapa_view)}")
         
         camada_upload = col_m2.file_uploader("Sobrepor Camada (KML/KMZ/GeoJSON)", type=['geojson', 'kml', 'kmz'], label_visibility="collapsed")
@@ -906,7 +844,8 @@ elif menu_selecionado == 'Carga de Lotes':
         "DATA CRIAÇAO SISCO": pa.Column(pa.String, coerce=True, required=False, nullable=True),
         "TIPO LIGACAO": pa.Column(pa.String, coerce=True, required=False, nullable=True),
         "STATUS SAP": pa.Column(pa.String, coerce=True, required=False, nullable=True),
-        "ID SISCO": pa.Column(pa.String, coerce=True, required=False, nullable=True)
+        "ID SISCO": pa.Column(pa.String, coerce=True, required=False, nullable=True),
+        "DATA DE LEVANTAMENTO LIST": pa.Column(pa.String, coerce=True, required=False, nullable=True) # Validado no envio
     }, strict=False)
 
     arquivo_upload = st.file_uploader("Selecione o arquivo de demandas", type=["csv", "xlsx"])
@@ -940,7 +879,77 @@ elif menu_selecionado == 'Carga de Lotes':
             st.error(f"Erro inesperado de leitura do arquivo físico: {e}")
 
 # -----------------------------------------------------------------------------
-# VISÃO 4: SIMULADOR DE ALOCAÇÃO
+# VISÃO 4: GERENCIAMENTO DE ACESSOS (SOMENTE ADMIN)
+# -----------------------------------------------------------------------------
+elif menu_selecionado == 'Gerenciamento de Acessos':
+    if st.session_state.perfil_usuario != "ADMIN":
+        st.error("Acesso Negado. Módulo restrito à Coordenação.")
+        st.stop()
+        
+    st.markdown("### 🔐 Gerenciamento de Acessos")
+    
+    st.markdown("#### Usuários do Sistema")
+    # Ponto Crítico de Correção: Removida a seleção da coluna 'last_active' para o data_editor.
+    # O Heartbeat atualiza o last_active no banco constantemente, forçando a tabela a piscar e perder a seleção se fosse mantida.
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        df_users = pd.read_sql("SELECT username, role FROM usuarios", conn)
+    
+    df_users['Remover'] = False
+    
+    edited_users = st.data_editor(
+        df_users, 
+        column_config={
+            "username": st.column_config.TextColumn("Usuário", disabled=True),
+            "role": st.column_config.SelectboxColumn("Perfil", options=["ADMIN", "LEITURA"], required=True),
+            "Remover": st.column_config.CheckboxColumn("Apagar", default=False)
+        },
+        hide_index=True,
+        key="user_editor",
+        use_container_width=True
+    )
+    
+    if st.button("Salvar Alterações de Acesso", type="primary"):
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            for _, row in edited_users.iterrows():
+                user = row['username']
+                new_role = row['role']
+                to_delete = row['Remover']
+                
+                if to_delete:
+                    if user != st.session_state.usuario_logado:
+                        conn.execute("DELETE FROM usuarios WHERE username=?", (user,))
+                        registrar_auditoria("Exclusão de Usuário", f"O Administrador removeu o usuário {user}.")
+                    else:
+                        st.warning("Você não pode apagar seu próprio usuário logado.")
+                else:
+                    conn.execute("UPDATE usuarios SET role=? WHERE username=?", (new_role, user))
+            conn.commit()
+        st.success("Configurações atualizadas com sucesso!")
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### Criar Novo Usuário")
+    with st.form("new_user_form"):
+        col_n1, col_n2 = st.columns(2)
+        new_user = col_n1.text_input("Novo Usuário").strip().upper()
+        new_pass = col_n2.text_input("Senha", type="password")
+        new_role = st.selectbox("Perfil de Acesso", ["LEITURA", "ADMIN"])
+        
+        if st.form_submit_button("Criar Conta", use_container_width=True):
+            if new_user and new_pass:
+                try:
+                    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                        conn.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", (new_user, new_pass, new_role))
+                    st.success(f"Conta {new_user} criada!")
+                    registrar_auditoria("Gerenciamento de Acesso", f"O Administrador adicionou o usuário {new_user} ({new_role}).")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Usuário já existe no banco de dados.")
+            else:
+                st.warning("Preencha todos os campos para continuar.")
+
+# -----------------------------------------------------------------------------
+# VISÃO 5: SIMULADOR DE ALOCAÇÃO
 # -----------------------------------------------------------------------------
 elif menu_selecionado == 'Simulador de Alocação':
     st.markdown("""
@@ -964,14 +973,12 @@ elif menu_selecionado == 'Simulador de Alocação':
     df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
     df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
 
-    total_mun, total_com, total_sem = int(df_sim['Total Municípios'].sum()), int(df_sim['Com Levantador'].sum()), int(df_sim['Sem Levantador'].sum())
-    cob_atual = (total_com / total_mun * 100) if total_mun > 0 else 0
-
+    # Injeta Placeholders Visualmente - Serão Preenchidos APÓS os cálculos na parte debaixo do código
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Total Municípios</b><br><span style='font-size:24px'>{total_mun}</span></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com}</span></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem}</span></div>", unsafe_allow_html=True)
-    c4.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual:.1f}%</span></div>", unsafe_allow_html=True)
+    ph_mun = c1.empty()
+    ph_com = c2.empty()
+    ph_sem = c3.empty()
+    ph_cob = c4.empty()
     
     st.write("")
     st.markdown("<h4 style='background-color: #333; color: white; padding: 5px 10px; border-radius: 5px;'>Dados por Regional (Edite os Novos Levantadores)</h4>", unsafe_allow_html=True)
@@ -989,10 +996,23 @@ elif menu_selecionado == 'Simulador de Alocação':
 
     df_edited = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
 
+    # Cálculos Matemáticos Pós-Edição da Tabela
     df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
     df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
     df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
     df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
+    
+    # Atualiza Dinamicamente os Cards do Topo preenchendo os espaços vazios com os novos valores
+    total_mun_novo = int(df_edited['Total Municípios'].sum())
+    total_com_novo = int(df_edited['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum())
+    total_sem_novo = int(df_edited['Gap Restante'].sum())
+    cob_atual_nova = (total_com_novo / total_mun_novo * 100) if total_mun_novo > 0 else 0
+
+    ph_mun.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Total Municípios</b><br><span style='font-size:24px'>{total_mun_novo}</span></div>", unsafe_allow_html=True)
+    ph_com.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com_novo}</span></div>", unsafe_allow_html=True)
+    ph_sem.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem_novo}</span></div>", unsafe_allow_html=True)
+    ph_cob.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual_nova:.1f}%</span></div>", unsafe_allow_html=True)
+
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Projeção Atualizada e Representatividade</h4>", unsafe_allow_html=True)
     col_proj_tab, col_proj_chart = st.columns([2.5, 1.5])
@@ -1035,13 +1055,18 @@ elif menu_selecionado == 'Simulador de Alocação':
             st.success("✅ 100% de Cobertura Atingida!")
 
     st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Resumo de Impacto</h4>", unsafe_allow_html=True)
+    
+    # Recalculando cob_atual original apenas para comparar a Variação (Antes vs Depois)
+    total_mun_orig, total_com_orig = int(df_sim['Total Municípios'].sum()), int(df_sim['Com Levantador'].sum())
+    cob_atual_orig = (total_com_orig / total_mun_orig * 100) if total_mun_orig > 0 else 0
+    
     total_novos_sum, total_gap_sum, total_cob_sum = df_proj['Novos Levantadores'].sum(), df_proj['Gap Restante'].sum(), float(linha_total['Cobertura %'].iloc[0])
     
     df_impacto = pd.DataFrame({
         "Métrica": ["Novos Levantadores", "Municípios Sem Levantador", "Cobertura Estadual"],
-        "Atual": [linha_total['Levantadores Atuais'].iloc[0], linha_total['Sem Levantador'].iloc[0], f"{cob_atual:.1f}%"],
+        "Atual": [linha_total['Levantadores Atuais'].iloc[0], linha_total['Sem Levantador'].iloc[0], f"{cob_atual_orig:.1f}%"],
         "Após Contratações": [linha_total['Levantadores Atuais'].iloc[0] + total_novos_sum, total_gap_sum, f"{total_cob_sum:.1f}%"],
-        "Variação": [f"+{total_novos_sum}" if total_novos_sum > 0 else "0", total_gap_sum - linha_total['Sem Levantador'].iloc[0], f"+{(total_cob_sum - cob_atual):.1f}%" if (total_cob_sum - cob_atual) > 0 else "0.0%"]
+        "Variação": [f"+{total_novos_sum}" if total_novos_sum > 0 else "0", total_gap_sum - linha_total['Sem Levantador'].iloc[0], f"+{(total_cob_sum - cob_atual_orig):.1f}%" if (total_cob_sum - cob_atual_orig) > 0 else "0.0%"]
     })
     
     def style_variacao(v):
