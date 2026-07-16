@@ -12,10 +12,10 @@ import tempfile
 import geopandas as gpd
 import zipfile
 import logging
+import hashlib
 import shutil
 import html
 import re
-import hashlib
 from datetime import datetime, timedelta
 
 # =============================================================================
@@ -78,6 +78,19 @@ def sync_residencias_banco():
                 if 'Residencia' not in [col[1] for col in cursor.fetchall()]:
                     conn.execute("ALTER TABLE equipes ADD COLUMN Residencia TEXT")
                 conn.commit()
+                
+            map_hardcoded = {
+                "ARGELL CARLOS LOPES AZEVEDO": "SANTA INES", "EDELSON SOUSA GUIMARÃES": "CHAPADINHA",
+                "FÁBIO ALTINO DE SOUZA JUNIOR": "IMPERATRIZ", "ISRAEL GARRAS VERAS": "SAO LUIS",
+                "JEFFERSON COSTA JANSEM": "SITIO NOVO", "JEIAN CLAUDIO NAVA PEREIRA": "AÇAILANDIA",
+                "JOSÉ ANTÔNIO LEITE ALVES": "PERI MIRIM", "LUÍS FERREIRA DE ARAUJO": "TIMON",
+                "LUIZ ALESSANDRO OLIVEIRA CASTRO CONRADO DA SILVA": "BARRA DO CORDA", "MAILSON DA SILVA BARBOSA": "BERNARDO DO MEARIM",
+                "MARCONE DE OLIVEIRA FERREIRA": "BACABAL", "MARCOS DA SILVA NEVES": "BARREIRINHAS",
+                "OSVALDO RABELO DIAS JUNIOR": "APICUM-ACU", "RAIMUNDO JHONES ASSUNÇÃO DA LUZ": "COROATA"
+            }
+            for lev, res in map_hardcoded.items():
+                conn.execute("UPDATE equipes SET Residencia = ? WHERE UPPER(TRIM(Levantador)) = ?", (res.upper(), lev.upper()))
+            conn.commit()
     except Exception as e:
         logging.error(f"Erro de sincronização de banco: {e}")
 
@@ -193,37 +206,14 @@ def load_core_data():
     
     return df_notas, df_equipes, resumo_lev, resumo_lev[resumo_lev['Total_Obras_Real'] < 45]['Levantador'].tolist(), todos_lev, mapa_lat, mapa_lon, mun_por_lev
 
-def save_notas_to_db(df_notas_atualizado, backup=False, acao_auditoria="Operação no Banco de Dados"):
-    try:
-        df_notas_limpo = df_notas_atualizado.copy().fillna("").astype(str).replace({"nan": "", "NaT": "", "None": "", "<NA>": ""})
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_notas_limpo.to_sql('notas_temp', conn, if_exists='replace', index=False)
-            conn.execute("BEGIN TRANSACTION;")
-            conn.execute("DROP TABLE IF EXISTS notas;")
-            conn.execute("ALTER TABLE notas_temp RENAME TO notas;")
-            conn.commit()
-            
-            # Recria índices para garantir a performance alta
-            try:
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_lev ON notas (LEVANTADOR);")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_reg ON notas (REGIONAL);")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_mun ON notas (MUNICIPIO);")
-            except: pass
-            
-        registrar_auditoria(acao_auditoria, f"Tabela NOTAS atualizada. Volume final: {len(df_notas_limpo)} registros.")
-        load_core_data.clear()
-        return True
-    except sqlite3.Error as e:
-        st.error(f"Falha Crítica no Banco de Dados: {e}")
-        return False
-
 # =============================================================================
 # ENGINE 3: RENDERIZADOR WEBGL (PYDECK - ALTA PERFORMANCE)
 # =============================================================================
 def render_pydeck_map(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp):
-    """Substitui o Folium por WebGL nativo. Renderiza 100k+ pontos a 60FPS."""
+    """Substitui o Folium por WebGL nativo. Renderiza 100k pontos sem travar."""
     layers = []
     
+    # Camada 1: Cidades/Bases das Equipes (Verde)
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy()
         df_eq['Lat'] = pd.to_numeric(df_eq['Latitude'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -235,13 +225,15 @@ def render_pydeck_map(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_ca
             get_color=[0, 255, 0, 200], get_radius=3000, pickable=True
         ))
 
+    # Camada 2: Obras na Fila e Ativas
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa']).copy()
+        # Jitter para evitar sobreposição total
         df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
         df_ob['Tooltip'] = "Protocolo: " + df_ob['PROTOCOLO'].astype(str) + "\nLevantador: " + df_ob['LEVANTADOR'].astype(str)
         
-        # Otimização Vetorial de cor Python
+        # Vetorização de cor rápida em lista
         df_ob['Color_RGBA'] = [
             [255, 165, 0, 200] if lev == SEM_LEVANTADOR else 
             ([255, 0, 0, 200] if lev in criticos_tuple else [0, 123, 255, 200])
@@ -253,6 +245,7 @@ def render_pydeck_map(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_ca
             get_color="Color_RGBA", get_radius=800, pickable=True
         ))
 
+    # Camada 3: Geometria de Projetos KMZ/KML extraídos em alta velocidade
     if caminho_camada_temp:
         gdf_lines, gdf_points, _ = parse_kmz_advanced(caminho_camada_temp)
         if not gdf_lines.empty:
@@ -268,7 +261,6 @@ def render_pydeck_map(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_ca
         map_style=pdk.map_styles.SATELLITE
     )
     st.pydeck_chart(r, use_container_width=True)
-
 
 # =============================================================================
 # MODULOS DA INTERFACE DE USUÁRIO (TELAS E ROTAS)
@@ -485,19 +477,39 @@ def view_painel_executivo():
         else:
             st.warning("Fila vazia para este levantador.")
             if st.button("Fechar"): st.session_state.show_demanda = False; st.rerun()
+            
+    # Gráficos SLA
+    st.markdown("---")
+    c_g1, c_g2 = st.columns(2)
+    with c_g1:
+        if not municipios_por_levantador.empty: st.plotly_chart(px.bar(municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Municípios/Levantador", color_discrete_sequence=['#4A4F7C']), use_container_width=True)
+    with c_g2:
+        try:
+            df_sla = calcular_sla_vetorizado(df_notas_db)
+            df_sla = df_sla[df_sla['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
+            if not df_sla.empty:
+                df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
+                df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
+                st.plotly_chart(px.bar(df_g.sort_values(['REGIONAL', 'Status_SLA']), x='REGIONAL', y='Qtd', color='Status_SLA', title="SLA Regional", barmode='group', color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'}), use_container_width=True)
+        except Exception: pass
 
     # PyDeck Map (Performance Extrema WebGL)
     st.markdown("---")
     st.markdown("### 🗺️ Roteirização Geoespacial (WebGL GPU)")
     col_f1, col_f2, col_f3 = st.columns(3)
-    f_lev = col_f1.selectbox("Filtro Levantador:", ["TODOS"] + sorted(df_notas_db['LEVANTADOR'].unique()))
-    f_reg = col_f2.selectbox("Filtro Regional:", ["TODOS"] + sorted(df_notas_db['REGIONAL'].unique()))
-    f_mun = col_f3.selectbox("Filtro Município:", ["TODOS"] + sorted(df_notas_db['MUNICIPIO'].unique()))
+    
+    op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('LEVANTADOR', pd.Series()).dropna().unique()])
+    op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('REGIONAL', pd.Series()).dropna().unique()])
+    op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db.get('MUNICIPIO', pd.Series()).dropna().unique()])
+
+    f_lev = col_f1.selectbox("Filtro Levantador:", op_map_lev)
+    f_reg = col_f2.selectbox("Filtro Regional:", op_map_reg)
+    f_mun = col_f3.selectbox("Filtro Município:", op_map_mun)
     
     df_m = df_notas_db.copy()
-    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'] == f_lev]
-    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'] == f_reg]
-    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'] == f_mun]
+    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str).str.upper() == f_lev]
+    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str).str.upper() == f_reg]
+    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str).str.upper() == f_mun]
     
     st.info(f"📍 Renderizando {len(df_m)} obras via PyDeck Hardware Acceleration.")
     camada = st.file_uploader("Sobrepor KML/KMZ Rápido", type=['kml', 'kmz'], label_visibility="collapsed")
@@ -507,7 +519,7 @@ def view_painel_executivo():
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as tmp: tmp.write(camada.getvalue()); camada_p = tmp.name
 
     df_e = df_equipes_db.copy()
-    if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].str.upper() == f_lev]
+    if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     render_pydeck_map(df_m, df_e, tuple(levantadores_criticos), camada_p)
 
 # --- ABA 2: GOVERNANÇA E FILTROS ---
@@ -623,39 +635,6 @@ def view_simulador():
 # ROTEAMENTO GLOBAL (LAZY EXECUTION)
 # -----------------------------------------------------------------------------
 check_login()
-
-with st.sidebar:
-    st.markdown("### 👤 Portal NIP")
-    st.caption(f"Usuário: **{st.session_state.usuario_logado}**")
-    st.caption(f"Perfil: **{st.session_state.perfil_usuario}**")
-    
-    if st.button("🚪 Sair / Deslogar", use_container_width=True):
-        with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
-            conn.commit()
-        st.session_state.usuario_logado = None
-        st.session_state.perfil_usuario = None
-        st.rerun()
-
-    st.markdown("---")
-    
-    opcoes_menu = ['Painel Executivo', 'Busca e Governança', 'Simulador de Alocação']
-    icones_menu = ['pie-chart-fill', 'sliders', 'calculator-fill']
-    
-    if st.session_state.perfil_usuario == "ADMIN":
-        opcoes_menu.insert(1, 'Carga de Lotes')
-        icones_menu.insert(1, 'cloud-upload-fill')
-        opcoes_menu.insert(2, 'Levantadores')
-        icones_menu.insert(2, 'person-vcard-fill')
-        opcoes_menu.insert(3, 'Gerenciamento de Acessos')
-        icones_menu.insert(3, 'shield-lock-fill')
-        
-    menu_items = [sac.MenuItem(opcoes_menu[i], icon=icones_menu[i]) for i in range(len(opcoes_menu))]
-    
-    menu_selecionado = sac.menu(menu_items, index=st.session_state.menu_idx, format_func='title', size='md')
-    
-    if menu_selecionado in opcoes_menu:
-        st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
 if menu_selecionado == 'Painel Executivo': view_painel_executivo()
 elif menu_selecionado == 'Busca e Governança': view_governanca()
