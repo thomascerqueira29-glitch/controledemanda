@@ -45,7 +45,12 @@ def hash_senha(senha):
 def init_databases():
     """Cria tabelas base, injeção do ADMIN e cria índices de alta performance."""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT, role TEXT, last_active TEXT)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+        try:
+            conn.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
+        except sqlite3.OperationalError:
+            pass
+            
         conn.execute('''CREATE TABLE IF NOT EXISTS auditoria_log (id INTEGER PRIMARY KEY AUTOINCREMENT, usuario TEXT, data_hora TEXT, acao TEXT, detalhes TEXT)''')
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('THOMAS', ?, 'ADMIN')", (hash_senha('admin123'),))
         conn.execute("INSERT OR IGNORE INTO usuarios (username, password, role) VALUES ('VISITANTE', ?, 'LEITURA')", (hash_senha('123'),))
@@ -88,14 +93,12 @@ def init_business_db():
                 if os.path.exists('base levantador.xlsx'): pd.read_excel('base levantador.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 elif os.path.exists('EQUIPES.xlsx'): pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 else: pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
-        st.session_state.db_initialized = True
     except Exception as e: pass
 
-if 'db_initialized' not in st.session_state:
-    init_databases()
-    init_business_db()
-    sync_residencias_banco()
-    st.session_state.db_initialized = True
+# Chamada Universal para blindar contra instabilidades do servidor Cloud
+init_databases()
+init_business_db()
+sync_residencias_banco()
 
 def registrar_auditoria(acao, detalhes):
     try:
@@ -303,20 +306,24 @@ def check_login():
                 username = st.text_input("Usuário").strip().upper()
                 password = st.text_input("Senha", type="password")
                 if st.form_submit_button("Autenticar", type="primary", use_container_width=True):
-                    with sqlite3.connect(DB_PATH, timeout=10) as conn:
-                        result = conn.execute("SELECT password, role FROM usuarios WHERE username=?", (username,)).fetchone()
-                        if result:
-                            db_pwd, role = result
-                            input_hash = hash_senha(password)
-                            if db_pwd == input_hash or db_pwd == password:
-                                if db_pwd == password: conn.execute("UPDATE usuarios SET password=? WHERE username=?", (input_hash, username))
-                                st.session_state.usuario_logado = username
-                                st.session_state.perfil_usuario = role
-                                conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username))
-                                conn.commit()
-                                st.rerun()
-                            else: st.error("Credenciais inválidas.")
-                        else: st.error("Acesso revogado ou inexistente.")
+                    try:
+                        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+                            result = conn.execute("SELECT password, role FROM usuarios WHERE username=?", (username,)).fetchone()
+                            if result:
+                                db_pwd, role = result
+                                input_hash = hash_senha(password)
+                                if db_pwd == input_hash or db_pwd == password:
+                                    if db_pwd == password: conn.execute("UPDATE usuarios SET password=? WHERE username=?", (input_hash, username))
+                                    st.session_state.usuario_logado = username
+                                    st.session_state.perfil_usuario = role
+                                    conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username))
+                                    conn.commit()
+                                    st.rerun()
+                                else: st.error("Credenciais inválidas.")
+                            else: st.error("Acesso revogado ou inexistente.")
+                    except Exception as e:
+                        st.error(f"Erro ao acessar banco de dados de login: {e}")
+            st.info("💡 **Aviso:** Insira suas credenciais corporativas.")
         st.stop()
         
     if st.session_state.get('perfil_usuario') != 'ADMIN':
@@ -450,7 +457,6 @@ def view_painel_executivo():
             
             st.button("🔍 Ver Base", on_click=filtrar_levantador_governanca, args=(lev_sel,), use_container_width=True)
             
-    # Geração de Demanda Otimizada (Painel Interativo)
     if st.session_state.get('show_demanda', False):
         st.markdown("---")
         st.markdown(f"#### 📋 Gerador de Demanda - {lev_sel}")
@@ -493,7 +499,6 @@ def view_painel_executivo():
             st.warning("Fila vazia para este levantador.")
             if st.button("Fechar"): st.session_state.show_demanda = False; st.rerun()
 
-    # PyDeck Map (Performance Extrema WebGL)
     st.markdown("---")
     st.markdown("### 🗺️ Roteirização Geoespacial (WebGL GPU)")
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -507,9 +512,9 @@ def view_painel_executivo():
     f_mun = col_f3.selectbox("Filtro Município:", op_map_mun)
     
     df_m = df_notas_db.copy()
-    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'] == f_lev]
-    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'] == f_reg]
-    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'] == f_mun]
+    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str) == f_lev]
+    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
+    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str) == f_mun]
     
     st.info(f"📍 Renderizando {len(df_m)} obras via PyDeck Hardware Acceleration.")
     camada = st.file_uploader("Sobrepor KML/KMZ Rápido", type=['kml', 'kmz'], label_visibility="collapsed")
@@ -519,7 +524,7 @@ def view_painel_executivo():
         with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as tmp: tmp.write(camada.getvalue()); camada_p = tmp.name
 
     df_e = df_equipes_db.copy()
-    if f_lev != "TODOS": df_e = df_e[df_e['Levantador'] == f_lev]
+    if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     render_pydeck_map(df_m, df_e, tuple(levantadores_criticos), camada_p)
 
 # --- ABA 2: GOVERNANÇA E FILTROS ---
@@ -589,7 +594,6 @@ def view_levantadores():
     
     with sqlite3.connect(DB_PATH, timeout=10) as conn: df_eq = pd.read_sql("SELECT * FROM equipes", conn)
     
-    # Prevenção Absoluta contra KeyError
     for col in ['Levantador', 'Equipe', 'Residencia', 'Município']:
         if col not in df_eq.columns: df_eq[col] = ""
         
@@ -615,7 +619,14 @@ def view_levantadores():
 def view_acessos():
     if st.session_state.perfil_usuario != "ADMIN": st.error("Restrito."); return
     st.markdown("### 🔐 Controle de Acesso (SHA-256)")
-    with sqlite3.connect(DB_PATH, timeout=10) as conn: df_usr = pd.read_sql("SELECT username, role FROM usuarios", conn)
+    
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn: 
+            df_usr = pd.read_sql("SELECT username, role FROM usuarios", conn)
+    except Exception as e:
+        st.error(f"Erro ao conectar ao banco de segurança. Tente atualizar a página. ({e})")
+        return
+        
     df_usr['Apagar'] = False
     
     ed_usr = st.data_editor(df_usr, hide_index=True, use_container_width=True, column_config={"username": st.column_config.TextColumn(disabled=True), "role": st.column_config.SelectboxColumn(options=["ADMIN", "LEITURA"])})
