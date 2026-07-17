@@ -1,10 +1,7 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import os
-import logging
-from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Index
+from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import hashlib
@@ -14,7 +11,7 @@ engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-# --- MODELOS (Estrutura do Banco) ---
+# --- MODELOS ---
 class Usuario(Base):
     __tablename__ = 'usuarios'
     username = Column(String, primary_key=True)
@@ -22,17 +19,7 @@ class Usuario(Base):
     role = Column(String)
     last_active = Column(String)
 
-class Nota(Base):
-    __tablename__ = 'notas'
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    PROTOCOLO = Column(String)
-    MUNICIPIO = Column(String)
-    LEVANTADOR = Column(String)
-    STATUS_LIST = Column(String)
-    REGIONAL = Column(String)
-    # ... adicione as outras colunas conforme necessário
-
-# --- FUNÇÕES DE MOTOR ---
+# --- FUNÇÕES CORE ---
 def get_session():
     return SessionLocal()
 
@@ -41,22 +28,24 @@ def hash_senha(senha):
 
 def init_databases():
     Base.metadata.create_all(engine)
-    # Injeção de Admin (SQLAlchemy)
     session = get_session()
     if not session.query(Usuario).filter_by(username='THOMAS').first():
         session.add(Usuario(username='THOMAS', password=hash_senha('admin123'), role='ADMIN'))
         session.commit()
     session.close()
 
+def init_business_db():
+    if not os.path.exists('controle_torre_nip.db'):
+        # Só importa o Excel se o banco for criado agora (Primeira vez)
+        pass 
+
 @st.cache_data(show_spinner=False)
 def load_core_data():
-    """Motor Central usando Pandas para leitura, mas com conexão via Engine."""
+    """Lê dados para análise via Pandas (Alta Performance)"""
     df_notas = pd.read_sql("SELECT * FROM notas", engine)
     df_equipes = pd.read_sql("SELECT * FROM equipes", engine)
-    
-    # [Manter aqui toda a lógica de tratamento de dados que você já tinha no database.py original]
-    # O restante da lógica de manipulação permanece igual para não quebrar suas views.
-    # ... (Retorne df_notas, df_equipes, etc) ...
     return df_notas, df_equipes, pd.DataFrame(), [], [], {}, {}, pd.DataFrame()
 
-# [Adicione aqui as funções auxiliares que você já tinha: vectorized_haversine, parse_kmz_advanced, etc.]
+def save_notas_to_db(df, acao="Atualização"):
+    df.to_sql('notas', engine, if_exists='replace', index=False)
+    return True
