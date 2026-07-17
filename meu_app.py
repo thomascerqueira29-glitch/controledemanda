@@ -74,7 +74,6 @@ if st.session_state.usuario_logado is None:
                                 st.session_state.perfil_usuario = role
                                 
                                 if lembrar_me:
-                                    # CORREÇÃO: Chaves únicas para evitar colisão no set()
                                     cookie_manager.set("nip_auth_user", username, expires_at=datetime.now() + timedelta(days=30), key="set_user")
                                     cookie_manager.set("nip_auth_role", role, expires_at=datetime.now() + timedelta(days=30), key="set_role")
                                 
@@ -112,9 +111,17 @@ with st.sidebar:
         st.session_state.usuario_logado = None
         st.session_state.perfil_usuario = None
         
-        # CORREÇÃO: Chaves únicas para evitar colisão no delete()
-        cookie_manager.delete("nip_auth_user", key="del_user")
-        cookie_manager.delete("nip_auth_role", key="del_role")
+        # CORREÇÃO: Tenta apagar os cookies, mas ignora graciosamente se eles não existirem (KeyError)
+        try:
+            cookie_manager.delete("nip_auth_user", key="del_user")
+        except KeyError:
+            pass
+            
+        try:
+            cookie_manager.delete("nip_auth_role", key="del_role")
+        except KeyError:
+            pass
+            
         st.rerun()
 
     st.markdown("---")
