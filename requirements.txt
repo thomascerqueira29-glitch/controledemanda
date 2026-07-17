@@ -10,4 +10,4 @@ geopandas
 fiona
 openpyxl
 extra-streamlit-components==0.1.71
-SQLAlchemy==2.0.29
+SQLAlchemy>=2.0.30
