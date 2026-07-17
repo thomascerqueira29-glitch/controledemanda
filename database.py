@@ -13,7 +13,7 @@ SEM_LEVANTADOR = "SEM LEVANTADOR"
 STATUS_PRODUTIVIDADE = ["PENDENTE", "EM ANDAMENTO", "AGUARDANDO"]
 
 # =============================================================================
-# FUNÇÕES DE BANCO DE DADOS E AUTENTICAÇÃO (SQLITE NATIVO)
+# FUNÇÕES DE BANCO DE DADOS E AUTENTICAÇÃO
 # =============================================================================
 def hash_senha(senha):
     """Criptografa senhas"""
@@ -30,12 +30,10 @@ def init_databases():
         conn.commit()
 
 def init_business_db():
-    """Inicia tabelas de negócio e barra o loop de reset"""
+    """Garante que a estrutura base exista no SQLite"""
     colunas_oficiais = ['ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO']
-    
     if os.path.exists(DB_PATH): 
         return
-        
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str) if os.path.exists('NOTAS.xlsx') else pd.DataFrame(columns=colunas_oficiais)
@@ -56,7 +54,7 @@ def sync_residencias_banco():
 
 @st.cache_data(show_spinner=False)
 def load_core_data():
-    """Carrega dados para o pandas sem causar conflitos de engine"""
+    """MOTOR RECONSTRUÍDO: Carrega os dados e recalcula métricas para o Painel Executivo"""
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             df_notas = pd.read_sql("SELECT * FROM notas", conn)
@@ -64,20 +62,53 @@ def load_core_data():
     except Exception:
         df_notas = pd.DataFrame()
         df_equipes = pd.DataFrame()
-    return df_notas, df_equipes, pd.DataFrame(), [], [], {}, {}, pd.DataFrame()
+
+    # 1. Tratamento de Datas (Essencial para os cálculos do Painel)
+    colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'DATA DE VENCIMENTO']
+    for col in colunas_data:
+        if col in df_notas.columns:
+            # Converte as strings DD/MM/AAAA do banco para objetos de Data pro Painel calcular SLAs
+            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce', dayfirst=True)
+
+    # 2. A PONTE DE COMUNICAÇÃO: Cálculo de produtividade por Levantador
+    resumo_lev = pd.DataFrame(columns=['Levantador', 'Equipe', 'Total_Obras_Real'])
+    criticos = []
+    todos_levs = []
+
+    if not df_equipes.empty:
+        if 'Levantador' in df_equipes.columns and 'Equipe' in df_equipes.columns:
+            resumo_lev = df_equipes[['Levantador', 'Equipe']].drop_duplicates()
+        elif 'Levantador' in df_equipes.columns:
+            resumo_lev = df_equipes[['Levantador']].drop_duplicates()
+            resumo_lev['Equipe'] = 'Sem Equipe'
+            
+        if not df_notas.empty and 'LEVANTADOR' in df_notas.columns:
+            # Conta dinamicamente quantas obras cada um tem na base da Governança
+            contagem = df_notas.groupby('LEVANTADOR').size()
+            resumo_lev['Total_Obras_Real'] = resumo_lev['Levantador'].map(contagem).fillna(0)
+        else:
+            resumo_lev['Total_Obras_Real'] = 0
+            
+        # Identifica Levantadores Críticos (< 45 obras)
+        if not resumo_lev.empty:
+            criticos = resumo_lev[resumo_lev['Total_Obras_Real'] < 45]['Levantador'].tolist()
+        
+        if 'Levantador' in df_equipes.columns:
+            todos_levs = sorted(df_equipes['Levantador'].dropna().astype(str).unique().tolist())
+
+    return df_notas, df_equipes, resumo_lev, criticos, todos_levs, {}, {}, pd.DataFrame()
 
 def save_notas_to_db(df, acao="Atualização", backup=False):
-    """Salva os dados de volta no banco de dados e aceita chamadas de backup"""
+    """Salva a base atualizada e força a limpeza de memória do Streamlit"""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         df.to_sql('notas', conn, if_exists='replace', index=False)
-    load_core_data.clear()
+    load_core_data.clear() # <- Isso obriga o Painel Executivo a recarregar a base fresca
     return True
 
 # =============================================================================
 # FUNÇÕES AUXILIARES E MATEMÁTICAS (NECESSÁRIAS PARA O PAINEL.PY)
 # =============================================================================
 def vectorized_haversine(lat1, lon1, lat2, lon2):
-    """Cálculo de distância em KM entre coordenadas (Fórmula de Haversine)"""
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
@@ -86,14 +117,10 @@ def vectorized_haversine(lat1, lon1, lat2, lon2):
     return 6371 * c
 
 def parse_kmz_advanced(caminho):
-    """Placeholder para leitura avançada de KMZ"""
     return pd.DataFrame(), pd.DataFrame(), None
 
 def calcular_sla_vetorizado(df):
-    """Cálculo de SLA (Service Level Agreement) para o Painel"""
-    if df.empty:
-        return df
-    
+    if df.empty: return df
     df_copy = df.copy()
     if 'Status_SLA' not in df_copy.columns:
         df_copy['Status_SLA'] = 'No Prazo'
