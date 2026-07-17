@@ -5,11 +5,11 @@ import streamlit_antd_components as sac
 import extra_streamlit_components as esc
 from datetime import datetime, timedelta
 
-# 1. Importações do Motor Central (Bastidores)
+# Importações do Motor Central
 from database import (DB_PATH, init_databases, init_business_db, 
                       sync_residencias_banco, hash_senha)
 
-# 2. Importações das Telas Isoladas (Módulos)
+# Importações das Telas Isoladas
 from views.painel import view_painel_executivo
 from views.governanca import view_governanca
 from views.carga import view_carga
@@ -19,9 +19,6 @@ from views.simulador import view_simulador
 
 st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️", initial_sidebar_state="expanded")
 
-# =============================================================================
-# INJEÇÃO DE CSS PERSONALIZADO (VISUAL PREMIUM)
-# =============================================================================
 def load_custom_css():
     try:
         with open("assets/style.css") as f:
@@ -31,27 +28,19 @@ def load_custom_css():
 
 load_custom_css()
 
-# =============================================================================
-# INICIALIZAÇÃO DE BANCO DE DADOS
-# =============================================================================
+# INICIALIZAÇÃO DE BANCO
 init_databases()
 init_business_db()
 sync_residencias_banco()
 
-# =============================================================================
-# GERENCIADOR DE COOKIES (LOGIN PERSISTENTE)
-# CORREÇÃO: Adicionado key="UniqueCookieManagerNIP" para evitar erro de colisão
-# =============================================================================
+# GERENCIADOR DE COOKIES
 cookie_manager = esc.CookieManager(key="UniqueCookieManagerNIP")
 
-# =============================================================================
 # SISTEMA DE LOGIN
-# =============================================================================
 if 'usuario_logado' not in st.session_state:
     st.session_state.usuario_logado = None
     st.session_state.perfil_usuario = None
 
-    # Tenta resgatar do cookie antes de forçar o login
     token_salvo = cookie_manager.get(cookie="nip_auth_user")
     perfil_salvo = cookie_manager.get(cookie="nip_auth_role")
     
@@ -84,10 +73,10 @@ if st.session_state.usuario_logado is None:
                                 st.session_state.usuario_logado = username
                                 st.session_state.perfil_usuario = role
                                 
-                                # Salva o cookie no navegador (dura 30 dias)
                                 if lembrar_me:
-                                    cookie_manager.set("nip_auth_user", username, expires_at=datetime.now() + timedelta(days=30))
-                                    cookie_manager.set("nip_auth_role", role, expires_at=datetime.now() + timedelta(days=30))
+                                    # CORREÇÃO: Chaves únicas para evitar colisão no set()
+                                    cookie_manager.set("nip_auth_user", username, expires_at=datetime.now() + timedelta(days=30), key="set_user")
+                                    cookie_manager.set("nip_auth_role", role, expires_at=datetime.now() + timedelta(days=30), key="set_role")
                                 
                                 conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), username))
                                 conn.commit()
@@ -96,22 +85,18 @@ if st.session_state.usuario_logado is None:
                         else: st.error("Acesso revogado ou inexistente.")
                 except Exception as e:
                     st.error(f"Erro ao acessar banco de dados de login: {e}")
-        st.info("💡 **Aviso:** Insira suas credenciais corporativas.")
     st.stop()
     
 if st.session_state.get('perfil_usuario') != 'ADMIN':
     st.markdown("""<style>#MainMenu {visibility: hidden;} header {visibility: hidden;}</style>""", unsafe_allow_html=True)
 
-# Atualiza a sessão para o usuário não cair por inatividade
 try:
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         conn.execute("UPDATE usuarios SET last_active = ? WHERE username = ?", (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), st.session_state.usuario_logado))
         conn.commit()
 except: pass
 
-# =============================================================================
 # MENU LATERAL E ROTEAMENTO
-# =============================================================================
 if 'menu_idx' not in st.session_state:
     st.session_state.menu_idx = 0
 
@@ -124,12 +109,12 @@ with st.sidebar:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
             conn.execute("UPDATE usuarios SET last_active = NULL WHERE username = ?", (st.session_state.usuario_logado,))
             conn.commit()
-        
-        # Limpa sessão e destroi cookies
         st.session_state.usuario_logado = None
         st.session_state.perfil_usuario = None
-        cookie_manager.delete("nip_auth_user")
-        cookie_manager.delete("nip_auth_role")
+        
+        # CORREÇÃO: Chaves únicas para evitar colisão no delete()
+        cookie_manager.delete("nip_auth_user", key="del_user")
+        cookie_manager.delete("nip_auth_role", key="del_role")
         st.rerun()
 
     st.markdown("---")
@@ -151,9 +136,7 @@ with st.sidebar:
     if menu_selecionado in opcoes_menu:
         st.session_state.menu_idx = opcoes_menu.index(menu_selecionado)
 
-# =============================================================================
 # ROTEADOR DE TELAS
-# =============================================================================
 if menu_selecionado == 'Painel Executivo': view_painel_executivo()
 elif menu_selecionado == 'Busca e Governança': view_governanca()
 elif menu_selecionado == 'Carga de Lotes': view_carga()
@@ -161,9 +144,7 @@ elif menu_selecionado == 'Levantadores': view_levantadores()
 elif menu_selecionado == 'Gerenciamento de Acessos': view_acessos()
 elif menu_selecionado == 'Simulador de Alocação': view_simulador()
 
-# =============================================================================
 # HEARTBEAT OTIMIZADO
-# =============================================================================
 if st.session_state.usuario_logado:
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
