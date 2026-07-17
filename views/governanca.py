@@ -1,68 +1,108 @@
 import streamlit as st
 import pandas as pd
-import io
 from database import load_core_data, save_notas_to_db
 
-def render_filtros_governanca(df_notas):
-    col_f1, col_f2, col_f3 = st.columns(3)
-    col_f4, col_f5, col_f6 = st.columns(3)
-    
-    op_lev = ["TODOS"] + sorted([str(x) for x in df_notas['LEVANTADOR'].unique()])
-    if 'ui_lev' not in st.session_state or st.session_state.ui_lev not in op_lev: st.session_state.ui_lev = 'TODOS'
-    with col_f1: filtro_lev = st.selectbox("Filtrar por Levantador:", op_lev, key='ui_lev')
-
-    op_reg = ["TODOS"] + sorted([str(x) for x in df_notas['REGIONAL'].unique()])
-    if 'ui_reg' not in st.session_state or st.session_state.ui_reg not in op_reg: st.session_state.ui_reg = 'TODOS'
-    with col_f2: filtro_reg = st.selectbox("Filtrar por Regional:", op_reg, key='ui_reg')
-
-    op_mun = ["TODOS"] + sorted([str(x) for x in df_notas['MUNICIPIO'].unique()])
-    if 'ui_mun' not in st.session_state or st.session_state.ui_mun not in op_mun: st.session_state.ui_mun = 'TODOS'
-    with col_f3: filtro_mun = st.selectbox("Filtrar por Município:", op_mun, key='ui_mun')
-
-    op_lig = ["TODOS"] + sorted([str(x) for x in df_notas['TIPO LIGACAO'].unique()])
-    if 'ui_lig' not in st.session_state or st.session_state.ui_lig not in op_lig: st.session_state.ui_lig = 'TODOS'
-    with col_f4: filtro_lig = st.selectbox("Filtrar por Tipo Ligação:", op_lig, key='ui_lig')
-
-    op_sap = ["TODOS"] + sorted([str(x) for x in df_notas['STATUS SAP'].unique()])
-    if 'ui_sap' not in st.session_state or st.session_state.ui_sap not in op_sap: st.session_state.ui_sap = 'TODOS'
-    with col_f5: filtro_sap = st.selectbox("Filtrar por Status SAP:", op_sap, key='ui_sap')
-
-    op_list = sorted([str(x) for x in df_notas['STATUS LIST'].unique() if str(x).strip() != ""])
-    if 'ui_list' not in st.session_state: st.session_state.ui_list = []
-    st.session_state.ui_list = [x for x in st.session_state.ui_list if x in op_list]
-    with col_f6: filtro_list = st.multiselect("Filtrar por Status List (Vazio = TODOS):", options=op_list, key='ui_list')
-
-    df_filtrado = df_notas.copy()
-    if filtro_lev != "TODOS": df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == filtro_lev]
-    if filtro_reg != "TODOS": df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == filtro_reg]
-    if filtro_mun != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == filtro_mun]
-    if filtro_lig != "TODOS": df_filtrado = df_filtrado[df_filtrado['TIPO LIGACAO'].astype(str) == filtro_lig]
-    if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == filtro_sap]
-    if len(filtro_list) > 0: df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].isin(filtro_list)]
-    
-    return df_filtrado, filtro_list, op_sap, op_list
-
 def view_governanca():
-    st.markdown("### 📝 Governança Direta")
-    df_notas_db, _, _, _, _, _, _, _ = load_core_data()
-    df_f, l1, l2, l3 = render_filtros_governanca(df_notas_db)
-    st.info(f"Localizadas: {len(df_f)} notas.")
+    st.markdown("### 🔎 Governança Direta")
+    st.markdown("Visualize, filtre e edite a base de obras de acordo com o template oficial.")
+
+    # 1. Carregamento dos Dados
+    df_notas, _, _, _, _, _, _, _ = load_core_data()
     
-    c_btn1, c_btn2, c_btn3 = st.columns([2, 2, 6])
-    if not df_f.empty:
-        buf = io.BytesIO()
-        df_f.to_excel(buf, index=False)
-        c_btn1.download_button("📥 Excel", data=buf.getvalue(), file_name="gov_filtro.xlsx", use_container_width=True)
-        
-    admin = st.session_state.perfil_usuario == "ADMIN"
-    btn_save = c_btn2.button("💾 Salvar DB", type="primary", use_container_width=True) if admin else c_btn2.button("🔒 Restrito", disabled=True, use_container_width=True)
-    if admin:
-        with c_btn3.expander("⚠️ ÁREA DE PERIGO"):
-            if st.button("🚨 APAGAR TUDO", type="primary", disabled=not st.checkbox("Confirmo")):
-                save_notas_to_db(pd.DataFrame(columns=df_notas_db.columns), backup=True); st.rerun()
+    # 2. Mapeamento das 22 colunas exatas do 'template.xlsx'
+    colunas_template = [
+        'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
+        'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
+        'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 
+        'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 
+        'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 
+        'PONTO DE REFERENCIA', 'TIPO LIGACAO'
+    ]
+    
+    # Garante que o banco obedeça à estrutura do template
+    if df_notas.empty:
+        df_notas = pd.DataFrame(columns=colunas_template)
+    else:
+        # Adiciona colunas que porventura estejam faltando
+        for col in colunas_template:
+            if col not in df_notas.columns:
+                df_notas[col] = ""
                 
-    df_edit = st.data_editor(df_f.fillna(""), use_container_width=True, num_rows="dynamic", disabled=not admin,
-                             column_config={"ID SISCO": st.column_config.TextColumn(disabled=True), "STATUS SAP": st.column_config.SelectboxColumn(options=l2), "STATUS LIST": st.column_config.SelectboxColumn(options=l3)})
-    if btn_save:
-        df_up = df_notas_db.copy(); df_up.loc[df_edit.index] = df_edit
-        if save_notas_to_db(df_up, acao_auditoria="Edição Governança"): st.toast("Salvo!"); load_core_data.clear(); st.rerun()
+        # Reordena para manter as colunas do template sempre na frente
+        cols_extras = [c for c in df_notas.columns if c not in colunas_template]
+        df_notas = df_notas[colunas_template + cols_extras]
+
+    # 3. Área de Filtros Interativos
+    with st.expander("📊 Painel de Filtros", expanded=True):
+        c1, c2, c3, c4 = st.columns(4)
+        
+        regioes = ["TODAS"] + sorted(df_notas['REGIONAL'].astype(str).unique().tolist())
+        filtro_reg = c1.selectbox("Regional", regioes)
+        
+        municipios = ["TODOS"] + sorted(df_notas['MUNICIPIO'].astype(str).unique().tolist())
+        filtro_mun = c2.selectbox("Município", municipios)
+        
+        levantadores = ["TODOS"] + sorted(df_notas['LEVANTADOR'].astype(str).unique().tolist())
+        filtro_lev = c3.selectbox("Levantador", levantadores)
+        
+        status_sap = ["TODOS"] + sorted(df_notas['STATUS SAP'].astype(str).unique().tolist())
+        filtro_sap = c4.selectbox("Status SAP", status_sap)
+        
+        busca_livre = st.text_input("🔍 Busca Rápida (ID SISCO, PROTOCOLO ou NOME DO SOLICITANTE)")
+
+    # 4. Aplicação dos Filtros
+    df_filtrado = df_notas.copy()
+    
+    if filtro_reg != "TODAS": df_filtrado = df_filtrado[df_filtrado['REGIONAL'] == filtro_reg]
+    if filtro_mun != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'] == filtro_mun]
+    if filtro_lev != "TODOS": df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'] == filtro_lev]
+    if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'] == filtro_sap]
+    
+    if busca_livre:
+        termo = str(busca_livre).lower()
+        df_filtrado = df_filtrado[
+            df_filtrado['ID SISCO'].astype(str).str.lower().str.contains(termo) |
+            df_filtrado['PROTOCOLO'].astype(str).str.lower().str.contains(termo) |
+            df_filtrado['NOME DO SOLICITANTE'].astype(str).str.lower().str.contains(termo)
+        ]
+
+    st.caption(f"**Total de Obras Filtradas:** {len(df_filtrado)} registros.")
+
+    # 5. Tabela de Edição (Estilo Planilha)
+    df_editado = st.data_editor(
+        df_filtrado,
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",  # Permite ao usuário adicionar novas linhas direto na tela
+        height=500
+    )
+
+    # 6. Botões de Ação
+    st.markdown("---")
+    col_save, col_clear, _ = st.columns([2, 2, 6])
+    
+    if col_save.button("💾 Salvar Alterações", type="primary", use_container_width=True):
+        if st.session_state.perfil_usuario == "LEITURA":
+            st.error("Acesso Negado: O seu perfil é apenas leitura.")
+        else:
+            # Mescla as edições filtradas de volta para o DataFrame completo
+            df_notas.update(df_editado)
+            
+            # Identifica e adiciona novas linhas criadas pelo usuário
+            novos_indices = [idx for idx in df_editado.index if idx not in df_notas.index]
+            if novos_indices:
+                df_notas = pd.concat([df_notas, df_editado.loc[novos_indices]])
+            
+            # Salva no Banco de Dados
+            save_notas_to_db(df_notas)
+            st.success("✅ Edições salvas com sucesso no banco de dados!")
+            st.rerun()
+
+    if col_clear.button("🗑️ Apagar Base Inteira", type="secondary", use_container_width=True):
+        if st.session_state.perfil_usuario != "ADMIN":
+            st.error("Acesso Negado: Apenas ADMINS podem limpar a base.")
+        else:
+            # Apaga os dados mas mantém a estrutura de 22 colunas viva no DB
+            save_notas_to_db(pd.DataFrame(columns=colunas_template), backup=True)
+            st.success("✅ Banco de dados limpo! A estrutura original foi preservada.")
+            st.rerun()
