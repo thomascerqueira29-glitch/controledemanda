@@ -58,6 +58,17 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     fg_equipes.add_to(mapa)
 
     if not df_notas_mapa.empty:
+        # =====================================================================
+        # ESCUDO ANTI-BUG: Força a criação das colunas se o Cache falhar
+        # =====================================================================
+        if 'Lat_Mapa' not in df_notas_mapa.columns:
+            lat_col = next((c for c in df_notas_mapa.columns if str(c).upper() == 'LATITUDE'), None)
+            df_notas_mapa['Lat_Mapa'] = pd.to_numeric(df_notas_mapa[lat_col].astype(str).str.replace(',', '.'), errors='coerce') if lat_col else np.nan
+        if 'Lon_Mapa' not in df_notas_mapa.columns:
+            lon_col = next((c for c in df_notas_mapa.columns if str(c).upper() == 'LONGITUDE'), None)
+            df_notas_mapa['Lon_Mapa'] = pd.to_numeric(df_notas_mapa[lon_col].astype(str).str.replace(',', '.'), errors='coerce') if lon_col else np.nan
+        # =====================================================================
+
         df_ob = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa']).copy()
         df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
