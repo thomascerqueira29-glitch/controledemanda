@@ -1,51 +1,51 @@
 import streamlit as st
 import pandas as pd
 import os
-from sqlalchemy import create_engine, Column, Integer, String
+import sqlite3
+import hashlib
+from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-import hashlib
 
-DB_URL = 'sqlite:///controle_torre_nip.db'
-engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
+# Configuração de Banco
+DB_PATH = 'controle_torre_nip.db'
+DB_URL = f'sqlite:///{DB_PATH}'
 
-# --- MODELOS ---
-class Usuario(Base):
-    __tablename__ = 'usuarios'
-    username = Column(String, primary_key=True)
-    password = Column(String)
-    role = Column(String)
-    last_active = Column(String)
+# Tenta criar a engine, se falhar, o sistema cai aqui e nos avisa
+try:
+    engine = create_engine(DB_URL, connect_args={"check_same_thread": False})
+    SessionLocal = sessionmaker(bind=engine)
+    Base = declarative_base()
+except Exception as e:
+    st.error(f"Erro Crítico de Engine: {e}")
 
-# --- FUNÇÕES CORE ---
+# Importações de Modelos adiadas para evitar erros de importação circulares
+def init_databases():
+    # Carregamento simples apenas para garantir que as tabelas existam
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios 
+                        (username TEXT PRIMARY KEY, password TEXT, role TEXT, last_active TEXT)''')
+        # ... (Manter aqui a criação de outras tabelas se necessário)
+        conn.commit()
+
 def get_session():
     return SessionLocal()
 
 def hash_senha(senha):
     return hashlib.sha256(str(senha).encode('utf-8')).hexdigest()
 
-def init_databases():
-    Base.metadata.create_all(engine)
-    session = get_session()
-    if not session.query(Usuario).filter_by(username='THOMAS').first():
-        session.add(Usuario(username='THOMAS', password=hash_senha('admin123'), role='ADMIN'))
-        session.commit()
-    session.close()
-
 def init_business_db():
-    if not os.path.exists('controle_torre_nip.db'):
-        # Só importa o Excel se o banco for criado agora (Primeira vez)
-        pass 
+    pass
 
 @st.cache_data(show_spinner=False)
 def load_core_data():
-    """Lê dados para análise via Pandas (Alta Performance)"""
-    df_notas = pd.read_sql("SELECT * FROM notas", engine)
-    df_equipes = pd.read_sql("SELECT * FROM equipes", engine)
+    """Usa Pandas para ler direto do arquivo, evitando conflitos de Engine"""
+    with sqlite3.connect(DB_PATH) as conn:
+        df_notas = pd.read_sql("SELECT * FROM notas", conn)
+        df_equipes = pd.read_sql("SELECT * FROM equipes", conn)
     return df_notas, df_equipes, pd.DataFrame(), [], [], {}, {}, pd.DataFrame()
 
 def save_notas_to_db(df, acao="Atualização"):
-    df.to_sql('notas', engine, if_exists='replace', index=False)
+    with sqlite3.connect(DB_PATH) as conn:
+        df.to_sql('notas', conn, if_exists='replace', index=False)
     return True
