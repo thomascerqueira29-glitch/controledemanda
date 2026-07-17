@@ -40,9 +40,9 @@ sync_residencias_banco()
 
 # =============================================================================
 # GERENCIADOR DE COOKIES (LOGIN PERSISTENTE)
-# Instanciado diretamente para evitar CachedWidgetWarning
+# CORREÇÃO: Adicionado key="UniqueCookieManagerNIP" para evitar erro de colisão
 # =============================================================================
-cookie_manager = esc.CookieManager()
+cookie_manager = esc.CookieManager(key="UniqueCookieManagerNIP")
 
 # =============================================================================
 # SISTEMA DE LOGIN
