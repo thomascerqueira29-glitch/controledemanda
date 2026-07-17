@@ -19,13 +19,13 @@ from views.simulador import view_simulador
 st.set_page_config(page_title="Portal Corporativo NIP", layout="wide", page_icon="🏗️", initial_sidebar_state="expanded")
 
 # =============================================================================
-# INICIALIZAÇÃO DE BANCO DE DADOS
+# INICIALIZAÇÃO DE BANCO DE DADOS (BLINDAGEM NUVEM)
 # =============================================================================
-if 'db_initialized' not in st.session_state:
-    init_databases()
-    init_business_db()
-    sync_residencias_banco()
-    st.session_state.db_initialized = True
+# As tabelas serão verificadas/criadas silenciosamente em milissegundos. 
+# Se o servidor Cloud reiniciar, o banco se reconstrói instantaneamente.
+init_databases()
+init_business_db()
+sync_residencias_banco()
 
 # =============================================================================
 # SISTEMA DE LOGIN
