@@ -23,14 +23,19 @@ def view_governanca():
     if df_notas.empty:
         df_notas = pd.DataFrame(columns=colunas_template)
     else:
-        # Adiciona colunas que porventura estejam faltando
         for col in colunas_template:
             if col not in df_notas.columns:
                 df_notas[col] = ""
                 
-        # Reordena para manter as colunas do template sempre na frente
         cols_extras = [c for c in df_notas.columns if c not in colunas_template]
         df_notas = df_notas[colunas_template + cols_extras]
+
+    # --- NOVO: Tratamento de Datas ---
+    colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST']
+    for col in colunas_data:
+        if col in df_notas.columns:
+            # Converte as strings do banco para objetos de Data (para o calendário funcionar na tela)
+            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce', dayfirst=True)
 
     # 3. Área de Filtros Interativos
     with st.expander("📊 Painel de Filtros", expanded=True):
@@ -68,13 +73,22 @@ def view_governanca():
 
     st.caption(f"**Total de Obras Filtradas:** {len(df_filtrado)} registros.")
 
+    # --- NOVO: Configura visualização do calendário no Data Editor ---
+    config_colunas = {}
+    for col in colunas_data:
+        config_colunas[col] = st.column_config.DateColumn(
+            col,
+            format="DD/MM/YYYY" # Força o formato brasileiro na exibição
+        )
+
     # 5. Tabela de Edição (Estilo Planilha)
     df_editado = st.data_editor(
         df_filtrado,
         use_container_width=True,
         hide_index=True,
-        num_rows="dynamic",  # Permite ao usuário adicionar novas linhas direto na tela
-        height=500
+        num_rows="dynamic",
+        height=500,
+        column_config=config_colunas # Aplica as regras de coluna criadas
     )
 
     # 6. Botões de Ação
@@ -88,10 +102,16 @@ def view_governanca():
             # Mescla as edições filtradas de volta para o DataFrame completo
             df_notas.update(df_editado)
             
-            # Identifica e adiciona novas linhas criadas pelo usuário
+            # Adiciona novas linhas criadas pelo usuário
             novos_indices = [idx for idx in df_editado.index if idx not in df_notas.index]
             if novos_indices:
                 df_notas = pd.concat([df_notas, df_editado.loc[novos_indices]])
+            
+            # --- NOVO: Limpeza das datas antes de salvar no SQLite ---
+            for col in colunas_data:
+                if col in df_notas.columns:
+                    # Formata a data para texto BR (DD/MM/AAAA) e troca valores vazios por "" (evitando o infame "NaT")
+                    df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna("")
             
             # Salva no Banco de Dados
             save_notas_to_db(df_notas)
@@ -102,7 +122,6 @@ def view_governanca():
         if st.session_state.perfil_usuario != "ADMIN":
             st.error("Acesso Negado: Apenas ADMINS podem limpar a base.")
         else:
-            # Apaga os dados mas mantém a estrutura de 22 colunas viva no DB
             save_notas_to_db(pd.DataFrame(columns=colunas_template), backup=True)
             st.success("✅ Banco de dados limpo! A estrutura original foi preservada.")
             st.rerun()
