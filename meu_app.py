@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
-import pydeck as pdk
+import folium
+from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster, FastMarkerCluster
 import plotly.express as px
 import numpy as np
 import os
@@ -13,6 +15,8 @@ import geopandas as gpd
 import zipfile
 import logging
 import hashlib
+import html
+import re
 from datetime import datetime, timedelta
 
 # =============================================================================
@@ -45,7 +49,7 @@ def hash_senha(senha):
 def init_databases():
     """Cria tabelas base, injeção do ADMIN e cria índices de alta performance."""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT, role TEXT)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS usuarios (username TEXT PRIMARY KEY, password TEXT, role TEXT, last_active TEXT)''')
         try:
             conn.execute("ALTER TABLE usuarios ADD COLUMN last_active TEXT")
         except sqlite3.OperationalError:
@@ -93,6 +97,7 @@ def init_business_db():
                 if os.path.exists('base levantador.xlsx'): pd.read_excel('base levantador.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 elif os.path.exists('EQUIPES.xlsx'): pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
                 else: pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
+        st.session_state.db_initialized = True
     except Exception as e: pass
 
 # Chamada Universal para blindar contra instabilidades do servidor Cloud
@@ -218,7 +223,11 @@ def parse_kmz_advanced(file_path):
                     if len(line_coords) >= 2: lns.append({'Name': name, 'geometry': LineString(line_coords)})
             if pts: gdf_points = gpd.GeoDataFrame(pts, geometry='geometry', crs="EPSG:4326")
             if lns: gdf_lines = gpd.GeoDataFrame(lns, geometry='geometry', crs="EPSG:4326")
-        return gdf_lines, gdf_points, None
+            
+            all_geoms = pd.concat([gdf_points['geometry'] if not gdf_points.empty else pd.Series(dtype=object), gdf_lines['geometry'] if not gdf_lines.empty else pd.Series(dtype=object)])
+            bounds = gpd.GeoSeries(all_geoms).total_bounds if not all_geoms.empty else None
+            
+        return gdf_lines, gdf_points, bounds
     except Exception: return gdf_lines, gdf_points, None
 
 @st.cache_data(show_spinner=False)
@@ -259,35 +268,76 @@ def calcular_sla_vetorizado(df_notas_calc):
     return df_sla
 
 # =============================================================================
-# ENGINE 3: RENDERIZADOR WEBGL (PYDECK - ALTA PERFORMANCE)
+# ENGINE 3: RENDERIZADOR HÍBRIDO (FOLIUM + FASTMARKERCLUSTER)
 # =============================================================================
-def render_pydeck_map(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp):
-    layers = []
+def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp):
+    """Renderizador Híbrido Folium com FastMarkerCluster e Visão Satélite Nativa."""
     
+    # 1. Base do Mapa com Visão de Satélite Gratuita (Esri)
+    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+        attr='Esri', name='Visão de Satélite', overlay=False, control=True
+    ).add_to(mapa)
+    folium.TileLayer('OpenStreetMap', name='Ruas Padrão', overlay=False, control=True).add_to(mapa)
+
+    # 2. Camadas Georreferenciadas (KML/KMZ)
+    if caminho_camada_temp:
+        gdf_lines, gdf_points, bounds = parse_kmz_advanced(caminho_camada_temp)
+        if not gdf_lines.empty:
+            folium.GeoJson(gdf_lines[['Name', 'geometry']], name="Rede Elétrica (Linhas)", style_function=lambda feature: {'color': '#1A4F7C', 'weight': 2.5, 'fillOpacity': 0.2}).add_to(mapa)
+        if not gdf_points.empty:
+            folium.GeoJson(gdf_points[['Name', 'geometry']], name="Equipamentos (Pontos)", marker=folium.CircleMarker(radius=3, fill_color='#dc3545', color='#dc3545', fill_opacity=0.9)).add_to(mapa)
+        if bounds is not None:
+            mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+
+    # 3. Bases das Equipes (Verdes/Vermelhas)
+    fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy()
         df_eq['Lat'] = pd.to_numeric(df_eq['Latitude'].astype(str).str.replace(',', '.'), errors='coerce')
         df_eq['Lon'] = pd.to_numeric(df_eq['Longitude'].astype(str).str.replace(',', '.'), errors='coerce')
-        df_eq = df_eq.dropna(subset=['Lat', 'Lon'])
-        df_eq['Tooltip'] = "Base: " + df_eq['Levantador'].astype(str)
-        layers.append(pdk.Layer("ScatterplotLayer", data=df_eq, get_position=["Lon", "Lat"], get_color=[0, 255, 0, 200], get_radius=3000, pickable=True))
+        
+        for _, row in df_eq.dropna(subset=['Lat', 'Lon']).iterrows():
+            lev = str(row.get('Levantador', ''))
+            cor = 'red' if lev in criticos_tuple else 'green'
+            folium.Marker(
+                location=[row['Lat'], row['Lon']], 
+                icon=folium.Icon(color=cor, icon='home', prefix='fa'), 
+                tooltip=f"Base: {html.escape(lev)}"
+            ).add_to(fg_equipes)
+    fg_equipes.add_to(mapa)
 
+    # 4. Agrupamento Inteligente de Obras (Clusters)
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.dropna(subset=['Lat_Mapa', 'Lon_Mapa']).copy()
+        
+        # Jitter de separação para obras exatamente na mesma coordenada
         df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
-        df_ob['Tooltip'] = "Protocolo: " + df_ob['PROTOCOLO'].astype(str) + "\nLevantador: " + df_ob['LEVANTADOR'].astype(str)
-        df_ob['Color_RGBA'] = [[255, 165, 0, 200] if lev == SEM_LEVANTADOR else ([255, 0, 0, 200] if lev in criticos_tuple else [0, 123, 255, 200]) for lev in df_ob['LEVANTADOR']]
-        layers.append(pdk.Layer("ScatterplotLayer", data=df_ob, get_position=["Lon_Mapa", "Lat_Mapa"], get_color="Color_RGBA", get_radius=800, pickable=True))
+        
+        # Lógica de Renderização Dinâmica:
+        # Se for muitas obras (ex: > 500), usa o FastMarkerCluster para o navegador não travar
+        if len(df_ob) > 500:
+            coords = df_ob[['Lat_Mapa', 'Lon_Mapa']].values.tolist()
+            FastMarkerCluster(data=coords, name=f"🏗️ Demandas Ativas ({len(coords)} obras)").add_to(mapa)
+        else:
+            # Se a quantidade for leve após filtrar, usa o cluster detalhado com Popups clicáveis
+            cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+            for _, row in df_ob.iterrows():
+                lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                
+                info_html = f"<b>Protocolo:</b> {row.get('PROTOCOLO', '')}<br><b>Levantador:</b> {lev_obra}"
+                folium.Marker(
+                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                    popup=folium.Popup(info_html, max_width=300)
+                ).add_to(cluster_obras)
+            cluster_obras.add_to(mapa)
 
-    if caminho_camada_temp:
-        gdf_lines, gdf_points, _ = parse_kmz_advanced(caminho_camada_temp)
-        if not gdf_lines.empty: layers.append(pdk.Layer("GeoJsonLayer", data=gdf_lines, get_line_color=[26, 79, 124, 255], get_line_width=3, pickable=False))
-        if not gdf_points.empty:
-            gdf_points['Tooltip'] = "Ponto Georreferenciado: " + gdf_points['Name']
-            layers.append(pdk.Layer("GeoJsonLayer", data=gdf_points, get_fill_color=[220, 53, 69, 255], get_point_radius=100, pickable=True))
-
-    st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=pdk.ViewState(latitude=-5.2, longitude=-45.0, zoom=6, pitch=0), tooltip={"text": "{Tooltip}"}, map_style=pdk.map_styles.SATELLITE), use_container_width=True)
+    folium.LayerControl(position='bottomright').add_to(mapa)
+    st_folium(mapa, use_container_width=True, height=800, returned_objects=[])
 
 # =============================================================================
 # MODULOS DA INTERFACE DE USUÁRIO (TELAS E ROTAS)
@@ -500,7 +550,7 @@ def view_painel_executivo():
             if st.button("Fechar"): st.session_state.show_demanda = False; st.rerun()
 
     st.markdown("---")
-    st.markdown("### 🗺️ Roteirização Geoespacial (WebGL GPU)")
+    st.markdown("### 🗺️ Roteirização Geoespacial (Híbrida)")
     col_f1, col_f2, col_f3 = st.columns(3)
     
     op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db['LEVANTADOR'].unique()])
@@ -516,16 +566,21 @@ def view_painel_executivo():
     if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
     if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str) == f_mun]
     
-    st.info(f"📍 Renderizando {len(df_m)} obras via PyDeck Hardware Acceleration.")
-    camada = st.file_uploader("Sobrepor KML/KMZ Rápido", type=['kml', 'kmz'], label_visibility="collapsed")
+    st.info(f"📍 Renderizando {len(df_m)} obras no mapa.")
+    camada = st.file_uploader("Sobrepor KML/KMZ", type=['kml', 'kmz'], label_visibility="collapsed")
     camada_p = None
     if camada:
         ext = camada.name.split('.')[-1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as tmp: tmp.write(camada.getvalue()); camada_p = tmp.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as tmp: 
+            tmp.write(camada.getvalue())
+            camada_p = tmp.name
 
     df_e = df_equipes_db.copy()
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
-    render_pydeck_map(df_m, df_e, tuple(levantadores_criticos), camada_p)
+    
+    # Renderizador Híbrido acionado aqui
+    with st.spinner("Construindo base geográfica de satélite..."):
+        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p)
 
 # --- ABA 2: GOVERNANÇA E FILTROS ---
 def view_governanca():
