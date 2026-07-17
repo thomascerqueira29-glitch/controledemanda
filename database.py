@@ -66,8 +66,8 @@ def load_core_data():
         df_equipes = pd.DataFrame()
     return df_notas, df_equipes, pd.DataFrame(), [], [], {}, {}, pd.DataFrame()
 
-def save_notas_to_db(df, acao="Atualização"):
-    """Salva os dados de volta no banco de dados"""
+def save_notas_to_db(df, acao="Atualização", backup=False):
+    """Salva os dados de volta no banco de dados e aceita chamadas de backup"""
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
         df.to_sql('notas', conn, if_exists='replace', index=False)
     load_core_data.clear()
