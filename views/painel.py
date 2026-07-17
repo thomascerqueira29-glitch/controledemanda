@@ -1,16 +1,9 @@
-# ==========================================
-# 1. IMPORTAÇÕES DE BIBLIOTECAS (SEMPRE NO TOPO)
-# ==========================================
 import streamlit as st
 import pandas as pd
 import folium
 from streamlit_folium import st_folium
 import plotly.express as px
 import numpy as np
-
-# ==========================================
-# 2. IMPORTAÇÕES DO SEU BANCO DE DADOS
-# ==========================================
 from database import (
     load_core_data, 
     save_notas_to_db, 
@@ -21,10 +14,20 @@ from database import (
     STATUS_PRODUTIVIDADE
 )
 
-# ==========================================
-# 3. SEU CÓDIGO ORIGINAL COMEÇA AQUI
-# ==========================================
-# Agora sim, com o "import streamlit as st" declarado acima, 
-# o Python sabe o que é o "st" e não dará mais NameError.
-
 @st.cache_data(show_spinner=False)
+def view_painel_executivo():
+    """
+    Função principal do Painel Executivo.
+    Certifique-se de que não haja nenhum código fora de funções no arquivo.
+    """
+    st.markdown("### 📊 Painel Executivo")
+    
+    # Exemplo de chamada de dados que o painel precisa
+    df_notas, df_equipes, resumo_lev, criticos, todos_levs, _, _, _ = load_core_data()
+    
+    if df_notas.empty:
+        st.info("Aguardando carregamento de dados...")
+        return
+
+    # Aqui você mantém o restante do seu código original de gráficos...
+    # (Cole aqui suas funções de render_mapa_otimizado, etc)
