@@ -1,0 +1,26 @@
+/* Esconde elementos nativos do Streamlit para parecer um software proprietário */
+header {visibility: hidden !important;}
+#MainMenu {visibility: hidden !important;}
+footer {visibility: hidden !important;}
+
+/* Fundo geral mais limpo e sofisticado */
+.stApp {
+    background-color: #f4f6f9;
+}
+
+/* Estilização de botões com efeito de levitação e sombra */
+.stButton > button {
+    border-radius: 6px;
+    transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    font-weight: 600;
+    border: none;
+}
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.15);
+}
+
+/* Ajuste de espaçamento no topo devido ao header invisível */
+.block-container {
+    padding-top: 2rem;
+}
