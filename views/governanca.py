@@ -3,26 +3,6 @@ import pandas as pd
 from database import load_core_data, save_notas_to_db
 
 def view_governanca():
-    # =====================================================================
-    # 1. NOVO PAINEL LATERAL: EQUIPE ONLINE
-    # =====================================================================
-    with st.sidebar:
-        st.markdown("### 👥 Equipe Online")
-        st.info("Usuários ativos na plataforma.")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟢")
-        c2.markdown("**Thomas**\n\n*Admin*")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟢")
-        c2.markdown("**Ana (Coordenação)**\n\n*Visualização*")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟡")
-        c2.markdown("**João (Campo)**\n\n*Ausente*")
-        st.markdown("---")
-
     st.markdown("### 🔎 Busca e Governança")
     st.markdown("Gerencie, filtre e edite a base de obras do sistema de forma centralizada.")
 
