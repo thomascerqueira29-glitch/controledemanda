@@ -99,14 +99,22 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     st_folium(mapa, use_container_width=True, height=800, returned_objects=[])
 
 def filtrar_levantador_governanca(nome_lev):
+    # =====================================================================
+    # CORREÇÃO DE ROTEAMENTO E STATUS LIST
+    # =====================================================================
     st.session_state.ui_lev = nome_lev
-    st.session_state.ui_reg = 'TODOS'
+    st.session_state.ui_reg = 'TODAS'
     st.session_state.ui_mun = 'TODOS'
-    st.session_state.ui_lig = 'TODOS'
     st.session_state.ui_sap = 'TODOS'
-    st.session_state.ui_list = STATUS_PRODUTIVIDADE.copy() 
-    st.session_state.menu_idx = 1
-    st.toast(f"Filtrando demandas operacionais de {nome_lev}...", icon="🔍")
+    st.session_state.ui_list = 'EM LEVANTAMENTO' # Filtro automático exigido
+    
+    # O GPS do Menu: O índice da Governança muda dependendo do perfil
+    if st.session_state.get('perfil_usuario') == "ADMIN":
+        st.session_state.menu_idx = 2  # 0=Painel, 1=Carga, 2=Governança
+    else:
+        st.session_state.menu_idx = 1  # 0=Painel, 1=Governança
+        
+    st.toast(f"Filtrando obras em levantamento de {nome_lev}...", icon="🔍")
 
 def view_painel_executivo():
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, municipios_por_levantador = load_core_data()
@@ -126,7 +134,6 @@ def view_painel_executivo():
     col_t1, col_t2 = st.columns([2.5, 1.5])
     with col_t1:
         st.markdown("#### 📋 Desempenho e Alocação das Equipes")
-        # ALTERAÇÃO APLICADA: Mudando 'Equipe': 'SAP' para 'Equipe': 'Equipe'
         st.dataframe(resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
                      use_container_width=True, hide_index=True, height=320, 
                      column_config={
@@ -180,6 +187,7 @@ def view_painel_executivo():
                     if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
             else: st.warning("🔒 Restrito à Coordenação.")
             
+            # Botão agora aponta para os índices corretos e leva a variável 'EM LEVANTAMENTO'
             st.button("🔍 Ver Base", on_click=filtrar_levantador_governanca, args=(lev_sel,), use_container_width=True)
             
     if st.session_state.get('show_demanda', False):
