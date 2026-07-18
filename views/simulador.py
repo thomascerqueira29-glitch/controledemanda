@@ -62,32 +62,42 @@ def view_simulador():
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Cenários por Regional</h4>", unsafe_allow_html=True)
     st.info("💡 **Dica:** Dê um duplo clique na coluna `Novos Levantadores` para simular contratações. Os resultados são recalculados em tempo real na própria linha.")
     
-    # Função auxiliar para contagem perfeita no groupby
+    # Função auxiliar para contagem perfeita
     def count_livres(x):
         return x.astype(str).str.strip().str.upper().isin(lixos).sum()
         
-    # Agrupamento de obras livres e totais por regional
     df_reg = df_ativas.groupby('REGIONAL').agg(
         Total_Obras=('PROTOCOLO', 'count'),
         Obras_Livres=('LEVANTADOR', count_livres)
     ).reset_index()
     
     # ---------------------------------------------------------------------
-    # CONTAGEM DE EQUIPES ATUAIS (MÉTODO BLINDADO)
+    # CONTAGEM DE EQUIPES ATUAIS (MÉTODO BLINDADO: 1 PESSOA = 1 REGIONAL)
     # ---------------------------------------------------------------------
-    # Pega a base real de obras ativas e extrai só os Nomes que não são lixo/zero
     df_reais = df_ativas[~df_ativas['LEVANTADOR'].astype(str).str.strip().str.upper().isin(lixos)].copy()
     
     if not df_reais.empty:
         df_reais['REGIONAL'] = df_reais['REGIONAL'].astype(str).str.upper()
         df_reais['LEV_CLEAN'] = df_reais['LEVANTADOR'].astype(str).str.strip().str.upper()
-        # Conta nomes únicos reais operando na regional
-        equipes_por_regional = df_reais.groupby('REGIONAL')['LEV_CLEAN'].nunique().reset_index()
-        equipes_por_regional.columns = ['REGIONAL', 'Equipes Atuais']
+        
+        # FILTRO DE OURO: Intersecciona apenas com a lista EXATA de levantadores oficiais validados (os 15)
+        levs_oficiais = [str(l).strip().upper() for l in todos_levs if str(l).strip() != '']
+        if levs_oficiais:
+            df_reais = df_reais[df_reais['LEV_CLEAN'].isin(levs_oficiais)]
+            
+        if not df_reais.empty:
+            # Acha a "Regional Principal" de cada um (onde ele tem mais obras) e elimina duplicidades
+            reg_principal = df_reais.groupby(['LEV_CLEAN', 'REGIONAL']).size().reset_index(name='Qtd')
+            reg_principal = reg_principal.sort_values('Qtd', ascending=False).drop_duplicates(subset=['LEV_CLEAN'])
+            
+            # Conta rigorosamente
+            equipes_por_regional = reg_principal.groupby('REGIONAL').size().reset_index(name='Equipes Atuais')
+        else:
+            equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
     else:
         equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
     
-    # Cruza as informações (Obras x Equipes)
+    # Cruza os dados
     df_reg['REGIONAL'] = df_reg['REGIONAL'].astype(str).str.upper()
     df_reg = pd.merge(df_reg, equipes_por_regional, on='REGIONAL', how='left')
     df_reg['Equipes Atuais'] = df_reg['Equipes Atuais'].fillna(0).astype(int)
@@ -95,16 +105,14 @@ def view_simulador():
 
     df_reg['Obras_Cobertas'] = df_reg['Total_Obras'] - df_reg['Obras_Livres']
     
-    # Inicia a memória de simulação caso não exista
+    # Inicia a memória de simulação
     if 'sim_inputs' not in st.session_state:
         st.session_state.sim_inputs = {reg: 0 for reg in df_reg['REGIONAL']}
         
-    # Sincroniza dados novos com a memória
     for reg in df_reg['REGIONAL']:
         if reg not in st.session_state.sim_inputs:
             st.session_state.sim_inputs[reg] = 0
             
-    # Alimenta o DataFrame com as edições do usuário
     df_reg['Novos Levantadores'] = df_reg['REGIONAL'].map(st.session_state.sim_inputs).fillna(0).astype(int)
     
     # Projeções Matemáticas
@@ -114,7 +122,6 @@ def view_simulador():
     df_reg['Gap Restante'] = np.maximum(0, df_reg['Total_Obras'] - df_reg['Projeção'])
     df_reg['Cobertura %'] = np.minimum(100, (df_reg['Projeção'] / df_reg['Total_Obras']) * 100)
     
-    # Prepara visualização limpa
     df_display = df_reg[['REGIONAL', 'Total_Obras', 'Equipes Atuais', 'Obras_Livres', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
     df_display.rename(columns={'Total_Obras': 'Total Obras', 'Obras_Livres': 'Gap Atual'}, inplace=True)
     
@@ -124,7 +131,7 @@ def view_simulador():
         column_config={
             "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
             "Total Obras": st.column_config.NumberColumn("Total Obras", disabled=True),
-            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Qtd. de levantadores reais atuando ativamente nesta regional"),
+            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Força de trabalho EXATA baseada nos levantadores únicos validados."),
             "Gap Atual": st.column_config.NumberColumn("Gap Atual", disabled=True),
             "Novos Levantadores": st.column_config.NumberColumn(
                 "✏️ Novos Levantadores (Input)", 
@@ -145,7 +152,6 @@ def view_simulador():
         key="simulador_editor_ativo"
     )
     
-    # Feedback visual rápido
     needs_rerun = False
     for index, row in edited_df.iterrows():
         reg = row['REGIONAL']
