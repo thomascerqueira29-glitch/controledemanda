@@ -100,21 +100,23 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
 def filtrar_levantador_governanca(nome_lev):
     # =====================================================================
-    # CORREÇÃO DE ROTEAMENTO E STATUS LIST
+    # CORREÇÃO DE ROTEAMENTO (MANDA PARA O ÍNDICE CERTO DE ADMINS) E FILTROS
     # =====================================================================
-    st.session_state.ui_lev = nome_lev
-    st.session_state.ui_reg = 'TODAS'
-    st.session_state.ui_mun = 'TODOS'
-    st.session_state.ui_sap = 'TODOS'
-    st.session_state.ui_list = 'EM LEVANTAMENTO' # Filtro automático exigido
+    st.session_state['filtro_lev_widget'] = nome_lev
+    st.session_state['filtro_reg_widget'] = 'TODAS'
+    st.session_state['filtro_mun_widget'] = 'TODOS'
+    st.session_state['filtro_sap_widget'] = 'TODOS'
     
-    # O GPS do Menu: O índice da Governança muda dependendo do perfil
+    # Envia a mensagem para Governança filtrar apenas por 'Em Levantamento'
+    st.session_state['target_status_list'] = 'EM LEVANTAMENTO'
+
+    # Se você for ADMIN, a Governança é a 5ª opção no menu (índice 4)!
     if st.session_state.get('perfil_usuario') == "ADMIN":
-        st.session_state.menu_idx = 2  # 0=Painel, 1=Carga, 2=Governança
+        st.session_state.menu_idx = 4
     else:
-        st.session_state.menu_idx = 1  # 0=Painel, 1=Governança
+        st.session_state.menu_idx = 1
         
-    st.toast(f"Filtrando obras em levantamento de {nome_lev}...", icon="🔍")
+    st.toast(f"Redirecionando para as obras em andamento de {nome_lev}...", icon="🚀")
 
 def view_painel_executivo():
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, municipios_por_levantador = load_core_data()
@@ -187,7 +189,6 @@ def view_painel_executivo():
                     if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
             else: st.warning("🔒 Restrito à Coordenação.")
             
-            # Botão agora aponta para os índices corretos e leva a variável 'EM LEVANTAMENTO'
             st.button("🔍 Ver Base", on_click=filtrar_levantador_governanca, args=(lev_sel,), use_container_width=True)
             
     if st.session_state.get('show_demanda', False):
