@@ -115,13 +115,13 @@ def load_core_data():
         # REGRA 2: Identifica Levantadores Provisórios (nomes que estão na base, mas não na lista oficial de equipes)
         levs_com_obras = set(contagem.index) - {SEM_LEVANTADOR, 'nan', 'NAN', '', 'None'}
         levs_oficiais = set(resumo_lev['Levantador']) if not resumo_lev.empty else set()
-        levs_provisorios = levs_com_obras - levs_oficiais
+        levs_provisorios = list(levs_com_obras - levs_oficiais)
         
-        # Adiciona os Provisórios na tabela de resumo
+        # Adiciona os Provisórios na tabela de resumo usando o próprio nome na coluna 'Equipe'
         if levs_provisorios:
             df_provisorios = pd.DataFrame({
-                'Levantador': list(levs_provisorios),
-                'Equipe': 'Provisório / Extra'
+                'Levantador': levs_provisorios,
+                'Equipe': levs_provisorios
             })
             resumo_lev = pd.concat([resumo_lev, df_provisorios], ignore_index=True)
             
