@@ -9,7 +9,7 @@ def view_governanca():
     # 1. Carregamento dos Dados
     df_notas, _, _, _, _, _, _, _ = load_core_data()
     
-    # 2. Mapeamento das 22 colunas exatas do 'template.xlsx'
+    # 2. Mapeamento das 22 colunas exatas
     colunas_template = [
         'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
         'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
@@ -19,7 +19,7 @@ def view_governanca():
         'PONTO DE REFERENCIA', 'TIPO LIGACAO'
     ]
     
-    # Garante que o banco obedeça à estrutura do template
+    # Garante estrutura
     if df_notas.empty:
         df_notas = pd.DataFrame(columns=colunas_template)
     else:
@@ -34,35 +34,66 @@ def view_governanca():
     colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST']
     for col in colunas_data:
         if col in df_notas.columns:
-            # Converte as strings do banco para objetos de Data (para o calendário funcionar na tela)
             df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce', dayfirst=True)
 
-    # 3. Área de Filtros Interativos (BLINDADO CONTRA TYPE ERROR)
+    # =====================================================================
+    # CAPTURA INTELIGENTE DOS FILTROS (Vindos do Painel Executivo)
+    # =====================================================================
+    def_reg = st.session_state.get('ui_reg', 'TODAS')
+    def_mun = st.session_state.get('ui_mun', 'TODOS')
+    def_lev = st.session_state.get('ui_lev', 'TODOS')
+    def_sap = st.session_state.get('ui_sap', 'TODOS')
+    
+    # Se vier uma lista residual do cache antigo, ignora. Pega a String pura.
+    def_list = st.session_state.get('ui_list', 'TODOS')
+    if isinstance(def_list, list): 
+        def_list = 'TODOS'
+
+    # 3. Área de Filtros Interativos (Agora com 5 Colunas)
     with st.expander("📊 Painel de Filtros", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         
-        # Filtros seguros: forçam a conversão para texto puro e ignoram células corrompidas (NaN)
         regioes = ["TODAS"] + sorted([str(x) for x in df_notas['REGIONAL'].unique() if pd.notna(x)])
-        filtro_reg = c1.selectbox("Regional", regioes)
+        idx_reg = regioes.index(def_reg) if def_reg in regioes else 0
+        filtro_reg = c1.selectbox("Regional", regioes, index=idx_reg)
         
         municipios = ["TODOS"] + sorted([str(x) for x in df_notas['MUNICIPIO'].unique() if pd.notna(x)])
-        filtro_mun = c2.selectbox("Município", municipios)
+        idx_mun = municipios.index(def_mun) if def_mun in municipios else 0
+        filtro_mun = c2.selectbox("Município", municipios, index=idx_mun)
         
         levantadores = ["TODOS"] + sorted([str(x) for x in df_notas['LEVANTADOR'].unique() if pd.notna(x)])
-        filtro_lev = c3.selectbox("Levantador", levantadores)
+        idx_lev = levantadores.index(def_lev) if def_lev in levantadores else 0
+        filtro_lev = c3.selectbox("Levantador", levantadores, index=idx_lev)
         
         status_sap = ["TODOS"] + sorted([str(x) for x in df_notas['STATUS SAP'].unique() if pd.notna(x)])
-        filtro_sap = c4.selectbox("Status SAP", status_sap)
+        idx_sap = status_sap.index(def_sap) if def_sap in status_sap else 0
+        filtro_sap = c4.selectbox("Status SAP", status_sap, index=idx_sap)
+        
+        # O NOVO FILTRO: Status List (Sincronizado automaticamente)
+        status_list = ["TODOS"] + sorted([str(x) for x in df_notas['STATUS LIST'].unique() if pd.notna(x)])
+        idx_list = 0
+        if def_list != 'TODOS':
+            for i, item in enumerate(status_list):
+                if item.upper() == def_list.upper():
+                    idx_list = i
+                    break
+        filtro_list = c5.selectbox("Status List", status_list, index=idx_list)
         
         busca_livre = st.text_input("🔍 Busca Rápida (ID SISCO, PROTOCOLO ou NOME DO SOLICITANTE)")
 
-    # 4. Aplicação dos Filtros (Reforçado)
+    # Limpa as variáveis da memória para que o usuário possa trocar os filtros manualmente depois
+    for key in ['ui_lev', 'ui_reg', 'ui_mun', 'ui_sap', 'ui_list']:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    # 4. Aplicação dos Filtros 
     df_filtrado = df_notas.copy()
     
     if filtro_reg != "TODAS": df_filtrado = df_filtrado[df_filtrado['REGIONAL'].astype(str) == filtro_reg]
     if filtro_mun != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'].astype(str) == filtro_mun]
     if filtro_lev != "TODOS": df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'].astype(str) == filtro_lev]
     if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'].astype(str) == filtro_sap]
+    if filtro_list != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].astype(str) == filtro_list]
     
     if busca_livre:
         termo = str(busca_livre).lower()
@@ -74,15 +105,14 @@ def view_governanca():
 
     st.caption(f"**Total de Obras Filtradas:** {len(df_filtrado)} registros.")
 
-    # Configura visualização do calendário no Data Editor
     config_colunas = {}
     for col in colunas_data:
         config_colunas[col] = st.column_config.DateColumn(
             col,
-            format="DD/MM/YYYY" # Força o formato brasileiro na exibição
+            format="DD/MM/YYYY" 
         )
 
-    # 5. Tabela de Edição (Estilo Planilha)
+    # 5. Tabela de Edição
     df_editado = st.data_editor(
         df_filtrado,
         use_container_width=True,
