@@ -29,10 +29,11 @@ def view_governanca():
         cols_extras = [c for c in df_notas.columns if c not in colunas_template]
         df_notas = df_notas[colunas_template + cols_extras]
 
+    # Prepara as datas em formato puro (sem horas) para o st.column_config.DateColumn não bugar
     colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST']
     for col in colunas_data:
         if col in df_notas.columns:
-            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce', dayfirst=True)
+            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.date
 
     # =====================================================================
     # 3. LISTAS DE FILTROS E CONEXÃO COM O PAINEL EXECUTIVO
@@ -119,6 +120,7 @@ def view_governanca():
             if novos_indices:
                 df_notas = pd.concat([df_notas, df_editado.loc[novos_indices]])
             
+            # Ao salvar no Banco de Dados, transforma tudo de volta para a String Brasileira padrão (DD/MM/YYYY)
             for col in colunas_data:
                 if col in df_notas.columns:
                     df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna("")
