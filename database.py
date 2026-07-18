@@ -38,33 +38,32 @@ def init_business_db():
                 if col not in df_legacy.columns: df_legacy[col] = ""
             df_legacy[colunas_oficiais].to_sql('notas', conn, if_exists='replace', index=False)
                 
-            if os.path.exists('base levantador.xlsx'): 
+            if os.path.exists('levantadores.xlsx'): 
+                pd.read_excel('levantadores.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
+            elif os.path.exists('base levantador.xlsx'): 
                 pd.read_excel('base levantador.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
             elif os.path.exists('EQUIPES.xlsx'): 
                 pd.read_excel('EQUIPES.xlsx').to_sql('equipes', conn, if_exists='replace', index=False)
             else: 
-                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe', 'Residencia']).to_sql('equipes', conn, if_exists='replace', index=False)
+                pd.DataFrame(columns=['Município', 'Estado', 'Levantador', 'Regional', 'Longitude', 'Latitude', 'Equipe']).to_sql('equipes', conn, if_exists='replace', index=False)
     except Exception: pass
 
 def sync_residencias_banco():
     pass
 
 def parse_dates_safe(series):
-    """Tradutor Universal de Datas: Blindado contra conflitos de versão do Pandas"""
     if pd.api.types.is_datetime64_any_dtype(series):
         return series
     
     s = series.astype(str).str.strip()
     s = s.replace(['', 'nan', 'NAN', 'None', 'NaT', '0', '0.0', '<NA>'], np.nan)
     
-    # Tenta quebrar a data nos formatos mais comuns, um por um, em cascata
     s1 = pd.to_datetime(s, format='%d/%m/%Y', errors='coerce')
     s2 = pd.to_datetime(s, format='%d/%m/%Y %H:%M:%S', errors='coerce')
     s3 = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
     s4 = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S', errors='coerce')
     s5 = pd.to_datetime(s, errors='coerce', dayfirst=True) 
     
-    # Prevenção extra: Planilhas do Excel salvam datas como números seriais (ex: 45430)
     s_num = pd.to_numeric(s, errors='coerce')
     s6 = pd.to_datetime(s_num, origin='1899-12-30', unit='D', errors='coerce')
     
@@ -80,7 +79,6 @@ def load_core_data():
         df_notas = pd.DataFrame()
         df_equipes = pd.DataFrame()
         
-    # Correção de nomenclatura comum de planilhas
     if 'DATA CRIAÇÃO SISCO' in df_notas.columns and 'DATA CRIAÇAO SISCO' not in df_notas.columns:
         df_notas = df_notas.rename(columns={'DATA CRIAÇÃO SISCO': 'DATA CRIAÇAO SISCO'})
 
@@ -163,6 +161,23 @@ def save_notas_to_db(df, acao="Atualização", backup=False):
         df.to_sql('notas', conn, if_exists='replace', index=False)
     load_core_data.clear()
     return True
+
+# ---------------- NOVO: FUNÇÕES DE PLANILHA DE MUNICÍPIOS ----------------
+@st.cache_data(show_spinner=False)
+def get_base_levantadores():
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            return pd.read_sql("SELECT * FROM equipes", conn)
+    except Exception:
+        return pd.DataFrame()
+
+def save_base_levantadores(df):
+    with sqlite3.connect(DB_PATH, timeout=10) as conn:
+        df.to_sql('equipes', conn, if_exists='replace', index=False)
+    get_base_levantadores.clear()
+    load_core_data.clear()
+    return True
+# -------------------------------------------------------------------------
 
 def vectorized_haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
