@@ -65,14 +65,33 @@ def view_simulador():
         Obras_Livres=('LEVANTADOR', lambda x: (x == SEM_LEVANTADOR).sum())
     ).reset_index()
     
-    # CALCULA A FORÇA DE TRABALHO ATUAL (Quantidade de levantadores reais já alocados por regional)
-    equipes_por_regional = df_ativas[df_ativas['LEVANTADOR'] != SEM_LEVANTADOR].groupby('REGIONAL')['LEVANTADOR'].nunique().reset_index()
-    equipes_por_regional.rename(columns={'LEVANTADOR': 'Equipes Atuais'}, inplace=True)
+    # ---------------------------------------------------------------------
+    # CORREÇÃO DA FORÇA DE TRABALHO ATUAL
+    # Agora a contagem é feita olhando para a lista OFICIAL de equipes (df_equipes)
+    # garantindo que os números batam com a estrutura fixa (5, 3, 2, 2, 3)
+    # ---------------------------------------------------------------------
+    if not df_equipes.empty:
+        # Identifica a coluna correta de regional na base oficial
+        col_reg_eq = 'Regional' if 'Regional' in df_equipes.columns else 'REGIONAL' if 'REGIONAL' in df_equipes.columns else None
+        
+        if col_reg_eq and 'Levantador' in df_equipes.columns:
+            df_eq_clean = df_equipes.dropna(subset=['Levantador', col_reg_eq])
+            df_eq_clean = df_eq_clean[df_eq_clean['Levantador'].astype(str).str.strip() != '']
+            
+            equipes_por_regional = df_eq_clean.groupby(col_reg_eq)['Levantador'].nunique().reset_index()
+            equipes_por_regional.columns = ['REGIONAL', 'Equipes Atuais']
+            equipes_por_regional['REGIONAL'] = equipes_por_regional['REGIONAL'].astype(str).str.upper()
+        else:
+            equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
+    else:
+        equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
     
-    # Cruza as informações
+    # Cruza as informações das obras com as equipes oficiais
+    df_reg['REGIONAL'] = df_reg['REGIONAL'].astype(str).str.upper()
     df_reg = pd.merge(df_reg, equipes_por_regional, on='REGIONAL', how='left')
     df_reg['Equipes Atuais'] = df_reg['Equipes Atuais'].fillna(0).astype(int)
-    
+    # ---------------------------------------------------------------------
+
     df_reg['Obras_Cobertas'] = df_reg['Total_Obras'] - df_reg['Obras_Livres']
     
     # Inicia a memória de simulação caso não exista
@@ -104,7 +123,7 @@ def view_simulador():
         column_config={
             "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
             "Total Obras": st.column_config.NumberColumn("Total Obras", disabled=True),
-            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Qtd. de levantadores que já possuem obras nesta regional"),
+            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Lista oficial de equipes fixas cadastradas no sistema para esta regional"),
             "Gap Atual": st.column_config.NumberColumn("Gap Atual", disabled=True),
             "Novos Levantadores": st.column_config.NumberColumn(
                 "✏️ Novos Levantadores (Input)", 
