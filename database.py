@@ -64,7 +64,11 @@ def parse_dates_safe(series):
     s4 = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S', errors='coerce')
     s5 = pd.to_datetime(s, errors='coerce', dayfirst=True) 
     
-    return s1.combine_first(s2).combine_first(s3).combine_first(s4).combine_first(s5)
+    # Prevenção extra: Planilhas do Excel salvam datas como números seriais (ex: 45430)
+    s_num = pd.to_numeric(s, errors='coerce')
+    s6 = pd.to_datetime(s_num, origin='1899-12-30', unit='D', errors='coerce')
+    
+    return s1.combine_first(s2).combine_first(s3).combine_first(s4).combine_first(s6).combine_first(s5)
 
 @st.cache_data(show_spinner=False)
 def load_core_data():
@@ -75,8 +79,11 @@ def load_core_data():
     except Exception:
         df_notas = pd.DataFrame()
         df_equipes = pd.DataFrame()
+        
+    # Correção de nomenclatura comum de planilhas
+    if 'DATA CRIAÇÃO SISCO' in df_notas.columns and 'DATA CRIAÇAO SISCO' not in df_notas.columns:
+        df_notas = df_notas.rename(columns={'DATA CRIAÇÃO SISCO': 'DATA CRIAÇAO SISCO'})
 
-    # Aplica o Tradutor Universal
     colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'DATA DE VENCIMENTO']
     for col in colunas_data:
         if col in df_notas.columns:
