@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-from database import load_core_data, SEM_LEVANTADOR, STATUS_PRODUTIVIDADE
+from database import load_core_data, STATUS_PRODUTIVIDADE
 
 def view_simulador():
     st.markdown("### 🧮 Simulador de Alocação de Equipes")
@@ -18,7 +18,6 @@ def view_simulador():
         return
 
     # Extração de Métricas Chaves
-    total_obras = len(df_notas)
     total_municipios = df_notas['MUNICIPIO'].nunique()
     
     # Considera obras ativas para a simulação de produtividade
@@ -27,8 +26,12 @@ def view_simulador():
     else:
         df_ativas = df_notas.copy()
     
-    obras_livres_total = len(df_ativas[df_ativas['LEVANTADOR'] == SEM_LEVANTADOR])
-    obras_cobertas_total = len(df_ativas[df_ativas['LEVANTADOR'] != SEM_LEVANTADOR])
+    # O EXTERMINADOR DE LIXO: Define exatamente o que é uma obra sem levantador
+    lixos = ['SEM LEVANTADOR', 'NAN', 'NONE', '', '0', '0.0', '<NA>']
+    
+    is_livre = df_ativas['LEVANTADOR'].astype(str).str.strip().str.upper().isin(lixos)
+    obras_livres_total = is_livre.sum()
+    obras_cobertas_total = len(df_ativas) - obras_livres_total
     cobertura_geral_atual = (obras_cobertas_total / len(df_ativas) * 100) if len(df_ativas) > 0 else 0
 
     # =====================================================================
@@ -59,34 +62,32 @@ def view_simulador():
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Cenários por Regional</h4>", unsafe_allow_html=True)
     st.info("💡 **Dica:** Dê um duplo clique na coluna `Novos Levantadores` para simular contratações. Os resultados são recalculados em tempo real na própria linha.")
     
+    # Função auxiliar para contagem perfeita no groupby
+    def count_livres(x):
+        return x.astype(str).str.strip().str.upper().isin(lixos).sum()
+        
     # Agrupamento de obras livres e totais por regional
     df_reg = df_ativas.groupby('REGIONAL').agg(
         Total_Obras=('PROTOCOLO', 'count'),
-        Obras_Livres=('LEVANTADOR', lambda x: (x == SEM_LEVANTADOR).sum())
+        Obras_Livres=('LEVANTADOR', count_livres)
     ).reset_index()
     
     # ---------------------------------------------------------------------
-    # CORREÇÃO DA FORÇA DE TRABALHO ATUAL
-    # Agora a contagem é feita olhando para a lista OFICIAL de equipes (df_equipes)
-    # garantindo que os números batam com a estrutura fixa (5, 3, 2, 2, 3)
+    # CONTAGEM DE EQUIPES ATUAIS (MÉTODO BLINDADO)
     # ---------------------------------------------------------------------
-    if not df_equipes.empty:
-        # Identifica a coluna correta de regional na base oficial
-        col_reg_eq = 'Regional' if 'Regional' in df_equipes.columns else 'REGIONAL' if 'REGIONAL' in df_equipes.columns else None
-        
-        if col_reg_eq and 'Levantador' in df_equipes.columns:
-            df_eq_clean = df_equipes.dropna(subset=['Levantador', col_reg_eq])
-            df_eq_clean = df_eq_clean[df_eq_clean['Levantador'].astype(str).str.strip() != '']
-            
-            equipes_por_regional = df_eq_clean.groupby(col_reg_eq)['Levantador'].nunique().reset_index()
-            equipes_por_regional.columns = ['REGIONAL', 'Equipes Atuais']
-            equipes_por_regional['REGIONAL'] = equipes_por_regional['REGIONAL'].astype(str).str.upper()
-        else:
-            equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
+    # Pega a base real de obras ativas e extrai só os Nomes que não são lixo/zero
+    df_reais = df_ativas[~df_ativas['LEVANTADOR'].astype(str).str.strip().str.upper().isin(lixos)].copy()
+    
+    if not df_reais.empty:
+        df_reais['REGIONAL'] = df_reais['REGIONAL'].astype(str).str.upper()
+        df_reais['LEV_CLEAN'] = df_reais['LEVANTADOR'].astype(str).str.strip().str.upper()
+        # Conta nomes únicos reais operando na regional
+        equipes_por_regional = df_reais.groupby('REGIONAL')['LEV_CLEAN'].nunique().reset_index()
+        equipes_por_regional.columns = ['REGIONAL', 'Equipes Atuais']
     else:
         equipes_por_regional = pd.DataFrame(columns=['REGIONAL', 'Equipes Atuais'])
     
-    # Cruza as informações das obras com as equipes oficiais
+    # Cruza as informações (Obras x Equipes)
     df_reg['REGIONAL'] = df_reg['REGIONAL'].astype(str).str.upper()
     df_reg = pd.merge(df_reg, equipes_por_regional, on='REGIONAL', how='left')
     df_reg['Equipes Atuais'] = df_reg['Equipes Atuais'].fillna(0).astype(int)
@@ -123,7 +124,7 @@ def view_simulador():
         column_config={
             "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
             "Total Obras": st.column_config.NumberColumn("Total Obras", disabled=True),
-            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Lista oficial de equipes fixas cadastradas no sistema para esta regional"),
+            "Equipes Atuais": st.column_config.NumberColumn("Equipes Atuais", disabled=True, help="Qtd. de levantadores reais atuando ativamente nesta regional"),
             "Gap Atual": st.column_config.NumberColumn("Gap Atual", disabled=True),
             "Novos Levantadores": st.column_config.NumberColumn(
                 "✏️ Novos Levantadores (Input)", 
