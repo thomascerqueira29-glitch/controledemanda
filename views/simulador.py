@@ -58,8 +58,14 @@ def view_simulador():
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Contratações por Regional</h4>", unsafe_allow_html=True)
     st.info("Insira o número de Equipes Atuais na sua operação e preveja a cobertura no campo 'Novos Levantadores'.")
     
-    # Coluna 1: Total de Obras Gerais (Absoluto) - Sem exceção
-    df_reg = df_notas.groupby('REGIONAL').agg(Total_Obras=('PROTOCOLO', 'count')).reset_index()
+    # -----------------------------------------------------------------
+    # FILTRO ANTI-LIXO PARA A REGIONAL
+    # -----------------------------------------------------------------
+    lixos_reg = ['0', '0.0', 'NAN', 'NONE', '', '<NA>']
+    df_notas_validas = df_notas[~df_notas['REGIONAL'].astype(str).str.strip().str.upper().isin(lixos_reg)].copy()
+
+    # Coluna 1: Total de Obras Gerais (Absoluto) - Sem exceção (mas sem os lixos de regional 0)
+    df_reg = df_notas_validas.groupby('REGIONAL').agg(Total_Obras=('PROTOCOLO', 'count')).reset_index()
     
     # Coluna 2: Equipes Atuais (Agora Editável pelo Usuário - Inicialmente 0)
     if 'sim_atuais' not in st.session_state:
@@ -93,7 +99,6 @@ def view_simulador():
     df_reg['Novos Levantadores'] = df_reg['REGIONAL'].map(st.session_state.sim_novos).fillna(0).astype(int)
     
     # Projeção: Assumindo que cada levantador cobre uma média de municípios base
-    # (Para simulação linear: Nova equipe cobre parte do Gap do Território)
     META_MUNICIPIOS_POR_EQUIPE = 10 
     
     df_reg['Capacidade Adicional'] = df_reg['Novos Levantadores'] * META_MUNICIPIOS_POR_EQUIPE
