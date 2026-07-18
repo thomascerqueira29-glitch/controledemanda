@@ -49,6 +49,23 @@ def init_business_db():
 def sync_residencias_banco():
     pass
 
+def parse_dates_safe(series):
+    """Tradutor Universal de Datas: Blindado contra conflitos de versão do Pandas"""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    
+    s = series.astype(str).str.strip()
+    s = s.replace(['', 'nan', 'NAN', 'None', 'NaT', '0', '0.0', '<NA>'], np.nan)
+    
+    # Tenta quebrar a data nos formatos mais comuns, um por um, em cascata
+    s1 = pd.to_datetime(s, format='%d/%m/%Y', errors='coerce')
+    s2 = pd.to_datetime(s, format='%d/%m/%Y %H:%M:%S', errors='coerce')
+    s3 = pd.to_datetime(s, format='%Y-%m-%d', errors='coerce')
+    s4 = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S', errors='coerce')
+    s5 = pd.to_datetime(s, errors='coerce', dayfirst=True) 
+    
+    return s1.combine_first(s2).combine_first(s3).combine_first(s4).combine_first(s5)
+
 @st.cache_data(show_spinner=False)
 def load_core_data():
     try:
@@ -59,10 +76,11 @@ def load_core_data():
         df_notas = pd.DataFrame()
         df_equipes = pd.DataFrame()
 
+    # Aplica o Tradutor Universal
     colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'DATA DE VENCIMENTO']
     for col in colunas_data:
         if col in df_notas.columns:
-            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce', dayfirst=True)
+            df_notas[col] = parse_dates_safe(df_notas[col])
 
     if not df_notas.empty:
         if 'LATITUDE' in df_notas.columns and 'LONGITUDE' in df_notas.columns:
@@ -94,17 +112,22 @@ def load_core_data():
             resumo_lev = df_equipes[['Levantador']].drop_duplicates()
             resumo_lev['Equipe'] = 'Sem Equipe'
 
-    # BLINDAGEM: Garante que "SEM LEVANTADOR" nunca seja considerado um técnico na tabela
     if not resumo_lev.empty:
-        resumo_lev = resumo_lev[~resumo_lev['Levantador'].astype(str).str.strip().str.upper().isin(['SEM LEVANTADOR', 'NAN', 'NONE', ''])]
+        resumo_lev['Levantador'] = resumo_lev['Levantador'].astype(str).str.strip().str.upper()
+        lixos_oficiais = ['SEM LEVANTADOR', 'NAN', 'NONE', '', '0', '0.0']
+        resumo_lev = resumo_lev[~resumo_lev['Levantador'].isin(lixos_oficiais)].copy()
             
     if not df_notas.empty and 'LEVANTADOR' in df_notas.columns and 'STATUS LIST' in df_notas.columns:
         mask_em_levantamento = df_notas['STATUS LIST'].astype(str).str.strip().str.upper() == 'EM LEVANTAMENTO'
         df_em_levantamento = df_notas[mask_em_levantamento].copy()
         
-        contagem = df_em_levantamento.groupby('LEVANTADOR').size()
+        df_em_levantamento['LEV_CLEAN'] = df_em_levantamento['LEVANTADOR'].astype(str).str.strip().str.upper()
+        lixos_notas = ['SEM LEVANTADOR', 'NAN', 'NONE', '', '0', '0.0']
+        df_em_levantamento = df_em_levantamento[~df_em_levantamento['LEV_CLEAN'].isin(lixos_notas)]
         
-        levs_com_obras = set(contagem.index) - {SEM_LEVANTADOR, 'nan', 'NAN', '', 'None'}
+        contagem_upper = df_em_levantamento.groupby('LEV_CLEAN').size()
+        
+        levs_com_obras = set(contagem_upper.index)
         levs_oficiais = set(resumo_lev['Levantador']) if not resumo_lev.empty else set()
         levs_provisorios = list(levs_com_obras - levs_oficiais)
         
@@ -116,7 +139,8 @@ def load_core_data():
             resumo_lev = pd.concat([resumo_lev, df_provisorios], ignore_index=True)
             
         if not resumo_lev.empty:
-            resumo_lev['Total_Obras_Real'] = resumo_lev['Levantador'].map(contagem).fillna(0).astype(int)
+            resumo_lev['Levantador'] = resumo_lev['Levantador'].astype(str).str.upper()
+            resumo_lev['Total_Obras_Real'] = resumo_lev['Levantador'].map(contagem_upper).fillna(0).astype(int)
     else:
         if not resumo_lev.empty:
             resumo_lev['Total_Obras_Real'] = 0
