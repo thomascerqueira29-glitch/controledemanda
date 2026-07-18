@@ -41,21 +41,16 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         if bounds is not None:
             mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
-    # =====================================================================
-    # CAMADA 1: BASES DOS LEVANTADORES (Proteção Total com .assign)
-    # =====================================================================
     fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy(deep=True)
         lat_col_eq = next((c for c in df_eq.columns if str(c).upper() == 'LATITUDE'), None)
         lon_col_eq = next((c for c in df_eq.columns if str(c).upper() == 'LONGITUDE'), None)
         
-        # Cria as colunas forçadamente em um novo objeto na memória
         val_lat = pd.to_numeric(df_eq[lat_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lat_col_eq else np.nan
         val_lon = pd.to_numeric(df_eq[lon_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lon_col_eq else np.nan
         df_eq = df_eq.assign(Lat=val_lat, Lon=val_lon)
         
-        # Só tenta dar drop se a coluna existir fisicamente
         if 'Lat' in df_eq.columns and 'Lon' in df_eq.columns:
             df_eq_valid = df_eq.dropna(subset=['Lat', 'Lon'])
             for _, row in df_eq_valid.iterrows():
@@ -68,9 +63,6 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 ).add_to(fg_equipes)
     fg_equipes.add_to(mapa)
 
-    # =====================================================================
-    # CAMADA 2: DEMANDAS ATIVAS (Proteção Total com .assign)
-    # =====================================================================
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
         lat_col = next((c for c in df_ob.columns if str(c).upper() == 'LATITUDE'), None)
@@ -134,9 +126,14 @@ def view_painel_executivo():
     col_t1, col_t2 = st.columns([2.5, 1.5])
     with col_t1:
         st.markdown("#### 📋 Desempenho e Alocação das Equipes")
+        # ALTERAÇÃO APLICADA: Mudando 'Equipe': 'SAP' para 'Equipe': 'Equipe'
         st.dataframe(resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
                      use_container_width=True, hide_index=True, height=320, 
-                     column_config={"Levantador": "Técnico", "Equipe": "SAP", "Total_Obras_Real": st.column_config.ProgressColumn("Obras (Meta: 45)", format="%d", min_value=0, max_value=45)})
+                     column_config={
+                         "Levantador": "Técnico", 
+                         "Equipe": "Equipe", 
+                         "Total_Obras_Real": st.column_config.ProgressColumn("Obras (Meta: 45)", format="%d", min_value=0, max_value=45)
+                     })
         
     with col_t2:
         st.markdown("#### ⚡ Painel de Ações Rápidas")
