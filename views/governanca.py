@@ -29,11 +29,11 @@ def view_governanca():
         cols_extras = [c for c in df_notas.columns if c not in colunas_template]
         df_notas = df_notas[colunas_template + cols_extras]
 
-    # Prepara as datas em formato puro (sem horas) para o st.column_config.DateColumn não bugar
+    # Transforma em Data Nativa do Pandas (Para o calendário funcionar sem bugs)
     colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST']
     for col in colunas_data:
         if col in df_notas.columns:
-            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.date
+            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce')
 
     # =====================================================================
     # 3. LISTAS DE FILTROS E CONEXÃO COM O PAINEL EXECUTIVO
@@ -44,7 +44,6 @@ def view_governanca():
     status_sap = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS SAP'].unique() if pd.notna(x)])))
     status_list_op = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS LIST'].unique() if pd.notna(x)])))
 
-    # Captura a exigência do "Em levantamento" enviada pelo botão Ver Base
     if 'target_status_list' in st.session_state:
         alvo = st.session_state.pop('target_status_list')
         match = next((s for s in status_list_op if str(s).upper() == alvo), None)
@@ -53,11 +52,9 @@ def view_governanca():
         else:
             st.session_state['filtro_list_widget'] = 'TODOS'
 
-    # Escudo Anti-Bug: Impede o sistema de travar caso o levantador procurado tenha sumido da base
     if st.session_state.get('filtro_lev_widget') and st.session_state['filtro_lev_widget'] not in levantadores:
         st.session_state['filtro_lev_widget'] = "TODOS"
 
-    # ÁREA DE FILTROS INTERATIVOS - As 'keys' gravam e preservam a sua escolha
     with st.expander("📊 Painel de Filtros", expanded=True):
         c1, c2, c3, c4, c5 = st.columns(5)
         filtro_reg = c1.selectbox("Regional", regioes, key="filtro_reg_widget")
@@ -120,10 +117,11 @@ def view_governanca():
             if novos_indices:
                 df_notas = pd.concat([df_notas, df_editado.loc[novos_indices]])
             
-            # Ao salvar no Banco de Dados, transforma tudo de volta para a String Brasileira padrão (DD/MM/YYYY)
+            # Formata limpo para DD/MM/YYYY antes de enviar para o DB e apaga NaTs fantasmas
             for col in colunas_data:
                 if col in df_notas.columns:
-                    df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna("")
+                    df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.strftime('%d/%m/%Y')
+                    df_notas[col] = df_notas[col].replace('NaT', '').fillna("")
             
             save_notas_to_db(df_notas)
             st.success("✅ Edições salvas com sucesso no banco de dados!")
