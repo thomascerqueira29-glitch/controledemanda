@@ -1,101 +1,186 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
-from database import load_core_data, SEM_LEVANTADOR
+import numpy as np
+from database import load_core_data, SEM_LEVANTADOR, STATUS_PRODUTIVIDADE
 
 def view_simulador():
-    st.markdown("<h2 style='text-align: center; color: #1A4F7C;'>Simulador de Alocação de Levantadores</h2>", unsafe_allow_html=True)
-    _, df_e, _, _, _, _, _, _ = load_core_data()
+    st.markdown("### 🧮 Simulador de Alocação de Equipes")
+    st.markdown("Otimize a distribuição de levantadores e preveja a cobertura das regionais em tempo real.")
     
-    if 'Regional' not in df_e.columns: df_e['Regional'] = ""
-    df_e['Regional'] = df_e['Regional'].replace(['', 'nan', 'None', '<NA>'], 'NÃO INFORMADA').astype(str).str.upper()
-    df_e['Levantador'] = df_e['Levantador'].astype(str).str.upper()
+    # =====================================================================
+    # 1. CARREGAMENTO DOS DADOS
+    # =====================================================================
+    df_notas, df_equipes, resumo_lev, criticos, todos_levs, _, _, _ = load_core_data()
+    
+    if df_notas.empty:
+        st.warning("Banco de dados vazio. Importe uma base para começar as simulações.")
+        return
 
-    mun_total = df_e.groupby('Regional')['Município'].nunique().reset_index(name='Total Municípios')
-    valid_lev_mask = ((df_e['Levantador'] != SEM_LEVANTADOR) & (df_e['Levantador'].notna()) & (~df_e['Levantador'].isin(['', '0', 'NAN', 'NONE'])))
-    mun_com = df_e[valid_lev_mask].groupby('Regional')['Município'].nunique().reset_index(name='Com Levantador')
-    lev_atuais = df_e[valid_lev_mask].groupby('Regional')['Levantador'].nunique().reset_index(name='Levantadores Atuais')
+    # Extração de Métricas Chaves
+    total_obras = len(df_notas)
+    total_municipios = df_notas['MUNICIPIO'].nunique()
+    
+    # Considera obras ativas para a simulação de produtividade
+    if 'STATUS LIST' in df_notas.columns:
+        df_ativas = df_notas[df_notas['STATUS LIST'].astype(str).str.upper().isin([s.upper() for s in STATUS_PRODUTIVIDADE])].copy()
+    else:
+        df_ativas = df_notas.copy()
+    
+    obras_livres_total = len(df_ativas[df_ativas['LEVANTADOR'] == SEM_LEVANTADOR])
+    obras_cobertas_total = len(df_ativas[df_ativas['LEVANTADOR'] != SEM_LEVANTADOR])
+    cobertura_geral_atual = (obras_cobertas_total / len(df_ativas) * 100) if len(df_ativas) > 0 else 0
 
-    df_sim = mun_total.merge(mun_com, on='Regional', how='left').fillna(0)
-    df_sim = df_sim.merge(lev_atuais, on='Regional', how='left').fillna(0)
-    df_sim['Sem Levantador'] = df_sim['Total Municípios'] - df_sim['Com Levantador']
-    df_sim['Levantadores Atuais'] = df_sim['Levantadores Atuais'].astype(int)
-    df_sim['Capacidade Media'] = np.where(df_sim['Levantadores Atuais'] > 0, df_sim['Com Levantador'] / df_sim['Levantadores Atuais'], 0)
-
+    # =====================================================================
+    # 2. CARDS DE INDICADORES (KPIs) - Design Visual e Hierarquia Tipográfica
+    # =====================================================================
+    def kpi_card(title, value, icon, color):
+        # CSS Inline para sombras, bordas e hierarquia
+        return f"""
+        <div style="background-color: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-left: 6px solid {color}; height: 100%; border: 1px solid #f0f2f6;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <p style="margin:0; font-size: 13px; color: #6c757d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">{title}</p>
+                <span style="font-size: 22px;">{icon}</span>
+            </div>
+            <h2 style="margin: 10px 0 0 0; color: #1e1e1e; font-size: 38px; font-weight: 800;">{value}</h2>
+        </div>
+        """
+        
+    st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3, c4 = st.columns(4)
-    ph_mun = c1.empty()
-    ph_com = c2.empty()
-    ph_sem = c3.empty()
-    ph_cob = c4.empty()
+    c1.markdown(kpi_card("Total Municípios", f"{total_municipios}", "🗺️", "#3b82f6"), unsafe_allow_html=True) # Azul
+    c2.markdown(kpi_card("Total Obras Ativas", f"{len(df_ativas)}", "🏗️", "#8b5cf6"), unsafe_allow_html=True) # Roxo
+    c3.markdown(kpi_card("Gap Atual (Livres)", f"{obras_livres_total}", "⚠️", "#f59e0b"), unsafe_allow_html=True) # Laranja
+    c4.markdown(kpi_card("Cobertura Atual", f"{cobertura_geral_atual:.1f}%", "🎯", "#10b981"), unsafe_allow_html=True) # Verde
+    st.markdown("<br><br>", unsafe_allow_html=True)
+
+    # =====================================================================
+    # 3. ARQUITETURA DA INFORMAÇÃO: TABELA UNIFICADA INTERATIVA
+    # =====================================================================
+    st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Cenários por Regional</h4>", unsafe_allow_html=True)
+    st.info("💡 **Dica:** Dê um duplo clique na coluna `Novos Levantadores` para simular contratações. Os resultados são recalculados em tempo real na própria linha.")
     
-    st.write("")
-    st.markdown("<h4 style='background-color: #333; color: white; padding: 5px 10px; border-radius: 5px;'>Dados por Regional (Edite os Novos Levantadores)</h4>", unsafe_allow_html=True)
-
-    df_sim['Novos Levantadores'] = 0
-    col_config = {
-        "Regional": st.column_config.TextColumn("Regional", disabled=True),
-        "Total Municípios": st.column_config.NumberColumn("Total Municípios", disabled=True),
-        "Com Levantador": st.column_config.NumberColumn("Com Levantador", disabled=True),
-        "Sem Levantador": st.column_config.NumberColumn("Sem Levantador", disabled=True),
-        "Levantadores Atuais": st.column_config.NumberColumn("Levantadores Atuais", disabled=True),
-        "Novos Levantadores": st.column_config.NumberColumn("Novos Levantadores", min_value=0, step=1),
-        "Capacidade Media": None 
-    }
-
-    df_edited = st.data_editor(df_sim, column_config=col_config, use_container_width=True, hide_index=True, key='editor_simulador')
-
-    df_edited['Municipios Ganhos'] = np.floor(df_edited['Novos Levantadores'] * df_edited['Capacidade Media']).astype(int)
-    df_edited['Municipios Ganhos'] = df_edited[['Municipios Ganhos', 'Sem Levantador']].min(axis=1) 
-    df_edited['Gap Restante'] = df_edited['Sem Levantador'] - df_edited['Municipios Ganhos']
-    df_edited['Cobertura %'] = np.where(df_edited['Total Municípios'] > 0, ((df_edited['Com Levantador'] + df_edited['Municipios Ganhos']) / df_edited['Total Municípios']) * 100, 0)
+    # Agrupamento de dados por regional
+    df_reg = df_ativas.groupby('REGIONAL').agg(
+        Total_Obras=('PROTOCOLO', 'count'),
+        Obras_Livres=('LEVANTADOR', lambda x: (x == SEM_LEVANTADOR).sum())
+    ).reset_index()
     
-    total_mun_novo = int(df_edited['Total Municípios'].sum())
-    total_com_novo = int(df_edited['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum())
-    total_sem_novo = int(df_edited['Gap Restante'].sum())
-    cob_atual_nova = (total_com_novo / total_mun_novo * 100) if total_mun_novo > 0 else 0
-
-    ph_mun.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Total Municípios</b><br><span style='font-size:24px'>{total_mun_novo}</span></div>", unsafe_allow_html=True)
-    ph_com.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Cobertos</b><br><span style='font-size:24px'>{total_com_novo}</span></div>", unsafe_allow_html=True)
-    ph_sem.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Municípios Sem Levantador</b><br><span style='font-size:24px'>{total_sem_novo}</span></div>", unsafe_allow_html=True)
-    ph_cob.markdown(f"<div style='text-align: center; background: #eee; padding: 10px; border-radius: 5px;'><b>Cobertura Atual</b><br><span style='font-size:24px'>{cob_atual_nova:.1f}%</span></div>", unsafe_allow_html=True)
-
-    st.markdown("<h4 style='background-color: #4A4F7C; color: white; padding: 5px 10px; margin-top: 20px; border-radius: 5px;'>Projeção Atualizada e Representatividade</h4>", unsafe_allow_html=True)
-    col_proj_tab, col_proj_chart = st.columns([2.5, 1.5])
+    df_reg['Obras_Cobertas'] = df_reg['Total_Obras'] - df_reg['Obras_Livres']
     
-    with col_proj_tab:
-        df_proj = df_edited[['Regional', 'Total Municípios', 'Com Levantador', 'Sem Levantador', 'Levantadores Atuais', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
-        linha_total = pd.DataFrame([{
-            'Regional': 'TOTAL ESTADO',
-            'Total Municípios': df_proj['Total Municípios'].sum(),
-            'Com Levantador': df_proj['Com Levantador'].sum(),
-            'Sem Levantador': df_proj['Sem Levantador'].sum(),
-            'Levantadores Atuais': df_proj['Levantadores Atuais'].sum(),
-            'Novos Levantadores': df_proj['Novos Levantadores'].sum(),
-            'Gap Restante': df_proj['Gap Restante'].sum(),
-            'Cobertura %': ((df_proj['Com Levantador'].sum() + df_edited['Municipios Ganhos'].sum()) / df_proj['Total Municípios'].sum() * 100) if df_proj['Total Municípios'].sum() > 0 else 0
-        }])
-        df_proj = pd.concat([df_proj, linha_total], ignore_index=True)
-        df_proj['Cobertura %'] = df_proj['Cobertura %'].apply(lambda x: f"{x:.1f}%")
+    # Inicia a memória de simulação caso não exista
+    if 'sim_inputs' not in st.session_state:
+        st.session_state.sim_inputs = {reg: 0 for reg in df_reg['REGIONAL']}
+        
+    # Sincroniza dados novos com a memória
+    for reg in df_reg['REGIONAL']:
+        if reg not in st.session_state.sim_inputs:
+            st.session_state.sim_inputs[reg] = 0
+            
+    # Alimenta o DataFrame com as edições do usuário e faz as projeções Matemáticas
+    df_reg['Novos Levantadores'] = df_reg['REGIONAL'].map(st.session_state.sim_inputs).fillna(0).astype(int)
+    
+    META_POR_LEVANTADOR = 45 # Meta padrão
+    df_reg['Projeção'] = df_reg['Obras_Cobertas'] + (df_reg['Novos Levantadores'] * META_POR_LEVANTADOR)
+    
+    df_reg['Gap Restante'] = np.maximum(0, df_reg['Total_Obras'] - df_reg['Projeção'])
+    df_reg['Cobertura %'] = np.minimum(100, (df_reg['Projeção'] / df_reg['Total_Obras']) * 100)
+    
+    # Limpa o DataFrame apenas para a exibição visual
+    df_display = df_reg[['REGIONAL', 'Total_Obras', 'Obras_Livres', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
+    df_display.rename(columns={'Total_Obras': 'Total Obras', 'Obras_Livres': 'Gap Atual'}, inplace=True)
+    
+    # Componente de Data Editor (Substitui as duas tabelas antigas)
+    edited_df = st.data_editor(
+        df_display,
+        column_config={
+            "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
+            "Total Obras": st.column_config.NumberColumn("Total Obras", disabled=True),
+            "Gap Atual": st.column_config.NumberColumn("Gap Atual", disabled=True),
+            "Novos Levantadores": st.column_config.NumberColumn(
+                "✏️ Novos Levantadores (Input)", 
+                min_value=0, 
+                step=1
+            ),
+            "Gap Restante": st.column_config.NumberColumn("Gap Restante", disabled=True),
+            "Cobertura %": st.column_config.ProgressColumn(
+                "Cobertura Projetada %", 
+                format="%.1f%%", 
+                min_value=0, 
+                max_value=100
+            ),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key="simulador_editor_ativo"
+    )
+    
+    # Ciclo de Feedback Visual: Se o usuário editar um número, salva no cache e recarrega a linha
+    needs_rerun = False
+    for index, row in edited_df.iterrows():
+        reg = row['REGIONAL']
+        novo_val = row['Novos Levantadores']
+        if st.session_state.sim_inputs.get(reg) != novo_val:
+            st.session_state.sim_inputs[reg] = novo_val
+            needs_rerun = True
+            
+    if needs_rerun:
+        st.rerun()
 
-        def colorir_cobertura(val):
-            try:
-                percentual = float(val.replace('%', ''))
-                if percentual < 50.0: return 'background-color: #F8D7DA; color: #721C24; font-weight: bold;'
-                elif percentual < 100.0: return 'background-color: #FFF3CD; color: #856404; font-weight: bold;'
-                else: return 'background-color: #D4EDDA; color: #155724; font-weight: bold;'
-            except ValueError: return ''
-                
-        styled_proj = df_proj.style.map(lambda v: 'color: #D9534F; font-weight: bold;' if (isinstance(v, (int, float)) and v > 0) else '', subset=['Gap Restante']).map(colorir_cobertura, subset=['Cobertura %'])
-        st.dataframe(styled_proj, use_container_width=True, hide_index=True)
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    with col_proj_chart:
-        df_edited['Gap Restante'] = pd.to_numeric(df_edited['Gap Restante'], errors='coerce').fillna(0)
-        df_chart = df_edited[df_edited['Gap Restante'] > 0]
-        if not df_chart.empty and df_chart['Gap Restante'].sum() > 0:
-            fig_rosca = px.pie(df_chart, names='Regional', values='Gap Restante', hole=0.55, title="Gap de Cobertura por Regional")
-            fig_rosca.update_traces(textinfo='percent', hoverinfo='label+value', marker=dict(line=dict(color='#000000', width=1)))
-            fig_rosca.update_layout(margin=dict(t=40, b=0, l=0, r=0), legend=dict(orientation="h", yanchor="top", y=-0.1, xanchor="center", x=0.5))
-            st.plotly_chart(fig_rosca, use_container_width=True, config={'displayModeBar': False})
-        else:
-            st.success("✅ 100% de Cobertura Atingida!")
+    # =====================================================================
+    # 4. VISUALIZAÇÃO DE DADOS: GRÁFICO DE BARRAS HORIZONTAIS
+    # =====================================================================
+    st.markdown("<h4 style='color: #1A4F7C;'>📊 Análise de Gap Projetado por Regional</h4>", unsafe_allow_html=True)
+    
+    col_chart, col_summary = st.columns([2.5, 1.5])
+    
+    with col_chart:
+        df_chart = edited_df.copy()
+        df_chart = df_chart.sort_values('Gap Restante', ascending=True) # Ascendente para a maior barra ficar no topo
+        
+        # Gráfico Horizontal: O cérebro avalia comprimentos em eixos X instantaneamente
+        fig = px.bar(
+            df_chart, 
+            x='Gap Restante', 
+            y='REGIONAL', 
+            orientation='h',
+            text='Gap Restante',
+            color='Gap Restante',
+            color_continuous_scale=px.colors.sequential.Reds, # Tons suaves de vermelho escalonado
+            labels={'Gap Restante': 'Obras Descobertas', 'REGIONAL': ''}
+        )
+        
+        fig.update_traces(textposition='outside')
+        fig.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)', 
+            paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=0, r=0, t=20, b=0),
+            coloraxis_showscale=False,
+            xaxis=dict(showgrid=True, gridcolor='#e5e7eb'),
+            yaxis=dict(showgrid=False)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with col_summary:
+        st.markdown("<div style='padding-top: 15px;'></div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown("#### 📝 Resumo da Simulação")
+            
+            total_novos = edited_df['Novos Levantadores'].sum()
+            gap_original = edited_df['Gap Atual'].sum()
+            gap_projetado = edited_df['Gap Restante'].sum()
+            
+            reducao = gap_original - gap_projetado
+            
+            st.markdown(f"**Novas Contratações:** `{total_novos}` técnicos")
+            st.markdown(f"**Obras Resgatadas:** `{reducao}`")
+            st.markdown(f"**Gap Final (Pendentes):** `{gap_projetado}` obras")
+            
+            if gap_projetado == 0:
+                st.success("✨ Excelente! O cenário atinge 100% de cobertura.")
+            elif gap_projetado < gap_original:
+                st.info(f"Este cenário reduz o seu Gap atual em {((reducao/gap_original)*100):.1f}%.")
+            else:
+                st.warning("Insira técnicos na tabela para projetar o cenário.")
