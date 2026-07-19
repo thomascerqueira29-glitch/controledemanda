@@ -425,15 +425,20 @@ def render_painel_obras_interno():
 # ==============================================================
 def view_painel_executivo():
     """Esta é a função que o seu arquivo meu_app.py puxa e roda!
-       Agora ela abriga as abas e trava tudo na tela."""
+       Trocamos as abas por um Menu Lateral para otimizar a velocidade e evitar o 'piscar' da tela."""
        
-    aba_principal, aba_croquis = st.tabs([
-        "📊 Painel de Obras (Executivo)", 
-        "🗺️ Gerador de Croquis Automático"
-    ])
+    # Cria o Menu Fixo no topo da Barra Lateral
+    st.sidebar.markdown("### 🧭 Módulos do Sistema")
+    pagina_selecionada = st.sidebar.radio(
+        "Navegação:", 
+        ["📊 Painel de Obras (Executivo)", "🗺️ Gerador de Croquis Automático"],
+        label_visibility="collapsed"
+    )
+    st.sidebar.markdown("---") # Linha divisória para separar dos filtros
     
-    with aba_principal:
+    # O Roteador: Só processa o que o usuário escolheu ver
+    if pagina_selecionada == "📊 Painel de Obras (Executivo)":
         render_painel_obras_interno()
         
-    with aba_croquis:
+    elif pagina_selecionada == "🗺️ Gerador de Croquis Automático":
         view_gerador_croqui()
