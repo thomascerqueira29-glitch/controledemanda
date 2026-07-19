@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, HeatMap
+from folium.plugins import HeatMap
 import plotly.express as px
 import io
 import html
@@ -94,7 +94,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # Jitter Otimizado: ~30 metros (0.0003 graus) ao invés de 1km, mantendo na mesma rua, mas quebrando o empilhamento perfeito
+        # Jitter Otimizado para separar levemente pontos que estão na mesma coordenada exata
         np.random.seed(42)
         df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
@@ -103,13 +103,8 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
         else:
-            # Multiplicação de Clusters: maxClusterRadius reduzido para 35 e quebra total no zoom 16
-            cluster_obras = MarkerCluster(
-                name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)",
-                maxClusterRadius=35,
-                disableClusteringAtZoom=16,
-                spiderfyOnMaxZoom=True
-            )
+            # Renderização direta de pontos via FeatureGroup (Sem Clusterização)
+            camada_obras = folium.FeatureGroup(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
             
             def get_s(val):
                 if pd.isna(val): return "-"
@@ -144,9 +139,9 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     location=[row['Lat_Mapa'], row['Lon_Mapa']], 
                     icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
                     popup=folium.Popup(info_html, max_width=350)
-                ).add_to(cluster_obras)
+                ).add_to(camada_obras)
                 
-            cluster_obras.add_to(mapa)
+            camada_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
@@ -255,7 +250,6 @@ def view_painel_executivo():
     
     c_g1, c_g2 = st.columns(2)
     with c_g1:
-        # CÁLCULO AUTÔNOMO: Resolve o problema do sumiço do gráfico e barra lixos de "0"
         df_mun = df_notas_db.copy()
         lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None']
         df_mun = df_mun[~df_mun['LEVANTADOR'].astype(str).str.strip().isin(lixos)]
@@ -311,10 +305,10 @@ def view_painel_executivo():
         st.markdown("---")
         st.markdown("### ⚙️ Configurações do Mapa")
         
-        estilo_mapa = st.radio("Visualização do Mapa:", ["Agrupamentos (Clusters)", "Calor (Heatmap)"])
+        estilo_mapa = st.radio("Visualização do Mapa:", ["Pinos Individuais", "Calor (Heatmap)"])
         
         visao_cores = "Produtividade"
-        if estilo_mapa == "Agrupamentos (Clusters)":
+        if estilo_mapa == "Pinos Individuais":
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
         
         st.markdown("---")
