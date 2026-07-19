@@ -94,21 +94,34 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
                 df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
                 
-                if len(df_ob) > 500:
-                    coords = df_ob[['Lat_Mapa', 'Lon_Mapa']].values.tolist()
-                    FastMarkerCluster(data=coords, name=f"🏗️ Demandas Ativas ({len(coords)} obras)").add_to(mapa)
-                else:
-                    cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
-                    for _, row in df_ob.iterrows():
-                        lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                        info_html = f"<b>Protocolo:</b> {row.get('PROTOCOLO', '')}<br><b>Levantador:</b> {lev_obra}"
-                        folium.Marker(
-                            location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                            icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                            popup=folium.Popup(info_html, max_width=300)
-                        ).add_to(cluster_obras)
-                    cluster_obras.add_to(mapa)
+                # O MarkerCluster agrupará todas as obras automaticamente com desempenho satisfatório
+                cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+                
+                for _, row in df_ob.iterrows():
+                    lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                    
+                    # Criação do Pop-up detalhado com todos os campos solicitados
+                    info_html = f"""
+                    <div style="min-width: 250px; font-size: 13px; line-height: 1.5;">
+                        <b>Regional:</b> {row.get('REGIONAL', '-')} <br>
+                        <b>Município:</b> {row.get('MUNICIPIO', '-')} <br>
+                        <b>Protocolo:</b> {row.get('PROTOCOLO', '-')} <br>
+                        <b>Solicitante:</b> {row.get('NOME DO SOLICITANTE', '-')} <br>
+                        <b>Status List:</b> {row.get('STATUS LIST', '-')} <br>
+                        <b>Status SAP:</b> {row.get('STATUS SAP', '-')} <br>
+                        <b>ID Sisco:</b> {row.get('ID SISCO', '-')} <br>
+                        <b>Tipo Ligação:</b> {row.get('TIPO LIGACAO', '-')}
+                    </div>
+                    """
+                    
+                    folium.Marker(
+                        location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                        popup=folium.Popup(info_html, max_width=350)
+                    ).add_to(cluster_obras)
+                    
+                cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
