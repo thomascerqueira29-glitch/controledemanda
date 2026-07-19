@@ -8,6 +8,7 @@ import plotly.express as px
 import io
 import html
 import tempfile
+import re
 from datetime import datetime
 
 # Importa as ferramentas pesadas do nosso motor central
@@ -41,6 +42,17 @@ def calcular_saude_dados(df):
     has_lon = df['LONGITUDE'].astype(str).str.strip().replace(['nan', 'None', '', '<NA>', '0', '0.0'], np.nan).notna()
     return (has_lat & has_lon).mean() * 100
 
+def normalizar_municipios(series_mun):
+    """Remove acentos e padroniza para garantir o "match" com o dicionário."""
+    s = series_mun.astype(str).str.upper()
+    s = s.str.replace(r'[ÁÀÂÃÄ]', 'A', regex=True)
+    s = s.str.replace(r'[ÉÈÊË]', 'E', regex=True)
+    s = s.str.replace(r'[ÍÌÎÏ]', 'I', regex=True)
+    s = s.str.replace(r'[ÓÒÔÕÖ]', 'O', regex=True)
+    s = s.str.replace(r'[ÚÙÛÜ]', 'U', regex=True)
+    s = s.str.replace(r'Ç', 'C', regex=True)
+    return s.str.split('-').str[0].str.strip()
+
 def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, estilo_mapa, visao_cores):
     mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
     folium.TileLayer(
@@ -71,40 +83,74 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         df_ob = df_notas_mapa.copy()
         df_ob.columns = [str(c).upper().strip() for c in df_ob.columns]
         
+        # 1. Tenta usar as coordenadas reais da obra se existirem
         if 'LATITUDE' in df_ob.columns and 'LONGITUDE' in df_ob.columns:
             df_ob['Lat_Mapa'] = pd.to_numeric(df_ob['LATITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
             df_ob['Lon_Mapa'] = pd.to_numeric(df_ob['LONGITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
         else:
             df_ob['Lat_Mapa'] = df_ob['Lon_Mapa'] = np.nan
 
+        # 2. Resgate de Coordenadas Faltantes baseado no MUNICÍPIO
         mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
-            dict_ma_lat = {'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09, 'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53, 'SANTA INES': -3.66}
-            dict_ma_lon = {'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'SAO JOSE DE RIBAMAR': -44.05, 'TIMON': -42.83, 'CAXIAS': -43.35, 'ACAILANDIA': -47.50, 'CODO': -43.89, 'BACABAL': -44.78, 'BALSAS': -46.03, 'SANTA INES': -45.38}
-            mapa_lat_c = {str(k).upper(): v for k, v in mapa_lat.items()} if mapa_lat else {}
-            mapa_lon_c = {str(k).upper(): v for k, v in mapa_lon.items()} if mapa_lon else {}
+            
+            # Super Dicionário com mais de 50 principais cidades do MA para garantir o resgate
+            dict_ma_lat = {
+                'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09,
+                'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53,
+                'SANTA INES': -3.66, 'PINHEIRO': -2.52, 'CHAPADINHA': -3.73, 'SANTA LUZIA': -4.05,
+                'BURITICUPU': -4.33, 'GRAJAU': -5.81, 'ITAPECURU MIRIM': -3.39, 'COROATA': -4.12,
+                'BARREIRINHAS': -2.75, 'TUTOIA': -2.76, 'VARGEM GRANDE': -3.53, 'VIANA': -3.22,
+                'ZE DOCA': -3.27, 'LAGO DA PEDRA': -4.33, 'COELHO NETO': -4.25, 'PRESIDENTE DUTRA': -5.28,
+                'SAO DOMINGOS DO MARANHAO': -5.57, 'ARAIOSES': -2.89, 'SANTA HELENA': -2.23, 'ESTREITO': -6.55,
+                'PEDREIRAS': -4.57, 'ROSARIO': -2.93, 'SAO JOAO DOS PATOS': -6.49, 'DOM PEDRO': -5.03,
+                'BURITI': -3.87, 'TUNTUM': -5.25, 'COLINAS': -6.02, 'AMARANTE DO MARANHAO': -5.57,
+                'BOM JARDIM': -3.56, 'PARNARAMA': -5.68, 'MATOES': -5.52, 'ITINGA DO MARANHAO': -4.36,
+                'PENALVA': -3.28, 'ALTO ALEGRE DO PINDARE': -3.68, 'TURIACU': -1.66, 'CURURUPU': -1.82,
+                'VITORIA DO MEARIM': -3.46, 'CARUTAPERA': -1.19, 'VITORINO FREIRE': -4.32, 'MIRINZAL': -2.06,
+                'RAPOSA': -2.42, 'BARRA DO CORDA': -5.50, 'PACO DO LUMIAR': -2.53
+            }
+            dict_ma_lon = {
+                'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'SAO JOSE DE RIBAMAR': -44.05, 'TIMON': -42.83,
+                'CAXIAS': -43.35, 'ACAILANDIA': -47.50, 'CODO': -43.89, 'BACABAL': -44.78, 'BALSAS': -46.03,
+                'SANTA INES': -45.38, 'PINHEIRO': -45.08, 'CHAPADINHA': -43.35, 'SANTA LUZIA': -45.90,
+                'BURITICUPU': -46.40, 'GRAJAU': -46.13, 'ITAPECURU MIRIM': -44.35, 'COROATA': -43.98,
+                'BARREIRINHAS': -42.82, 'TUTOIA': -42.27, 'VARGEM GRANDE': -43.92, 'VIANA': -45.00,
+                'ZE DOCA': -45.65, 'LAGO DA PEDRA': -45.13, 'COELHO NETO': -42.93, 'PRESIDENTE DUTRA': -44.49,
+                'SAO DOMINGOS DO MARANHAO': -44.38, 'ARAIOSES': -41.90, 'SANTA HELENA': -45.29, 'ESTREITO': -47.45,
+                'PEDREIRAS': -44.60, 'ROSARIO': -44.23, 'SAO JOAO DOS PATOS': -43.70, 'DOM PEDRO': -44.46,
+                'BURITI': -43.08, 'TUNTUM': -44.64, 'COLINAS': -44.24, 'AMARANTE DO MARANHAO': -46.74,
+                'BOM JARDIM': -45.98, 'PARNARAMA': -43.09, 'MATOES': -43.19, 'ITINGA DO MARANHAO': -47.53,
+                'PENALVA': -45.17, 'ALTO ALEGRE DO PINDARE': -45.85, 'TURIACU': -45.37, 'CURURUPU': -44.86,
+                'VITORIA DO MEARIM': -44.87, 'CARUTAPERA': -46.02, 'VITORINO FREIRE': -45.23, 'MIRINZAL': -44.75,
+                'RAPOSA': -44.09, 'BARRA DO CORDA': -45.24, 'PACO DO LUMIAR': -44.10
+            }
+            
+            # Mescla com os dados dinâmicos do Banco de Dados
+            mapa_lat_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lat.items()} if mapa_lat else {}
+            mapa_lon_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lon.items()} if mapa_lon else {}
             dict_ma_lat.update(mapa_lat_c); dict_ma_lon.update(mapa_lon_c)
             
-            muns = df_ob.loc[mask_miss, 'MUNICIPIO'].astype(str).str.upper().str.replace('Ó','O').str.replace('Í','I').str.replace('Á','A').str.replace('Ã','A').str.replace('É','E').str.split('-').str[0].str.strip()
-            df_ob.loc[mask_miss, 'Lat_Mapa'] = muns.map(dict_ma_lat)
-            df_ob.loc[mask_miss, 'Lon_Mapa'] = muns.map(dict_ma_lon)
+            muns_norm = normalizar_municipios(df_ob.loc[mask_miss, 'MUNICIPIO'])
+            df_ob.loc[mask_miss, 'Lat_Mapa'] = muns_norm.map(dict_ma_lat)
+            df_ob.loc[mask_miss, 'Lon_Mapa'] = muns_norm.map(dict_ma_lon)
             
+        # 3. Tratamento de última instância (Para cidades minúsculas não mapeadas, joga no centro de forma limpa, sem grades)
         mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_still_miss.any():
-            missing_muns = df_ob.loc[mask_still_miss, 'MUNICIPIO'].unique()
-            # Vacina contra o "empilhamento" visto na imagem: 
-            # Espalha os municípios sem GPS num pequeno grid imaginário no centro do estado
-            for i, mun_m in enumerate(missing_muns):
-                grid_lat = -5.2 + ((i % 10) * 0.08)
-                grid_lon = -45.0 + ((i // 10) * 0.08)
-                mask_this_mun = mask_still_miss & (df_ob['MUNICIPIO'] == mun_m)
-                df_ob.loc[mask_this_mun, 'Lat_Mapa'] = grid_lat
-                df_ob.loc[mask_this_mun, 'Lon_Mapa'] = grid_lon
+            df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
+            df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # Pequeno afastamento para pinos que caem no mesmo milímetro da rua
+        # O SEGREDO DO CLUSTER PERFEITO: Dispersão Radial (Nuvem circular)
+        # Isso espalha as obras que caíram no mesmo município num raio de ~1km. 
+        # Assim, quando você clicar no Cluster da cidade, ele abre e mostra todas as obras separadinhas.
         np.random.seed(42)
-        df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
-        df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
+        raio = 0.012  # Abertura da "nuvem" de obras na cidade
+        r_dist = raio * np.sqrt(np.random.uniform(0, 1, len(df_ob)))
+        angulos = np.random.uniform(0, 2 * np.pi, len(df_ob))
+        
+        df_ob['Lat_Mapa'] += r_dist * np.cos(angulos)
+        df_ob['Lon_Mapa'] += r_dist * np.sin(angulos)
         
         def get_s(val):
             if pd.isna(val): return "-"
@@ -112,59 +158,52 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
 
         # -------------------------------------------------------------
-        # SISTEMA DE CAMADAS: Cluster por Município, Pinos ou Calor
+        # SISTEMA DE CAMADAS: O Cluster Nativo e Avançado
         # -------------------------------------------------------------
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
             
-        elif estilo_mapa == "Cluster por Município":
-            # Aqui está o coração da nova funcionalidade solicitada:
-            # Varremos a base criando um Cluster INDIVIDUAL para cada município.
+        elif estilo_mapa == "Agrupamentos (Clusters)":
+            # Usando o Cluster Nativo do Folium. Como agora as coordenadas estão
+            # exatamente nas cidades corretas, ele vai agrupar por município de forma orgânica.
+            cluster_obras = MarkerCluster(
+                name=f"🏗️ Obras Agrupadas ({len(df_ob)})",
+                maxClusterRadius=45, # Raio calibrado para juntar a cidade toda
+                spiderfyOnMaxZoom=True # Garante que os pinos explodam ao clicar
+            )
             
-            # Preenchemos municípios vazios para que não quebre o código
-            df_ob['MUN_LIMPO'] = df_ob['MUNICIPIO'].fillna('NÃO IDENTIFICADO').astype(str).str.strip().str.upper()
-            lista_municipios = df_ob['MUN_LIMPO'].unique()
-            
-            for mun_atual in lista_municipios:
-                df_mun_atual = df_ob[df_ob['MUN_LIMPO'] == mun_atual]
+            for row in df_ob.to_dict('records'):
+                if visao_cores == "Prazos (SLA)":
+                    sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
+                    if 'Vencida' in str(sla_status): cor_marcador = 'darkred'
+                    elif 'Próximo' in str(sla_status) or 'Proximo' in str(sla_status): cor_marcador = 'orange'
+                    else: cor_marcador = 'green'
+                else:
+                    lev_obra = get_s(row.get('LEVANTADOR'))
+                    if lev_obra == '-': lev_obra = SEM_LEVANTADOR
+                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                 
-                # Criamos um MarkerCluster exclusivo para este município
-                cluster_cidade = MarkerCluster(name=f"📍 {mun_atual} ({len(df_mun_atual)} obras)")
+                info_html = f"""
+                <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+                    <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
+                    <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
+                    <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
+                    <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
+                    <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
+                    <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
+                    <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
+                    <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
+                    <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
+                </div>
+                """
+                folium.Marker(
+                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                    popup=folium.Popup(info_html, max_width=350)
+                ).add_to(cluster_obras)
                 
-                for _, row in df_mun_atual.iterrows():
-                    # Decide a cor do pino
-                    if visao_cores == "Prazos (SLA)":
-                        sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
-                        if 'Vencida' in str(sla_status): cor_marcador = 'darkred'
-                        elif 'Próximo' in str(sla_status) or 'Proximo' in str(sla_status): cor_marcador = 'orange'
-                        else: cor_marcador = 'green'
-                    else:
-                        lev_obra = get_s(row.get('LEVANTADOR'))
-                        if lev_obra == '-': lev_obra = SEM_LEVANTADOR
-                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                    
-                    info_html = f"""
-                    <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
-                        <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
-                        <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
-                        <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
-                        <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
-                        <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
-                        <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
-                        <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
-                        <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
-                        <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
-                    </div>
-                    """
-                    folium.Marker(
-                        location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                        popup=folium.Popup(info_html, max_width=350)
-                    ).add_to(cluster_cidade)
-                    
-                # Adiciona o cluster inteiro dessa cidade no mapa
-                cluster_cidade.add_to(mapa)
+            cluster_obras.add_to(mapa)
 
         else:
             # Pinos Individuais soltos
@@ -365,13 +404,13 @@ def view_painel_executivo():
         st.markdown("### ⚙️ Configurações do Mapa")
         
         estilo_mapa = st.radio("Visualização do Mapa:", [
-            "Cluster por Município", 
+            "Agrupamentos (Clusters)", 
             "Pinos Individuais", 
             "Calor (Heatmap)"
         ])
         
         visao_cores = "Produtividade"
-        if estilo_mapa in ["Pinos Individuais", "Cluster por Município"]:
+        if estilo_mapa in ["Pinos Individuais", "Agrupamentos (Clusters)"]:
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
         
         st.markdown("---")
