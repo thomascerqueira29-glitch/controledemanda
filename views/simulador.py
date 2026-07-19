@@ -2,54 +2,46 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
-from database import load_core_data, get_base_levantadores, save_base_levantadores, STATUS_PRODUTIVIDADE
+from database import load_core_data, get_base_levantadores, save_base_levantadores, get_equipes_base_simulador, save_equipes_base_simulador, STATUS_PRODUTIVIDADE
 
 def view_simulador():
     st.markdown("### 🧮 Simulador de Alocação de Equipes e Gestão de Território")
     st.markdown("Otimize a distribuição de levantadores e defina as áreas de atuação.")
     
     # =====================================================================
-    # 1. CARREGAMENTO DOS DADOS GERAIS
+    # 1. CARREGAMENTO DOS DADOS GERAIS E MEMÓRIA
     # =====================================================================
     df_notas, _, _, _, todos_levs, _, _, _ = load_core_data()
-    df_equipes_territorio = get_base_levantadores() # Planilha Levantadores Oficial
+    df_equipes_territorio = get_base_levantadores() 
     
     if df_notas.empty or df_equipes_territorio.empty:
         st.warning("Importe a Base de Obras e a Planilha de Levantadores na Carga de Lotes para usar este módulo.")
         return
 
-    # -----------------------------------------------------------------
-    # FILTRO ANTI-LIXO (Protege a base contra a Regional '0' fantasma)
-    # -----------------------------------------------------------------
+    # Filtro Anti-Lixo da Regional
     lixos_reg = ['0', '0.0', 'NAN', 'NONE', '', '<NA>']
     df_notas_validas = df_notas[~df_notas['REGIONAL'].astype(str).str.strip().str.upper().isin(lixos_reg)].copy()
 
     # =====================================================================
-    # 2. MOTOR DE SIMULAÇÃO (Calculado antes da interface visual)
+    # 2. MOTOR DE SIMULAÇÃO 
     # =====================================================================
-    
-    # Agrupamento de Obras por Regional
     df_reg = df_notas_validas.groupby('REGIONAL').agg(Total_Obras=('PROTOCOLO', 'count')).reset_index()
     
-    # Mapeamento do Território Oficial
     df_eq_clean = df_equipes_territorio.copy()
     col_lev = 'Levantador' if 'Levantador' in df_eq_clean.columns else 'LEVANTADOR'
     col_reg_eq = 'Regional' if 'Regional' in df_eq_clean.columns else 'REGIONAL'
     
-    # 2.1 Calcula o TOTAL de Municípios de cada Regional
     mun_total_reg = df_eq_clean.groupby(col_reg_eq).size().reset_index(name='Total Municípios')
     mun_total_reg['REGIONAL'] = mun_total_reg[col_reg_eq].astype(str).str.upper()
     if col_reg_eq != 'REGIONAL':
         mun_total_reg = mun_total_reg.drop(columns=[col_reg_eq])
     
-    # 2.2 Calcula o GAP atual (Municípios SEM LEVANTADOR)
     df_eq_livres = df_eq_clean[df_eq_clean[col_lev].astype(str).str.strip().str.upper() == 'SEM LEVANTADOR']
     mun_livres_reg = df_eq_livres.groupby(col_reg_eq).size().reset_index(name='Gap Atual (Munc)')
     mun_livres_reg['REGIONAL'] = mun_livres_reg[col_reg_eq].astype(str).str.upper()
     if col_reg_eq != 'REGIONAL':
         mun_livres_reg = mun_livres_reg.drop(columns=[col_reg_eq])
     
-    # 2.3 Unifica as Bases
     df_reg['REGIONAL'] = df_reg['REGIONAL'].astype(str).str.upper()
     
     df_reg = pd.merge(df_reg, mun_total_reg, on='REGIONAL', how='left')
@@ -58,20 +50,24 @@ def view_simulador():
     df_reg = pd.merge(df_reg, mun_livres_reg, on='REGIONAL', how='left')
     df_reg['Gap Atual (Munc)'] = df_reg['Gap Atual (Munc)'].fillna(0).astype(int)
     
-    # 2.4 Gerenciamento do Cache de Inputs do Usuário
+    # -----------------------------------------------------------------
+    # INJEÇÃO DA MEMÓRIA PERSISTENTE DO BANCO (Ocorre a cada login)
+    # -----------------------------------------------------------------
+    equipes_salvas = get_equipes_base_simulador()
+    
     if 'sim_atuais' not in st.session_state:
-        st.session_state.sim_atuais = {reg: 0 for reg in df_reg['REGIONAL']}
+        st.session_state.sim_atuais = {reg: equipes_salvas.get(reg, 0) for reg in df_reg['REGIONAL']}
     if 'sim_novos' not in st.session_state:
         st.session_state.sim_novos = {reg: 0 for reg in df_reg['REGIONAL']}
         
     for reg in df_reg['REGIONAL']:
-        if reg not in st.session_state.sim_atuais: st.session_state.sim_atuais[reg] = 0
+        if reg not in st.session_state.sim_atuais: st.session_state.sim_atuais[reg] = equipes_salvas.get(reg, 0)
         if reg not in st.session_state.sim_novos: st.session_state.sim_novos[reg] = 0
             
     df_reg['Equipes Atuais'] = df_reg['REGIONAL'].map(st.session_state.sim_atuais).fillna(0).astype(int)
     df_reg['Novos Levantadores'] = df_reg['REGIONAL'].map(st.session_state.sim_novos).fillna(0).astype(int)
     
-    # 2.5 Projeção Matemática Dinâmica da Cobertura Absoluta
+    # Projeção Matemática Dinâmica da Cobertura
     META_MUNICIPIOS_POR_EQUIPE = 10 
     df_reg['Capacidade Adicional'] = df_reg['Novos Levantadores'] * META_MUNICIPIOS_POR_EQUIPE
     df_reg['Gap Restante'] = np.maximum(0, df_reg['Gap Atual (Munc)'] - df_reg['Capacidade Adicional'])
@@ -114,7 +110,7 @@ def view_simulador():
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     # =====================================================================
-    # 4. TABELA UNIFICADA INTERATIVA + GRÁFICO LATERAL
+    # 4. TABELA UNIFICADA INTERATIVA E GRÁFICO ROSCA (DONUT)
     # =====================================================================
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Contratações por Regional</h4>", unsafe_allow_html=True)
     st.info("Insira o número de Equipes Atuais na sua operação e preveja a cobertura no campo 'Novos Levantadores'. (Pressione ENTER após digitar)")
@@ -141,10 +137,7 @@ def view_simulador():
     
     df_display = pd.concat([df_display, linha_total], ignore_index=True)
     
-    # -------------------------------------------------------------
-    # DIVISÃO DA TELA: TABELA ESTREITA E GRÁFICO (NOVO)
-    # -------------------------------------------------------------
-    col_tabela, col_grafico = st.columns([2.6, 1.2]) # Proporção: Tabela ocupa ~68%, Gráfico ~32%
+    col_tabela, col_grafico = st.columns([2.6, 1.2]) 
     
     with col_tabela:
         edited_df = st.data_editor(
@@ -162,38 +155,56 @@ def view_simulador():
             use_container_width=True,
             key="simulador_editor"
         )
-    
-    with col_grafico:
-        # Prepara os dados para o gráfico (Removendo o TOTAL ESTADO para não distorcer o comparativo)
-        df_plot = df_display[df_display['REGIONAL'] != 'TOTAL ESTADO'].copy()
-        df_plot = df_plot.sort_values('Cobertura %', ascending=True)
         
-        fig = px.bar(
+        # -------------------------------------------------------------
+        # BOTÃO SALVAR CENÁRIO DE EQUIPES COM PROTEÇÃO DE SENHA
+        # -------------------------------------------------------------
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_btn1, col_btn2 = st.columns([1.5, 3])
+        with col_btn1.popover("💾 Salvar Equipes como Padrão", use_container_width=True):
+            st.markdown("**🔒 Autenticação Necessária**")
+            st.info("Esses números serão carregados automaticamente no próximo login.")
+            
+            user_auth = st.text_input("Usuário", placeholder="Ex: ADMIN")
+            pass_auth = st.text_input("Senha", type="password")
+            
+            if st.button("Confirmar e Gravar", type="primary", use_container_width=True):
+                # O botão tenta gravar usando a memória RAM de st.session_state.sim_atuais
+                if save_equipes_base_simulador(st.session_state.sim_atuais, user_auth, pass_auth):
+                    st.success("✅ Cenário salvo com sucesso!")
+                else:
+                    st.error("❌ Usuário ou Senha incorretos.")
+
+    with col_grafico:
+        # Gráfico Rosca/Donut das Regionais (Excluindo a linha de Total)
+        df_plot = df_display[df_display['REGIONAL'] != 'TOTAL ESTADO'].copy()
+        
+        fig = px.pie(
             df_plot,
-            x='Cobertura %',
-            y='REGIONAL',
-            orientation='h',
-            color='Cobertura %',
-            color_continuous_scale=px.colors.sequential.Blues,
-            range_x=[0, 100]
+            values='Cobertura %',
+            names='REGIONAL',
+            hole=0.45,
+            color_discrete_sequence=px.colors.sequential.Blues_r
         )
-        # Formatação profissional do gráfico
-        fig.update_traces(texttemplate='<b>%{x:.1f}%</b>', textposition='outside', marker_line_width=0)
+        
+        # Força o Rótulo (Label) a mostrar a "% de Cobertura real" e não o tamanho da fatia da pizza
+        fig.update_traces(
+            texttemplate='<b>%{label}</b><br>%{value:.1f}%',
+            textposition='outside',
+            hovertemplate='<b>%{label}</b><br>Cobertura: %{value:.1f}%<extra></extra>'
+        )
+        
         fig.update_layout(
-            title=dict(text="Cobertura Projetada por Regional", font=dict(size=14, color="#1A4F7C")),
+            title=dict(text="Cobertura Projetada", font=dict(size=14, color="#1A4F7C"), x=0.5),
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=0, r=30, t=40, b=0),
-            coloraxis_showscale=False,
-            height=250, # Altura alinhada com a tabela
-            xaxis=dict(showgrid=True, gridcolor='#e5e7eb', title="", showticklabels=False),
-            yaxis=dict(showgrid=False, title="")
+            margin=dict(l=10, r=10, t=40, b=10),
+            showlegend=False,
+            height=300
         )
         st.plotly_chart(fig, use_container_width=True)
-
-    # -------------------------------------------------------------
     
-    # Loop de Feedback Visual da Tabela
+    # Loop de Atualização em Tempo Real 
     needs_rerun = False
     for index, row in edited_df.iterrows():
         reg = row['REGIONAL']
