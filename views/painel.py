@@ -59,8 +59,10 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy(deep=True)
-        lat_col_eq = next((c for c in df_eq.columns if str(c).upper() == 'LATITUDE'), None)
-        lon_col_eq = next((c for c in df_eq.columns if str(c).upper() == 'LONGITUDE'), None)
+        cols_upper_eq = {str(c).upper().strip(): c for c in df_eq.columns}
+        
+        lat_col_eq = cols_upper_eq.get('LATITUDE')
+        lon_col_eq = cols_upper_eq.get('LONGITUDE')
         
         val_lat = pd.to_numeric(df_eq[lat_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lat_col_eq else np.nan
         val_lon = pd.to_numeric(df_eq[lon_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lon_col_eq else np.nan
@@ -69,7 +71,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         if 'Lat' in df_eq.columns and 'Lon' in df_eq.columns:
             df_eq_valid = df_eq.dropna(subset=['Lat', 'Lon'])
             for _, row in df_eq_valid.iterrows():
-                lev = str(row.get('Levantador', ''))
+                lev = str(row.get(cols_upper_eq.get('LEVANTADOR', 'Levantador'), ''))
                 cor = 'red' if lev in criticos_tuple else 'green'
                 folium.Marker(
                     location=[row['Lat'], row['Lon']], 
@@ -80,56 +82,79 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
-        lat_col = next((c for c in df_ob.columns if str(c).upper() == 'LATITUDE'), None)
-        lon_col = next((c for c in df_ob.columns if str(c).upper() == 'LONGITUDE'), None)
         
-        # Tenta pegar as coordenadas da obra
-        v_lat = pd.to_numeric(df_ob[lat_col].astype(str).str.replace(',', '.'), errors='coerce') if lat_col else pd.Series(np.nan, index=df_ob.index)
-        v_lon = pd.to_numeric(df_ob[lon_col].astype(str).str.replace(',', '.'), errors='coerce') if lon_col else pd.Series(np.nan, index=df_ob.index)
-        df_ob = df_ob.assign(Lat_Mapa=v_lat, Lon_Mapa=v_lon)
+        # Mapeamento dinâmico para garantir que o código encontre as colunas independente de estar maiúsculo/minúsculo ou com espaços
+        cols_up = {str(c).upper().strip(): c for c in df_ob.columns}
+        
+        c_lat = cols_up.get('LATITUDE')
+        c_lon = cols_up.get('LONGITUDE')
+        c_reg = cols_up.get('REGIONAL', 'REGIONAL')
+        c_mun = cols_up.get('MUNICIPIO', 'MUNICIPIO')
+        c_prot = cols_up.get('PROTOCOLO', 'PROTOCOLO')
+        # Tenta achar solicitante com várias possibilidades
+        c_solic = cols_up.get('NOME DO SOLICITANTE', cols_up.get('SOLICITANTE', 'NOME DO SOLICITANTE'))
+        c_stlist = cols_up.get('STATUS LIST', 'STATUS LIST')
+        c_stsap = cols_up.get('STATUS SAP', 'STATUS SAP')
+        c_idsisco = cols_up.get('ID SISCO', cols_up.get('SISCO', 'ID SISCO'))
+        c_tipo = cols_up.get('TIPO LIGACAO', cols_up.get('TIPO DE LIGAÇÃO', 'TIPO LIGACAO'))
+        c_lev = cols_up.get('LEVANTADOR', 'LEVANTADOR')
+        
+        # 1. Extração primária das coordenadas
+        if c_lat and c_lon:
+            df_ob['Lat_Mapa'] = pd.to_numeric(df_ob[c_lat].astype(str).str.replace(',', '.'), errors='coerce')
+            df_ob['Lon_Mapa'] = pd.to_numeric(df_ob[c_lon].astype(str).str.replace(',', '.'), errors='coerce')
+        else:
+            df_ob['Lat_Mapa'] = np.nan
+            df_ob['Lon_Mapa'] = np.nan
 
-        # RECUPERAÇÃO DE COORDENADAS: Preenche obras sem Latitude/Longitude com a coordenada central do Município
-        if mapa_lat is not None and mapa_lon is not None and 'MUNICIPIO' in df_ob.columns:
-            df_ob['Lat_Mapa'] = df_ob['Lat_Mapa'].fillna(df_ob['MUNICIPIO'].map(mapa_lat))
-            df_ob['Lon_Mapa'] = df_ob['Lon_Mapa'].fillna(df_ob['MUNICIPIO'].map(mapa_lon))
-
-        if 'Lat_Mapa' in df_ob.columns and 'Lon_Mapa' in df_ob.columns:
-            # Dropa apenas o que realmente ficou vazio (nem a obra nem o município tinham dados)
-            df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
+        # 2. Resgate de Coordenadas: Associa as obras sem latitude ao município de origem
+        if mapa_lat is not None and mapa_lon is not None and c_mun in df_ob.columns:
+            mun_clean = df_ob[c_mun].astype(str).str.strip().str.upper()
+            mapa_lat_clean = {str(k).strip().upper(): v for k, v in mapa_lat.items()}
+            mapa_lon_clean = {str(k).strip().upper(): v for k, v in mapa_lon.items()}
             
-            if not df_ob.empty:
-                # Espalhamento visual leve para que milhares de obras na mesma coordenada do município formem um cluster clicável
-                df_ob['Lat_Mapa'] += np.random.normal(0, 0.0015, len(df_ob))
-                df_ob['Lon_Mapa'] += np.random.normal(0, 0.0015, len(df_ob))
+            df_ob['Lat_Mapa'] = df_ob['Lat_Mapa'].fillna(mun_clean.map(mapa_lat_clean))
+            df_ob['Lon_Mapa'] = df_ob['Lon_Mapa'].fillna(mun_clean.map(mapa_lon_clean))
+
+        # 3. Descarta apenas o que for absolutamente impossível de mapear
+        df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
+            
+        if not df_ob.empty:
+            # 4. ESPALHAMENTO MATEMÁTICO (JITTER): A chave para exibir as 7352 obras
+            # Isso impede que milhares de obras fiquem sobrepostas no mesmo pixel central do município
+            # Espalhamento gera uma "nuvem" de obras na área do município, permitindo a separação do cluster.
+            np.random.seed(42)
+            df_ob['Lat_Mapa'] += np.random.uniform(-0.025, 0.025, len(df_ob))
+            df_ob['Lon_Mapa'] += np.random.uniform(-0.025, 0.025, len(df_ob))
+            
+            # 5. O MarkerCluster gerenciará 100% da base
+            cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+            
+            for _, row in df_ob.iterrows():
+                lev_obra = str(row.get(c_lev, SEM_LEVANTADOR))
+                cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                 
-                # Renderiza obrigatoriamente o MarkerCluster para todas as Obras
-                cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+                # 6. Criação do Pop-up detalhado protegido contra HTML Injection e valores vazios
+                info_html = f"""
+                <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+                    <b>Regional:</b> {html.escape(str(row.get(c_reg, '-')))} <br>
+                    <b>Município:</b> {html.escape(str(row.get(c_mun, '-')))} <br>
+                    <b>Protocolo:</b> {html.escape(str(row.get(c_prot, '-')))} <br>
+                    <b>Solicitante:</b> {html.escape(str(row.get(c_solic, '-')))} <br>
+                    <b>Status List:</b> {html.escape(str(row.get(c_stlist, '-')))} <br>
+                    <b>Status SAP:</b> {html.escape(str(row.get(c_stsap, '-')))} <br>
+                    <b>ID Sisco:</b> {html.escape(str(row.get(c_idsisco, '-')))} <br>
+                    <b>Tipo Ligação:</b> {html.escape(str(row.get(c_tipo, '-')))}
+                </div>
+                """
                 
-                for _, row in df_ob.iterrows():
-                    lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                    
-                    # Criação do Pop-up HTML com todos os 8 campos solicitados
-                    info_html = f"""
-                    <div style="min-width: 260px; font-size: 13px; line-height: 1.6; font-family: Arial, sans-serif;">
-                        <b>Regional:</b> {row.get('REGIONAL', '-')} <br>
-                        <b>Município:</b> {row.get('MUNICIPIO', '-')} <br>
-                        <b>Protocolo:</b> {row.get('PROTOCOLO', '-')} <br>
-                        <b>Solicitante:</b> {row.get('NOME DO SOLICITANTE', '-')} <br>
-                        <b>Status List:</b> {row.get('STATUS LIST', '-')} <br>
-                        <b>Status SAP:</b> {row.get('STATUS SAP', '-')} <br>
-                        <b>ID Sisco:</b> {row.get('ID SISCO', '-')} <br>
-                        <b>Tipo Ligação:</b> {row.get('TIPO LIGACAO', '-')}
-                    </div>
-                    """
-                    
-                    folium.Marker(
-                        location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                        popup=folium.Popup(info_html, max_width=350)
-                    ).add_to(cluster_obras)
-                    
-                cluster_obras.add_to(mapa)
+                folium.Marker(
+                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                    popup=folium.Popup(info_html, max_width=350)
+                ).add_to(cluster_obras)
+                
+            cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
