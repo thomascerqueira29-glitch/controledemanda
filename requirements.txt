@@ -12,3 +12,8 @@ openpyxl
 extra-streamlit-components==0.1.71
 SQLAlchemy>=2.0.30
 greenlet>=3.0.0
+streamlit-geolocation
+playwright
+ezdxf
+geopandas
+shapely
