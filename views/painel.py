@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, FastMarkerCluster
+from folium.plugins import MarkerCluster
 import plotly.express as px
 import io
 import html
@@ -39,7 +39,7 @@ def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
     </div>
     """
 
-def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp):
+def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat=None, mapa_lon=None):
     mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
@@ -83,27 +83,35 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         lat_col = next((c for c in df_ob.columns if str(c).upper() == 'LATITUDE'), None)
         lon_col = next((c for c in df_ob.columns if str(c).upper() == 'LONGITUDE'), None)
         
-        v_lat = pd.to_numeric(df_ob[lat_col].astype(str).str.replace(',', '.'), errors='coerce') if lat_col else np.nan
-        v_lon = pd.to_numeric(df_ob[lon_col].astype(str).str.replace(',', '.'), errors='coerce') if lon_col else np.nan
+        # Tenta pegar as coordenadas da obra
+        v_lat = pd.to_numeric(df_ob[lat_col].astype(str).str.replace(',', '.'), errors='coerce') if lat_col else pd.Series(np.nan, index=df_ob.index)
+        v_lon = pd.to_numeric(df_ob[lon_col].astype(str).str.replace(',', '.'), errors='coerce') if lon_col else pd.Series(np.nan, index=df_ob.index)
         df_ob = df_ob.assign(Lat_Mapa=v_lat, Lon_Mapa=v_lon)
 
+        # RECUPERAÇÃO DE COORDENADAS: Preenche obras sem Latitude/Longitude com a coordenada central do Município
+        if mapa_lat is not None and mapa_lon is not None and 'MUNICIPIO' in df_ob.columns:
+            df_ob['Lat_Mapa'] = df_ob['Lat_Mapa'].fillna(df_ob['MUNICIPIO'].map(mapa_lat))
+            df_ob['Lon_Mapa'] = df_ob['Lon_Mapa'].fillna(df_ob['MUNICIPIO'].map(mapa_lon))
+
         if 'Lat_Mapa' in df_ob.columns and 'Lon_Mapa' in df_ob.columns:
+            # Dropa apenas o que realmente ficou vazio (nem a obra nem o município tinham dados)
             df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
             
             if not df_ob.empty:
-                df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
-                df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
+                # Espalhamento visual leve para que milhares de obras na mesma coordenada do município formem um cluster clicável
+                df_ob['Lat_Mapa'] += np.random.normal(0, 0.0015, len(df_ob))
+                df_ob['Lon_Mapa'] += np.random.normal(0, 0.0015, len(df_ob))
                 
-                # O MarkerCluster agrupará todas as obras automaticamente com desempenho satisfatório
+                # Renderiza obrigatoriamente o MarkerCluster para todas as Obras
                 cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
                 
                 for _, row in df_ob.iterrows():
                     lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
                     cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                     
-                    # Criação do Pop-up detalhado com todos os campos solicitados
+                    # Criação do Pop-up HTML com todos os 8 campos solicitados
                     info_html = f"""
-                    <div style="min-width: 250px; font-size: 13px; line-height: 1.5;">
+                    <div style="min-width: 260px; font-size: 13px; line-height: 1.6; font-family: Arial, sans-serif;">
                         <b>Regional:</b> {row.get('REGIONAL', '-')} <br>
                         <b>Município:</b> {row.get('MUNICIPIO', '-')} <br>
                         <b>Protocolo:</b> {row.get('PROTOCOLO', '-')} <br>
@@ -351,4 +359,5 @@ def view_painel_executivo():
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     
     with st.spinner("Construindo renderização geográfica do terreno..."):
-        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p)
+        # Adição do mapa_lat e mapa_lon para resgate de coordenadas e renderização de 100% da base
+        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon)
