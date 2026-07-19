@@ -1,7 +1,4 @@
 import streamlit as st
-# Inicia a página ocupando a tela toda (Deve ser sempre o primeiro comando do app!)
-st.set_page_config(layout="wide", page_title="Sistema NIP - Dash & Croqui")
-
 import pandas as pd
 import numpy as np
 import folium
@@ -19,16 +16,8 @@ from database import (load_core_data, save_notas_to_db, vectorized_haversine,
                       parse_kmz_advanced, calcular_sla_vetorizado, 
                       SEM_LEVANTADOR, STATUS_PRODUTIVIDADE)
 
-# IMPORTAÇÃO DO NOVO MÓDULO DE CROQUIS!
-from modulo_croqui import view_gerador_croqui
-
-# Injeção de CSS para melhorar a Proporção e Legibilidade Global
-st.markdown("""
-<style>
-    .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
-    .stSelectbox label, .stFileUploader label, .stRadio label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
-</style>
-""", unsafe_allow_html=True)
+# IMPORTAÇÃO CORRETA DO MÓDULO DE CROQUIS (Agora com o caminho views.modulo_croqui)
+from views.modulo_croqui import view_gerador_croqui
 
 def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
     return f"""
@@ -218,6 +207,10 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
 
+
+# ==============================================================
+# FUNÇÃO PRINCIPAL DO PAINEL DE OBRAS
+# ==============================================================
 def view_painel_executivo():
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
@@ -417,16 +410,24 @@ def view_painel_executivo():
     with st.spinner("Construindo renderização geográfica do terreno..."):
         render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores)
 
+
 # ==============================================================
 # ESTRUTURA GLOBAL DO SISTEMA (ABAS PRINCIPAIS)
 # ==============================================================
-aba_principal, aba_croquis = st.tabs([
-    "📊 Painel de Obras (Executivo)", 
-    "🗺️ Gerador de Croquis Automático"
-])
+def render_abas_globais():
+    """Esta função é chamada pelo meu_app.py principal para construir a tela."""
+    aba_principal, aba_croquis = st.tabs([
+        "📊 Painel de Obras (Executivo)", 
+        "🗺️ Gerador de Croquis Automático"
+    ])
+    
+    with aba_principal:
+        view_painel_executivo()
+    
+    with aba_croquis:
+        view_gerador_croqui()
 
-with aba_principal:
-    view_painel_executivo()
-
-with aba_croquis:
-    view_gerador_croqui()
+# Se você rodava a tela chamando view_painel_executivo() direto do meu_app.py,
+# Agora você vai chamar render_abas_globais(). Mas por segurança, deixo o código
+# que auto-executa a estrutura de abas se esse for o seu view principal:
+render_abas_globais()
