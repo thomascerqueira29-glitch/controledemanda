@@ -16,9 +16,6 @@ from database import (load_core_data, save_notas_to_db, vectorized_haversine,
                       parse_kmz_advanced, calcular_sla_vetorizado, 
                       SEM_LEVANTADOR, STATUS_PRODUTIVIDADE)
 
-# IMPORTAÇÃO CORRETA DO MÓDULO DE CROQUIS
-from views.modulo_croqui import view_gerador_croqui
-
 # Injeção de CSS para melhorar a Proporção e Legibilidade Global
 st.markdown("""
 <style>
@@ -217,10 +214,10 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
 
 # ==============================================================
-# FUNÇÃO ISOLADA DO MAPA (Sem as abas)
+# VIEW PRINCIPAL (SEM NAVEGAÇÃO INTERNA)
 # ==============================================================
-def render_painel_obras_interno():
-    """Esta função guarda apenas o conteúdo do Painel Executivo"""
+def view_painel_executivo():
+    """Painel 100% focado em Indicadores e Execução."""
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
@@ -296,6 +293,18 @@ def render_painel_obras_interno():
                     if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
             else: 
                 st.warning("🔒 Atribuição restrita.")
+                
+            # (Sugestão 4) Equilíbrio Visual da Altura da Caixa e Informação Útil
+            tech_muns = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
+            tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
+            muns_str = ", ".join(tech_muns) if tech_muns else "Nenhuma cidade ativa."
+            
+            st.markdown(f"""
+            <div style='margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border-left: 4px solid #1A4F7C;'>
+                <p style='margin: 0; font-size: 11px; color: #666; font-weight: bold; text-transform: uppercase;'>📍 Área de Atuação (Obras Alocadas)</p>
+                <p style='margin: 5px 0 0 0; font-size: 13px; color: #222;'>{muns_str}</p>
+            </div>
+            """, unsafe_allow_html=True)
             
     if st.session_state.get('show_demanda', False):
         st.markdown("---")
@@ -324,33 +333,44 @@ def render_painel_obras_interno():
     
     c_g1, c_g2 = st.columns(2)
     with c_g1:
+        # (Sugestão 2 - Correção do Eixo) Agora conta por MUNICIPIO corretamente
         df_mun = df_notas_db.copy()
         lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None']
-        df_mun = df_mun[~df_mun['LEVANTADOR'].astype(str).str.strip().isin(lixos)]
+        df_mun = df_mun[~df_mun['MUNICIPIO'].astype(str).str.strip().isin(lixos)]
         
         if not df_mun.empty and 'MUNICIPIO' in df_mun.columns:
-            municipios_por_levantador = df_mun.groupby('LEVANTADOR')['MUNICIPIO'].nunique().reset_index()
-            municipios_por_levantador.columns = ['Levantador', 'Qtd_Municipios']
+            municipios_count = df_mun.groupby('MUNICIPIO').size().reset_index(name='Qtd_Obras')
             
-            if not municipios_por_levantador.empty:
+            if not municipios_count.empty:
                 fig1 = px.bar(
-                    municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
-                    x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Concentração por Município", 
-                    text='Qtd_Municipios', color_discrete_sequence=['#1A4F7C']
+                    municipios_count.sort_values('Qtd_Obras', ascending=False).head(15).sort_values('Qtd_Obras'), 
+                    x='Qtd_Obras', y='MUNICIPIO', orientation='h', title="Top 15 Concentração por Município", 
+                    text='Qtd_Obras', color_discrete_sequence=['#1A4F7C']
                 )
                 fig1.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
-                fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
+                # Eixo Y liberado para mostrar as Cidades (showticklabels=True)
+                fig1.update_layout(margin=dict(l=10, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=True))
                 st.plotly_chart(fig1, use_container_width=True)
             
     with c_g2:
         try:
+            # (Sugestão 2 - Gráfico Empilhado de SLA)
             df_sla = df_notas_db[df_notas_db['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
             if not df_sla.empty:
                 df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
                 df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
-                fig2 = px.bar(df_g.sort_values(['REGIONAL', 'Status_SLA']), x='REGIONAL', y='Qtd', color='Status_SLA', title="Monitoramento de SLA Regional", barmode='group', text='Qtd', color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'})
-                fig2.update_traces(textposition='outside', textfont=dict(size=12))
-                fig2.update_layout(margin=dict(l=20, r=20, t=40, b=40), xaxis_title=None, yaxis=dict(showticklabels=False), legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title=None))
+                
+                # Transformado em Stacked Bar (barmode='stack')
+                fig2 = px.bar(
+                    df_g.sort_values(['REGIONAL', 'Status_SLA']), 
+                    x='REGIONAL', y='Qtd', color='Status_SLA', 
+                    title="Monitoramento de SLA Regional", 
+                    barmode='stack', text='Qtd', 
+                    color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'}
+                )
+                fig2.update_traces(textposition='inside', textfont=dict(size=12, color='white'))
+                # Eixo X liberado (showticklabels=True) e Legenda no Topo
+                fig2.update_layout(margin=dict(l=20, r=20, t=40, b=40), xaxis_title=None, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None))
                 st.plotly_chart(fig2, use_container_width=True)
         except Exception: pass
 
@@ -418,27 +438,3 @@ def render_painel_obras_interno():
     
     with st.spinner("Construindo renderização geográfica do terreno..."):
         render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores)
-
-
-# ==============================================================
-# FUNÇÃO PRINCIPAL (QUE O SEU MEU_APP.PY CHAMA)
-# ==============================================================
-def view_painel_executivo():
-    """Esta é a função que o seu arquivo meu_app.py puxa e roda!
-       Trocamos as abas por um Menu Lateral para otimizar a velocidade e evitar o 'piscar' da tela."""
-       
-    # Cria o Menu Fixo no topo da Barra Lateral
-    st.sidebar.markdown("### 🧭 Módulos do Sistema")
-    pagina_selecionada = st.sidebar.radio(
-        "Navegação:", 
-        ["📊 Painel de Obras (Executivo)", "🗺️ Gerador de Croquis Automático"],
-        label_visibility="collapsed"
-    )
-    st.sidebar.markdown("---") # Linha divisória para separar dos filtros
-    
-    # O Roteador: Só processa o que o usuário escolheu ver
-    if pagina_selecionada == "📊 Painel de Obras (Executivo)":
-        render_painel_obras_interno()
-        
-    elif pagina_selecionada == "🗺️ Gerador de Croquis Automático":
-        view_gerador_croqui()
