@@ -43,7 +43,7 @@ def calcular_saude_dados(df):
     return (has_lat & has_lon).mean() * 100
 
 def normalizar_municipios(series_mun):
-    """Remove acentos e padroniza para garantir o "match" com o dicionário."""
+    """Remove acentos e padroniza para garantir o match com o dicionário."""
     s = series_mun.astype(str).str.upper()
     s = s.str.replace(r'[ÁÀÂÃÄ]', 'A', regex=True)
     s = s.str.replace(r'[ÉÈÊË]', 'E', regex=True)
@@ -94,7 +94,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
             
-            # Super Dicionário com mais de 50 principais cidades do MA para garantir o resgate
+            # Super Dicionário com principais cidades do MA
             dict_ma_lat = {
                 'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09,
                 'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53,
@@ -105,7 +105,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 'SAO DOMINGOS DO MARANHAO': -5.57, 'ARAIOSES': -2.89, 'SANTA HELENA': -2.23, 'ESTREITO': -6.55,
                 'PEDREIRAS': -4.57, 'ROSARIO': -2.93, 'SAO JOAO DOS PATOS': -6.49, 'DOM PEDRO': -5.03,
                 'BURITI': -3.87, 'TUNTUM': -5.25, 'COLINAS': -6.02, 'AMARANTE DO MARANHAO': -5.57,
-                'BOM JARDIM': -3.56, 'PARNARAMA': -5.68, 'MATOES': -5.52, 'ITINGA DO MARANHAO': -4.36,
+                'BOM JARDIM': -3.56, 'PARNARAMA': -4.31, 'MATOES': -5.52, 'ITINGA DO MARANHAO': -4.36,
                 'PENALVA': -3.28, 'ALTO ALEGRE DO PINDARE': -3.68, 'TURIACU': -1.66, 'CURURUPU': -1.82,
                 'VITORIA DO MEARIM': -3.46, 'CARUTAPERA': -1.19, 'VITORINO FREIRE': -4.32, 'MIRINZAL': -2.06,
                 'RAPOSA': -2.42, 'BARRA DO CORDA': -5.50, 'PACO DO LUMIAR': -2.53
@@ -135,17 +135,15 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_miss, 'Lat_Mapa'] = muns_norm.map(dict_ma_lat)
             df_ob.loc[mask_miss, 'Lon_Mapa'] = muns_norm.map(dict_ma_lon)
             
-        # 3. Tratamento de última instância (Para cidades minúsculas não mapeadas, joga no centro de forma limpa, sem grades)
+        # 3. Tratamento de última instância 
         mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_still_miss.any():
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # O SEGREDO DO CLUSTER PERFEITO: Dispersão Radial (Nuvem circular)
-        # Isso espalha as obras que caíram no mesmo município num raio de ~1km. 
-        # Assim, quando você clicar no Cluster da cidade, ele abre e mostra todas as obras separadinhas.
+        # Dispersão Radial (Nuvem circular para exibir perfeitamente o Cluster explodido)
         np.random.seed(42)
-        raio = 0.012  # Abertura da "nuvem" de obras na cidade
+        raio = 0.012  
         r_dist = raio * np.sqrt(np.random.uniform(0, 1, len(df_ob)))
         angulos = np.random.uniform(0, 2 * np.pi, len(df_ob))
         
@@ -165,12 +163,10 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
             
         elif estilo_mapa == "Agrupamentos (Clusters)":
-            # Usando o Cluster Nativo do Folium. Como agora as coordenadas estão
-            # exatamente nas cidades corretas, ele vai agrupar por município de forma orgânica.
             cluster_obras = MarkerCluster(
                 name=f"🏗️ Obras Agrupadas ({len(df_ob)})",
-                maxClusterRadius=45, # Raio calibrado para juntar a cidade toda
-                spiderfyOnMaxZoom=True # Garante que os pinos explodam ao clicar
+                maxClusterRadius=45, 
+                spiderfyOnMaxZoom=True 
             )
             
             for row in df_ob.to_dict('records'):
@@ -206,7 +202,6 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             cluster_obras.add_to(mapa)
 
         else:
-            # Pinos Individuais soltos
             camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
             
             for row in df_ob.to_dict('records'):
@@ -384,15 +379,18 @@ def view_painel_executivo():
     with st.sidebar:
         st.markdown("### 🔍 Filtros Territoriais")
         
-        lista_tecnicos_limpa = [str(x) for x in df_notas_db['LEVANTADOR'].unique() if str(x).strip() not in ['0', '0.0', 'nan']]
-        lista_sap_limpa = [str(x) for x in df_notas_db['STATUS SAP'].unique() if str(x).strip() not in ['nan', 'None', '']]
-        lista_list_limpa = [str(x) for x in df_notas_db['STATUS LIST'].unique() if str(x).strip() not in ['nan', 'None', '']]
-        
-        op_map_lev = ["TODOS"] + sorted(lista_tecnicos_limpa)
-        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db['REGIONAL'].unique() if str(x).strip() != 'nan'])
-        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db['MUNICIPIO'].unique() if str(x).strip() != 'nan'])
-        op_map_sap = ["TODOS"] + sorted(lista_sap_limpa)
-        op_map_list = ["TODOS"] + sorted(lista_list_limpa)
+        # O TRITURADOR DE DUPLICATAS: Força Maiúsculas, corta espaços invisíveis e usa o `set` para garantir itens únicos
+        lista_tecnicos_limpa = sorted(list(set([str(x).strip() for x in df_notas_db['LEVANTADOR'].unique() if str(x).strip().upper() not in ['0', '0.0', 'NAN', 'NONE', '']])))
+        lista_sap_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['STATUS SAP'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
+        lista_list_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['STATUS LIST'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
+        lista_reg_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['REGIONAL'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
+        lista_mun_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['MUNICIPIO'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
+
+        op_map_lev = ["TODOS"] + lista_tecnicos_limpa
+        op_map_reg = ["TODOS"] + lista_reg_limpa
+        op_map_mun = ["TODOS"] + lista_mun_limpa
+        op_map_sap = ["TODOS"] + lista_sap_limpa
+        op_map_list = ["TODOS"] + lista_list_limpa
 
         f_lev = st.selectbox("Técnico / Equipe", op_map_lev)
         f_reg = st.selectbox("Regional", op_map_reg)
@@ -417,11 +415,13 @@ def view_painel_executivo():
         camada = st.file_uploader("Sobrepor Camada (KML/KMZ)", type=['kml', 'kmz'])
 
     df_m = df_notas_db.copy()
-    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str) == f_lev]
-    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
-    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str) == f_mun]
-    if f_sap != "TODOS": df_m = df_m[df_m['STATUS SAP'].astype(str) == f_sap]
-    if f_list != "TODOS": df_m = df_m[df_m['STATUS LIST'].astype(str) == f_list]
+    
+    # Aplicação do Filtro Blindada: Faz a mesma limpeza na hora de buscar na tabela
+    if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str).str.strip() == f_lev]
+    if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str).str.strip().str.upper() == f_reg]
+    if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str).str.strip().str.upper() == f_mun]
+    if f_sap != "TODOS": df_m = df_m[df_m['STATUS SAP'].astype(str).str.strip().str.upper() == f_sap]
+    if f_list != "TODOS": df_m = df_m[df_m['STATUS LIST'].astype(str).str.strip().str.upper() == f_list]
     
     df_m = df_m[~df_m['LEVANTADOR'].astype(str).isin(['0', '0.0'])]
     
