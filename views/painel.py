@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import HeatMap
+from folium.plugins import HeatMap, MarkerCluster
 import plotly.express as px
 import io
 import html
@@ -94,18 +94,83 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # Jitter Otimizado para separar levemente pontos que estão na mesma coordenada exata
         np.random.seed(42)
         df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         
+        # -------------------------------------------------------------
+        # SISTEMA DE CAMADAS INTELIGENTES (Calor, Bolhas, Cluster ou Pinos)
+        # -------------------------------------------------------------
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
-        else:
-            # Renderização direta de pontos via FeatureGroup (Sem Clusterização)
-            camada_obras = folium.FeatureGroup(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
             
+        elif estilo_mapa == "Agrupado por Município":
+            camada_mun = folium.FeatureGroup(name=f"🏙️ Resumo por Município ({df_ob['MUNICIPIO'].nunique()} Cidades)")
+            
+            for mun, group in df_ob.groupby('MUNICIPIO'):
+                if str(mun).strip().lower() in ['nan', 'none', '']: continue
+                qtd = len(group)
+                lat_c = group['Lat_Mapa'].mean()
+                lon_c = group['Lon_Mapa'].mean()
+                
+                col_sla = 'STATUS_SLA' if 'STATUS_SLA' in group.columns else 'STATUS SLA' if 'STATUS SLA' in group.columns else None
+                vencidas = len(group[group[col_sla].astype(str).str.contains('Vencida', na=False, case=False)]) if col_sla else 0
+                no_prazo = qtd - vencidas
+                
+                # Tamanho da bolha ajusta automaticamente conforme o volume da cidade
+                tamanho = min(max(38, 30 + (qtd / 5)), 75) 
+                # Fica vermelho se tiver alguma obra vencida, senão Azul Escuro
+                cor_bg = "rgba(220, 53, 69, 0.95)" if vencidas > 0 else "rgba(26, 79, 124, 0.95)"
+                
+                html_icon = f"""
+                <div style="
+                    background-color: {cor_bg};
+                    border-radius: 50%;
+                    color: white;
+                    font-weight: bold;
+                    font-family: sans-serif;
+                    text-align: center;
+                    line-height: {tamanho}px;
+                    width: {tamanho}px;
+                    height: {tamanho}px;
+                    border: 2px solid white;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.4);
+                    font-size: {max(12, int(tamanho/2.8))}px;
+                ">{qtd}</div>
+                """
+                
+                # Extração dos 3 Técnicos mais frequentes na cidade
+                top_tec = group['LEVANTADOR'].replace(['-', 'SEM LEVANTADOR', '0', '0.0'], np.nan).dropna().value_counts().head(3)
+                tec_str = "".join([f"<li>{t} <span style='color:#666;'>({c} obras)</span></li>" for t, c in top_tec.items()])
+                if not tec_str: tec_str = "<li>Fila livre (Sem alocação)</li>"
+                
+                popup_html = f"""
+                <div style="min-width: 220px; font-family: sans-serif; font-size: 13px;">
+                    <h4 style="margin: 0 0 8px 0; color:#1A4F7C; border-bottom: 1px solid #ccc; padding-bottom: 4px;">📍 {html.escape(str(mun))}</h4>
+                    <b>Total de Obras:</b> {qtd}<br>
+                    <b>🚨 Vencidas:</b> <span style="color:darkred; font-weight:bold;">{vencidas}</span><br>
+                    <b>✅ No Prazo:</b> <span style="color:green; font-weight:bold;">{no_prazo}</span><br>
+                    <div style="margin-top: 10px; font-weight: bold; color: #444;">Top 3 Força de Trabalho:</div>
+                    <ul style="margin: 4px 0 0 0; padding-left: 20px;">{tec_str}</ul>
+                </div>
+                """
+                
+                folium.Marker(
+                    location=[lat_c, lon_c],
+                    icon=folium.DivIcon(html=html_icon),
+                    popup=folium.Popup(popup_html, max_width=320)
+                ).add_to(camada_mun)
+                
+            camada_mun.add_to(mapa)
+
+        else:
+            # Lógica compartilhada para Pinos Individuais ou Clusters Dinâmicos
+            if estilo_mapa == "Clusters Dinâmicos":
+                camada_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)})", maxClusterRadius=40)
+            else:
+                camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
+                
             def get_s(val):
                 if pd.isna(val): return "-"
                 s = str(val).strip()
@@ -305,10 +370,15 @@ def view_painel_executivo():
         st.markdown("---")
         st.markdown("### ⚙️ Configurações do Mapa")
         
-        estilo_mapa = st.radio("Visualização do Mapa:", ["Pinos Individuais", "Calor (Heatmap)"])
+        estilo_mapa = st.radio("Visualização do Mapa:", [
+            "Agrupado por Município", 
+            "Clusters Dinâmicos", 
+            "Pinos Individuais", 
+            "Calor (Heatmap)"
+        ])
         
         visao_cores = "Produtividade"
-        if estilo_mapa == "Pinos Individuais":
+        if estilo_mapa in ["Pinos Individuais", "Clusters Dinâmicos"]:
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
         
         st.markdown("---")
