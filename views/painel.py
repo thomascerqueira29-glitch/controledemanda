@@ -91,91 +91,85 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             
         mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_still_miss.any():
-            df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
-            df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
+            missing_muns = df_ob.loc[mask_still_miss, 'MUNICIPIO'].unique()
+            # Vacina contra o "empilhamento" visto na imagem: 
+            # Espalha os municípios sem GPS num pequeno grid imaginário no centro do estado
+            for i, mun_m in enumerate(missing_muns):
+                grid_lat = -5.2 + ((i % 10) * 0.08)
+                grid_lon = -45.0 + ((i // 10) * 0.08)
+                mask_this_mun = mask_still_miss & (df_ob['MUNICIPIO'] == mun_m)
+                df_ob.loc[mask_this_mun, 'Lat_Mapa'] = grid_lat
+                df_ob.loc[mask_this_mun, 'Lon_Mapa'] = grid_lon
             
+        # Pequeno afastamento para pinos que caem no mesmo milímetro da rua
         np.random.seed(42)
         df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         
+        def get_s(val):
+            if pd.isna(val): return "-"
+            s = str(val).strip()
+            return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
+
         # -------------------------------------------------------------
-        # SISTEMA DE CAMADAS INTELIGENTES (Calor, Bolhas, Cluster ou Pinos)
+        # SISTEMA DE CAMADAS: Cluster por Município, Pinos ou Calor
         # -------------------------------------------------------------
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
             
-        elif estilo_mapa == "Agrupado por Município":
-            camada_mun = folium.FeatureGroup(name=f"🏙️ Resumo por Município ({df_ob['MUNICIPIO'].nunique()} Cidades)")
+        elif estilo_mapa == "Cluster por Município":
+            # Aqui está o coração da nova funcionalidade solicitada:
+            # Varremos a base criando um Cluster INDIVIDUAL para cada município.
             
-            for mun, group in df_ob.groupby('MUNICIPIO'):
-                if str(mun).strip().lower() in ['nan', 'none', '']: continue
-                qtd = len(group)
-                lat_c = group['Lat_Mapa'].mean()
-                lon_c = group['Lon_Mapa'].mean()
+            # Preenchemos municípios vazios para que não quebre o código
+            df_ob['MUN_LIMPO'] = df_ob['MUNICIPIO'].fillna('NÃO IDENTIFICADO').astype(str).str.strip().str.upper()
+            lista_municipios = df_ob['MUN_LIMPO'].unique()
+            
+            for mun_atual in lista_municipios:
+                df_mun_atual = df_ob[df_ob['MUN_LIMPO'] == mun_atual]
                 
-                col_sla = 'STATUS_SLA' if 'STATUS_SLA' in group.columns else 'STATUS SLA' if 'STATUS SLA' in group.columns else None
-                vencidas = len(group[group[col_sla].astype(str).str.contains('Vencida', na=False, case=False)]) if col_sla else 0
-                no_prazo = qtd - vencidas
+                # Criamos um MarkerCluster exclusivo para este município
+                cluster_cidade = MarkerCluster(name=f"📍 {mun_atual} ({len(df_mun_atual)} obras)")
                 
-                # Tamanho da bolha ajusta automaticamente conforme o volume da cidade
-                tamanho = min(max(38, 30 + (qtd / 5)), 75) 
-                # Fica vermelho se tiver alguma obra vencida, senão Azul Escuro
-                cor_bg = "rgba(220, 53, 69, 0.95)" if vencidas > 0 else "rgba(26, 79, 124, 0.95)"
-                
-                html_icon = f"""
-                <div style="
-                    background-color: {cor_bg};
-                    border-radius: 50%;
-                    color: white;
-                    font-weight: bold;
-                    font-family: sans-serif;
-                    text-align: center;
-                    line-height: {tamanho}px;
-                    width: {tamanho}px;
-                    height: {tamanho}px;
-                    border: 2px solid white;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.4);
-                    font-size: {max(12, int(tamanho/2.8))}px;
-                ">{qtd}</div>
-                """
-                
-                # Extração dos 3 Técnicos mais frequentes na cidade
-                top_tec = group['LEVANTADOR'].replace(['-', 'SEM LEVANTADOR', '0', '0.0'], np.nan).dropna().value_counts().head(3)
-                tec_str = "".join([f"<li>{t} <span style='color:#666;'>({c} obras)</span></li>" for t, c in top_tec.items()])
-                if not tec_str: tec_str = "<li>Fila livre (Sem alocação)</li>"
-                
-                popup_html = f"""
-                <div style="min-width: 220px; font-family: sans-serif; font-size: 13px;">
-                    <h4 style="margin: 0 0 8px 0; color:#1A4F7C; border-bottom: 1px solid #ccc; padding-bottom: 4px;">📍 {html.escape(str(mun))}</h4>
-                    <b>Total de Obras:</b> {qtd}<br>
-                    <b>🚨 Vencidas:</b> <span style="color:darkred; font-weight:bold;">{vencidas}</span><br>
-                    <b>✅ No Prazo:</b> <span style="color:green; font-weight:bold;">{no_prazo}</span><br>
-                    <div style="margin-top: 10px; font-weight: bold; color: #444;">Top 3 Força de Trabalho:</div>
-                    <ul style="margin: 4px 0 0 0; padding-left: 20px;">{tec_str}</ul>
-                </div>
-                """
-                
-                folium.Marker(
-                    location=[lat_c, lon_c],
-                    icon=folium.DivIcon(html=html_icon),
-                    popup=folium.Popup(popup_html, max_width=320)
-                ).add_to(camada_mun)
-                
-            camada_mun.add_to(mapa)
+                for _, row in df_mun_atual.iterrows():
+                    # Decide a cor do pino
+                    if visao_cores == "Prazos (SLA)":
+                        sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
+                        if 'Vencida' in str(sla_status): cor_marcador = 'darkred'
+                        elif 'Próximo' in str(sla_status) or 'Proximo' in str(sla_status): cor_marcador = 'orange'
+                        else: cor_marcador = 'green'
+                    else:
+                        lev_obra = get_s(row.get('LEVANTADOR'))
+                        if lev_obra == '-': lev_obra = SEM_LEVANTADOR
+                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                    
+                    info_html = f"""
+                    <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+                        <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
+                        <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
+                        <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
+                        <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
+                        <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
+                        <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
+                        <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
+                        <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
+                        <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
+                    </div>
+                    """
+                    folium.Marker(
+                        location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                        popup=folium.Popup(info_html, max_width=350)
+                    ).add_to(cluster_cidade)
+                    
+                # Adiciona o cluster inteiro dessa cidade no mapa
+                cluster_cidade.add_to(mapa)
 
         else:
-            # Lógica compartilhada para Pinos Individuais ou Clusters Dinâmicos
-            if estilo_mapa == "Clusters Dinâmicos":
-                camada_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)})", maxClusterRadius=40)
-            else:
-                camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
-                
-            def get_s(val):
-                if pd.isna(val): return "-"
-                s = str(val).strip()
-                return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
-
+            # Pinos Individuais soltos
+            camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
+            
             for row in df_ob.to_dict('records'):
                 if visao_cores == "Prazos (SLA)":
                     sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
@@ -371,14 +365,13 @@ def view_painel_executivo():
         st.markdown("### ⚙️ Configurações do Mapa")
         
         estilo_mapa = st.radio("Visualização do Mapa:", [
-            "Agrupado por Município", 
-            "Clusters Dinâmicos", 
+            "Cluster por Município", 
             "Pinos Individuais", 
             "Calor (Heatmap)"
         ])
         
         visao_cores = "Produtividade"
-        if estilo_mapa in ["Pinos Individuais", "Clusters Dinâmicos"]:
+        if estilo_mapa in ["Pinos Individuais", "Cluster por Município"]:
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
         
         st.markdown("---")
