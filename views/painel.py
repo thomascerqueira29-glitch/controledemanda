@@ -19,7 +19,7 @@ from database import (load_core_data, save_notas_to_db, vectorized_haversine,
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
-    .stSelectbox label, .stFileUploader label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
+    .stSelectbox label, .stFileUploader label, .stRadio label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,14 +36,12 @@ def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
     """
 
 def calcular_saude_dados(df):
-    """Calcula o % de obras que possuem coordenadas válidas nativas na base."""
-    if df.empty or 'LATITUDE' not in df.columns or 'LONGITUDE' not in df.columns:
-        return 0.0
+    if df.empty or 'LATITUDE' not in df.columns or 'LONGITUDE' not in df.columns: return 0.0
     has_lat = df['LATITUDE'].astype(str).str.strip().replace(['nan', 'None', '', '<NA>', '0', '0.0'], np.nan).notna()
     has_lon = df['LONGITUDE'].astype(str).str.strip().replace(['nan', 'None', '', '<NA>', '0', '0.0'], np.nan).notna()
     return (has_lat & has_lon).mean() * 100
 
-def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, visao_mapa, mostrar_heatmap):
+def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, estilo_mapa, visao_cores):
     mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
@@ -73,20 +71,16 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         df_ob = df_notas_mapa.copy()
         df_ob.columns = [str(c).upper().strip() for c in df_ob.columns]
         
-        # 1. Leitura Extrema
         if 'LATITUDE' in df_ob.columns and 'LONGITUDE' in df_ob.columns:
             df_ob['Lat_Mapa'] = pd.to_numeric(df_ob['LATITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
             df_ob['Lon_Mapa'] = pd.to_numeric(df_ob['LONGITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
         else:
             df_ob['Lat_Mapa'] = df_ob['Lon_Mapa'] = np.nan
 
-        # 2. Resgate de Municípios
         mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
             dict_ma_lat = {'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09, 'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53, 'SANTA INES': -3.66}
             dict_ma_lon = {'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'SAO JOSE DE RIBAMAR': -44.05, 'TIMON': -42.83, 'CAXIAS': -43.35, 'ACAILANDIA': -47.50, 'CODO': -43.89, 'BACABAL': -44.78, 'BALSAS': -46.03, 'SANTA INES': -45.38}
-            
-            # Mescla dict local com dict nativo do banco
             mapa_lat_c = {str(k).upper(): v for k, v in mapa_lat.items()} if mapa_lat else {}
             mapa_lon_c = {str(k).upper(): v for k, v in mapa_lon.items()} if mapa_lon else {}
             dict_ma_lat.update(mapa_lat_c); dict_ma_lon.update(mapa_lon_c)
@@ -95,61 +89,57 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_miss, 'Lat_Mapa'] = muns.map(dict_ma_lat)
             df_ob.loc[mask_miss, 'Lon_Mapa'] = muns.map(dict_ma_lon)
             
-        # 3. Resgate Final
         mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_still_miss.any():
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # Espalhamento Jitter para quebra de empilhamento
         np.random.seed(42)
         df_ob['Lat_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
         df_ob['Lon_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
         
-        # HEATMAP (Mapa de Calor)
-        if mostrar_heatmap:
+        if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
-
-        cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
-        
-        def get_s(val):
-            if pd.isna(val): return "-"
-            s = str(val).strip()
-            return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
-
-        for row in df_ob.to_dict('records'):
-            # Lógica Dinâmica de Cores (Produtividade vs SLA)
-            if visao_mapa == "Prazos (SLA)":
-                sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
-                if 'Vencida' in str(sla_status): cor_marcador = 'darkred'
-                elif 'Próximo' in str(sla_status) or 'Proximo' in str(sla_status): cor_marcador = 'orange'
-                else: cor_marcador = 'green'
-            else:
-                lev_obra = get_s(row.get('LEVANTADOR'))
-                if lev_obra == '-': lev_obra = SEM_LEVANTADOR
-                cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+        else:
+            cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
             
-            info_html = f"""
-            <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
-                <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
-                <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
-                <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
-                <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
-                <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
-                <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
-                <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
-                <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
-                <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
-            </div>
-            """
-            folium.Marker(
-                location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                popup=folium.Popup(info_html, max_width=350)
-            ).add_to(cluster_obras)
-            
-        cluster_obras.add_to(mapa)
+            def get_s(val):
+                if pd.isna(val): return "-"
+                s = str(val).strip()
+                return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
+
+            for row in df_ob.to_dict('records'):
+                if visao_cores == "Prazos (SLA)":
+                    sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
+                    if 'Vencida' in str(sla_status): cor_marcador = 'darkred'
+                    elif 'Próximo' in str(sla_status) or 'Proximo' in str(sla_status): cor_marcador = 'orange'
+                    else: cor_marcador = 'green'
+                else:
+                    lev_obra = get_s(row.get('LEVANTADOR'))
+                    if lev_obra == '-': lev_obra = SEM_LEVANTADOR
+                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                
+                info_html = f"""
+                <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+                    <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
+                    <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
+                    <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
+                    <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
+                    <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
+                    <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
+                    <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
+                    <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
+                    <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
+                </div>
+                """
+                folium.Marker(
+                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                    popup=folium.Popup(info_html, max_width=350)
+                ).add_to(cluster_obras)
+                
+            cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
@@ -161,7 +151,6 @@ def view_painel_executivo():
         st.warning("O banco de dados está vazio. Realize uma carga em lote para popular o painel.")
         return
 
-    # Injeta a lógica de SLA em todas as notas antes de processar
     try: df_notas_db = calcular_sla_vetorizado(df_notas_db)
     except: pass
         
@@ -173,7 +162,6 @@ def view_painel_executivo():
     k3.markdown(kpi_card("Fila", len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]), "Aguardando", "⏳", "#F59E0B"), unsafe_allow_html=True)
     k4.markdown(kpi_card("Risco", len(levantadores_criticos), "Abaixo da meta", "🚨", "#EF4444" if len(levantadores_criticos) > 0 else "#10B981"), unsafe_allow_html=True)
     
-    # Novo KPI de Saúde dos Dados
     taxa_dados = calcular_saude_dados(df_notas_db)
     k5.markdown(kpi_card("Data Quality", f"{taxa_dados:.1f}%", "Precisão Geoespacial", "🎯", "#8B5CF6"), unsafe_allow_html=True)
     
@@ -258,13 +246,20 @@ def view_painel_executivo():
 
     st.markdown("---")
     
+    # Restauração e limpeza do Gráfico de Municípios
     c_g1, c_g2 = st.columns(2)
     with c_g1:
         if not municipios_por_levantador.empty: 
-            fig1 = px.bar(municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Concentração por Município", text='Qtd_Municipios', color_discrete_sequence=['#1A4F7C'])
-            fig1.update_traces(textposition='outside')
-            fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
-            st.plotly_chart(fig1, use_container_width=True)
+            # Filtro para varrer e ocultar qualquer "0" ou "SEM LEVANTADOR" do gráfico
+            df_grafico = municipios_por_levantador[~municipios_por_levantador['Levantador'].astype(str).str.strip().isin(['0', '0.0', 'nan', 'SEM LEVANTADOR'])].copy()
+            
+            if not df_grafico.empty:
+                fig1 = px.bar(df_grafico.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
+                              x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Concentração por Município", 
+                              text='Qtd_Municipios', color_discrete_sequence=['#1A4F7C'])
+                fig1.update_traces(textposition='outside')
+                fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
+                st.plotly_chart(fig1, use_container_width=True)
             
     with c_g2:
         try:
@@ -282,38 +277,49 @@ def view_painel_executivo():
     st.markdown("### 🗺️ Roteirização Geoespacial")
     
     # ---------------------------------------------------------
-    # NOVA BARRA LATERAL (SIDEBAR) PARA FILTROS E CONFIGURAÇÕES
+    # BARRA LATERAL (SIDEBAR) EXPANDIDA COM NOVOS FILTROS
     # ---------------------------------------------------------
     with st.sidebar:
         st.markdown("### 🔍 Filtros Territoriais")
         
-        # Filtro Inteligente: Remove o "0" das opções de Técnicos
-        lista_tecnicos_limpa = [str(x) for x in df_notas_db['LEVANTADOR'].unique() if str(x).strip() not in ['0', '0.0']]
+        lista_tecnicos_limpa = [str(x) for x in df_notas_db['LEVANTADOR'].unique() if str(x).strip() not in ['0', '0.0', 'nan']]
+        lista_sap_limpa = [str(x) for x in df_notas_db['STATUS SAP'].unique() if str(x).strip() not in ['nan', 'None', '']]
+        lista_list_limpa = [str(x) for x in df_notas_db['STATUS LIST'].unique() if str(x).strip() not in ['nan', 'None', '']]
+        
         op_map_lev = ["TODOS"] + sorted(lista_tecnicos_limpa)
-        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db['REGIONAL'].unique()])
-        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db['MUNICIPIO'].unique()])
+        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db['REGIONAL'].unique() if str(x).strip() != 'nan'])
+        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db['MUNICIPIO'].unique() if str(x).strip() != 'nan'])
+        op_map_sap = ["TODOS"] + sorted(lista_sap_limpa)
+        op_map_list = ["TODOS"] + sorted(lista_list_limpa)
 
         f_lev = st.selectbox("Técnico / Equipe", op_map_lev)
         f_reg = st.selectbox("Regional", op_map_reg)
         f_mun = st.selectbox("Município Alvo", op_map_mun)
+        f_sap = st.selectbox("Status SAP", op_map_sap)
+        f_list = st.selectbox("Status List", op_map_list)
         
         st.markdown("---")
         st.markdown("### ⚙️ Configurações do Mapa")
         
-        # Novas Funcionalidades Visuais
-        visao_mapa = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
-        mostrar_heatmap = st.toggle("🔥 Ativar Mapa de Calor")
+        # Escolha explícita entre Clusters (Agrupamento interativo) ou Calor (Mancha Térmica)
+        estilo_mapa = st.radio("Visualização do Mapa:", ["Agrupamentos (Clusters)", "Calor (Heatmap)"])
+        
+        # Cores só importam se estiver no modo Cluster
+        visao_cores = "Produtividade"
+        if estilo_mapa == "Agrupamentos (Clusters)":
+            visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
         
         st.markdown("---")
         camada = st.file_uploader("Sobrepor Camada (KML/KMZ)", type=['kml', 'kmz'])
 
-    # Aplicação dos filtros na base
+    # Aplicação massiva de filtros na base baseada na barra lateral
     df_m = df_notas_db.copy()
     if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str) == f_lev]
     if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
     if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str) == f_mun]
+    if f_sap != "TODOS": df_m = df_m[df_m['STATUS SAP'].astype(str) == f_sap]
+    if f_list != "TODOS": df_m = df_m[df_m['STATUS LIST'].astype(str) == f_list]
     
-    # Proteção adicional contra o lixo "0" no mapa global
     df_m = df_m[~df_m['LEVANTADOR'].astype(str).isin(['0', '0.0'])]
     
     st.caption(f"📍 Renderizando **{len(df_m)}** obras baseadas nos filtros selecionados na barra lateral.")
@@ -329,4 +335,4 @@ def view_painel_executivo():
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     
     with st.spinner("Construindo renderização geográfica do terreno..."):
-        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, visao_mapa, mostrar_heatmap)
+        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores)
