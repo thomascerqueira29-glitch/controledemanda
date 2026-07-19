@@ -16,8 +16,16 @@ from database import (load_core_data, save_notas_to_db, vectorized_haversine,
                       parse_kmz_advanced, calcular_sla_vetorizado, 
                       SEM_LEVANTADOR, STATUS_PRODUTIVIDADE)
 
-# IMPORTAÇÃO CORRETA DO MÓDULO DE CROQUIS (Agora com o caminho views.modulo_croqui)
+# IMPORTAÇÃO CORRETA DO MÓDULO DE CROQUIS
 from views.modulo_croqui import view_gerador_croqui
+
+# Injeção de CSS para melhorar a Proporção e Legibilidade Global
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+    .stSelectbox label, .stFileUploader label, .stRadio label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
+</style>
+""", unsafe_allow_html=True)
 
 def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
     return f"""
@@ -209,9 +217,10 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
 
 # ==============================================================
-# FUNÇÃO PRINCIPAL DO PAINEL DE OBRAS
+# FUNÇÃO ISOLADA DO MAPA (Sem as abas)
 # ==============================================================
-def view_painel_executivo():
+def render_painel_obras_interno():
+    """Esta função guarda apenas o conteúdo do Painel Executivo"""
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
@@ -412,22 +421,19 @@ def view_painel_executivo():
 
 
 # ==============================================================
-# ESTRUTURA GLOBAL DO SISTEMA (ABAS PRINCIPAIS)
+# FUNÇÃO PRINCIPAL (QUE O SEU MEU_APP.PY CHAMA)
 # ==============================================================
-def render_abas_globais():
-    """Esta função é chamada pelo meu_app.py principal para construir a tela."""
+def view_painel_executivo():
+    """Esta é a função que o seu arquivo meu_app.py puxa e roda!
+       Agora ela abriga as abas e trava tudo na tela."""
+       
     aba_principal, aba_croquis = st.tabs([
         "📊 Painel de Obras (Executivo)", 
         "🗺️ Gerador de Croquis Automático"
     ])
     
     with aba_principal:
-        view_painel_executivo()
-    
+        render_painel_obras_interno()
+        
     with aba_croquis:
         view_gerador_croqui()
-
-# Se você rodava a tela chamando view_painel_executivo() direto do meu_app.py,
-# Agora você vai chamar render_abas_globais(). Mas por segurança, deixo o código
-# que auto-executa a estrutura de abas se esse for o seu view principal:
-render_abas_globais()
