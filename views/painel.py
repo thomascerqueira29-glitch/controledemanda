@@ -15,12 +15,27 @@ from database import (load_core_data, save_notas_to_db, vectorized_haversine,
                       parse_kmz_advanced, calcular_sla_vetorizado, 
                       SEM_LEVANTADOR, STATUS_PRODUTIVIDADE)
 
-def kpi_card(title, value, subtitle="", border_color="#1A4F7C"):
+# Injeção de CSS para melhorar a Proporção e Legibilidade Global
+st.markdown("""
+<style>
+    /* Reduz o espaço em branco inútil no topo e laterais */
+    .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+    
+    /* Aumenta a legibilidade base de elementos de UI */
+    .stSelectbox label, .stFileUploader label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
+</style>
+""", unsafe_allow_html=True)
+
+def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
+    """Novo Card de KPI: Maior legibilidade, hierarquia e contexto visual."""
     return f"""
-    <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; border-left: 5px solid {border_color}; box-shadow: 0 2px 4px rgba(0,0,0,0.05); height: 100%;">
-        <p style="margin:0; font-size: 14px; color: #555; text-transform: uppercase; letter-spacing: 0.5px;">{title}</p>
-        <h2 style="margin: 5px 0 0 0; color: #333; font-size: 32px;">{value}</h2>
-        {f'<p style="margin: 5px 0 0 0; font-size: 12px; color: #777;">{subtitle}</p>' if subtitle else ''}
+    <div style="background-color: white; border-radius: 10px; padding: 15px; border-left: 6px solid {border_color}; box-shadow: 0 4px 6px rgba(0,0,0,0.05); height: 100%; border: 1px solid #f0f2f6;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <span style="font-size: 14px; font-weight: 800; color: #444; text-transform: uppercase; letter-spacing: 0.5px;">{title}</span>
+            <span style="font-size: 20px;">{icon}</span>
+        </div>
+        <h2 style="margin: 0; color: #111; font-size: 38px; font-weight: 800; line-height: 1.1;">{value}</h2>
+        {f'<p style="margin: 8px 0 0 0; font-size: 13px; font-weight: 600; color: #6c757d;">{subtitle}</p>' if subtitle else ''}
     </div>
     """
 
@@ -96,71 +111,74 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
-    st_folium(mapa, use_container_width=True, height=800, returned_objects=[])
+    st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
 
 def filtrar_levantador_governanca(nome_lev):
-    # =====================================================================
-    # CORREÇÃO DE ROTEAMENTO (MANDA PARA O ÍNDICE CERTO DE ADMINS) E FILTROS
-    # =====================================================================
     st.session_state['filtro_lev_widget'] = nome_lev
     st.session_state['filtro_reg_widget'] = 'TODAS'
     st.session_state['filtro_mun_widget'] = 'TODOS'
     st.session_state['filtro_sap_widget'] = 'TODOS'
-    
-    # Envia a mensagem para Governança filtrar apenas por 'Em Levantamento'
     st.session_state['target_status_list'] = 'EM LEVANTAMENTO'
 
-    # Se você for ADMIN, a Governança é a 5ª opção no menu (índice 4)!
     if st.session_state.get('perfil_usuario') == "ADMIN":
         st.session_state.menu_idx = 4
     else:
         st.session_state.menu_idx = 1
         
-    st.toast(f"Redirecionando para as obras em andamento de {nome_lev}...", icon="🚀")
+    st.toast(f"Redirecionando para as obras de {nome_lev}...", icon="🚀")
 
 def view_painel_executivo():
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, municipios_por_levantador = load_core_data()
     
     st.markdown("### 📈 Visão Global de Produtividade")
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
-        st.warning("O banco de dados está vazio. Realize uma carga em lote.")
+        st.warning("O banco de dados está vazio. Realize uma carga em lote para popular o painel.")
         return
         
     k1, k2, k3, k4 = st.columns(4)
-    k1.markdown(kpi_card("Obras Reais Atribuídas", int(resumo_levantadores['Total_Obras_Real'].sum()), "Volume em operação", "#4A4F7C"), unsafe_allow_html=True)
-    k2.markdown(kpi_card("Equipes/Levantadores", len(resumo_levantadores), "Ativos em campo", "#5CB85C"), unsafe_allow_html=True)
-    k3.markdown(kpi_card("Obras Livres (Fila)", len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]), "Sem atribuição", "#F0AD4E"), unsafe_allow_html=True)
-    k4.markdown(kpi_card("Levantadores Críticos", len(levantadores_criticos), "Abaixo de 45 obras", "#D9534F" if len(levantadores_criticos) > 0 else "#5CB85C"), unsafe_allow_html=True)
+    k1.markdown(kpi_card("Obras Atribuídas", int(resumo_levantadores['Total_Obras_Real'].sum()), "Em execução no momento", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
+    k2.markdown(kpi_card("Equipes em Campo", len(resumo_levantadores), "Levantadores ativos", "👥", "#10B981"), unsafe_allow_html=True)
+    k3.markdown(kpi_card("Obras Livres", len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]), "Aguardando atribuição", "⏳", "#F59E0B"), unsafe_allow_html=True)
+    k4.markdown(kpi_card("Risco Crítico", len(levantadores_criticos), "Abaixo da meta (45 obras)", "🚨", "#EF4444" if len(levantadores_criticos) > 0 else "#10B981"), unsafe_allow_html=True)
     
     st.markdown("<br>", unsafe_allow_html=True)
-    col_t1, col_t2 = st.columns([2.5, 1.5])
+    
+    # Proporção balanceada entre Tabela e Ações (60% / 40%)
+    col_t1, col_t2 = st.columns([1.5, 1])
     with col_t1:
-        st.markdown("#### 📋 Desempenho e Alocação das Equipes")
+        st.markdown("#### 📋 Desempenho e Alocação")
         st.dataframe(resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
-                     use_container_width=True, hide_index=True, height=320, 
+                     use_container_width=True, hide_index=True, height=280, 
                      column_config={
                          "Levantador": "Técnico", 
                          "Equipe": "Equipe", 
-                         "Total_Obras_Real": st.column_config.ProgressColumn("Obras (Meta: 45)", format="%d", min_value=0, max_value=45)
+                         "Total_Obras_Real": st.column_config.ProgressColumn("Carga de Obras (Meta: 45)", format="%d", min_value=0, max_value=45)
                      })
         
     with col_t2:
-        st.markdown("#### ⚡ Painel de Ações Rápidas")
+        st.markdown("#### ⚡ Gestão de Fila")
         with st.container(border=True):
-            lev_sel = st.selectbox("Levantador:", todos_levantadores, label_visibility="collapsed")
+            # Condensação da área de Ações Rápidas
+            c_sel, c_inf = st.columns([3, 1])
+            lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed")
             if st.session_state.get('last_lev') != lev_sel:
                 st.session_state.assign_step = 0; st.session_state.show_demanda = False; st.session_state.last_lev = lev_sel
                 
             obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
-            st.info(f"Obras Vinculadas Atualmente: **{obras_do_lev}**")
+            
+            # Badge compacto de contexto
+            cor_badge = "#e8f4f8" if obras_do_lev >= 45 else "#fce8e8"
+            c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
+            
+            st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
             
             if st.session_state.perfil_usuario == "ADMIN":
                 if obras_do_lev < 45:
                     if st.session_state.get('assign_step', 0) == 0:
-                        if st.button(f"⚡ Atribuir +{45 - obras_do_lev} Obras", use_container_width=True, type="primary"):
+                        if st.button(f"➕ Atribuir {45 - obras_do_lev} Obras", use_container_width=True, type="primary"):
                             st.session_state.assign_step = 1; st.rerun()
                     elif st.session_state.assign_step == 1:
-                        st.warning("Confirmar atribuição?")
+                        st.info("Confirmar geo-atribuição?")
                         c_a, c_b = st.columns(2)
                         if c_a.button("✅ Sim", use_container_width=True, type="primary"):
                             df_livres = df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
@@ -181,19 +199,20 @@ def view_painel_executivo():
                                     st.success("Obras vinculadas!"); st.session_state.assign_step = 2; load_core_data.clear(); st.rerun()
                         if c_b.button("❌ Não", use_container_width=True): st.session_state.assign_step = 0; st.rerun()
                     elif st.session_state.assign_step == 2:
-                        st.success("✅ Atribuído.")
-                        if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"):
+                        st.success("✅ Atribuição Concluída.")
+                        if st.button("📋 Gerar Demanda (Excel/KML)", use_container_width=True, type="primary"):
                             st.session_state.show_demanda = True; st.session_state.assign_step = 0; st.rerun()
                 else:
                     st.success("✅ Meta Atingida.")
-                    if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
-            else: st.warning("🔒 Restrito à Coordenação.")
+                    if st.button("📋 Gerar Demanda (Excel/KML)", use_container_width=True, type="primary"): st.session_state.show_demanda = True
+            else: 
+                st.warning("🔒 Atribuição restrita à Coordenação.")
             
-            st.button("🔍 Ver Base", on_click=filtrar_levantador_governanca, args=(lev_sel,), use_container_width=True)
+            st.button("🔍 Filtrar na Base (Governança)", on_click=filtrar_levantador_governanca, args=(lev_sel,), use_container_width=True)
             
     if st.session_state.get('show_demanda', False):
         st.markdown("---")
-        st.markdown(f"#### 📋 Gerador de Demanda - {lev_sel}")
+        st.markdown(f"#### 📋 Gerador de Demanda de Campo - {lev_sel}")
         df_demanda = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
         
         if len(df_demanda) > 0:
@@ -223,20 +242,37 @@ def view_painel_executivo():
                 except: pass
             kml += '</Document>\n</kml>'
             
-            st.info(f"⚡ **{len(df_exp)} obras validadas** (Tipo Ligação, Coordenadas e Nome devidamente preenchidos).")
+            st.info(f"⚡ **{len(df_exp)} obras validadas** prontas para exportação.")
             c_b1, c_b2, c_b3 = st.columns([2.5, 2.5, 4])
             hj = datetime.now().strftime('%d_%m_%Y')
             c_b1.download_button("📥 Planilha Oficial (Excel)", data=buf.getvalue(), file_name=f"Demanda_{lev_sel}_{hj}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
             c_b2.download_button("🗺️ Pontos de Rota (KML)", data=kml.encode('utf-8'), file_name=f"Demanda_{lev_sel}_{hj}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
-            if c_b3.button("Fechar Aba", use_container_width=True): st.session_state.show_demanda = False; st.rerun()
+            if c_b3.button("Fechar Ferramenta", use_container_width=True): st.session_state.show_demanda = False; st.rerun()
         else:
-            st.warning("Fila vazia para este levantador.")
-            if st.button("Fechar"): st.session_state.show_demanda = False; st.rerun()
+            st.warning("Não há obras ativas atribuídas a este técnico.")
+            if st.button("Fechar Aba"): st.session_state.show_demanda = False; st.rerun()
 
     st.markdown("---")
+    
+    # 50/50 Split para os Gráficos
     c_g1, c_g2 = st.columns(2)
     with c_g1:
-        if not municipios_por_levantador.empty: st.plotly_chart(px.bar(municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Municípios/Levantador", color_discrete_sequence=['#4A4F7C']), use_container_width=True)
+        if not municipios_por_levantador.empty: 
+            # Gráfico de Barras Azuis - Legibilidade Otimizada
+            fig1 = px.bar(
+                municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
+                x='Qtd_Municipios', 
+                y='Levantador', 
+                orientation='h', 
+                title="Top 15 Concentração por Município", 
+                text='Qtd_Municipios', # Valor exato no fim da barra
+                color_discrete_sequence=['#1A4F7C']
+            )
+            fig1.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
+            # Aumentando a margem esquerda para garantir a leitura dos nomes
+            fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
+            st.plotly_chart(fig1, use_container_width=True)
+            
     with c_g2:
         try:
             df_sla = calcular_sla_vetorizado(df_notas_db)
@@ -244,28 +280,53 @@ def view_painel_executivo():
             if not df_sla.empty:
                 df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
                 df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
-                st.plotly_chart(px.bar(df_g.sort_values(['REGIONAL', 'Status_SLA']), x='REGIONAL', y='Qtd', color='Status_SLA', title="SLA Regional", barmode='group', color_discrete_map={'No Prazo': '#5CB85C', 'Vencimento Próximo': '#F0AD4E', 'Vencida': '#D9534F'}), use_container_width=True)
+                
+                # Gráfico de Barras Verdes/SLA - Otimizando o eixo X
+                fig2 = px.bar(
+                    df_g.sort_values(['REGIONAL', 'Status_SLA']), 
+                    x='REGIONAL', 
+                    y='Qtd', 
+                    color='Status_SLA', 
+                    title="Monitoramento de SLA Regional", 
+                    barmode='group', 
+                    text='Qtd', # Exibindo os valores
+                    color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'}
+                )
+                fig2.update_traces(textposition='outside', textfont=dict(size=12))
+                fig2.update_layout(
+                    margin=dict(l=20, r=20, t=40, b=40),
+                    xaxis=dict(tickangle=0, title=None, tickfont=dict(size=12)), # Tickangle reto para não deitar as letras
+                    yaxis=dict(title=None, showticklabels=False),
+                    legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title=None)
+                )
+                st.plotly_chart(fig2, use_container_width=True)
         except Exception: pass
 
     st.markdown("---")
-    st.markdown("### 🗺️ Roteirização Geoespacial (Híbrida)")
-    col_f1, col_f2, col_f3 = st.columns(3)
+    st.markdown("### 🗺️ Roteirização Geoespacial")
     
-    op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db['LEVANTADOR'].unique()])
-    op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db['REGIONAL'].unique()])
-    op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db['MUNICIPIO'].unique()])
+    # Barra de Filtros Condensada e Lógica
+    with st.container(border=True):
+        st.markdown("<p style='font-size: 14px; font-weight: 600; color: #555; margin-bottom: 5px;'>🔍 Controles de Topografia e Rota</p>", unsafe_allow_html=True)
+        col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 1.5])
+        
+        op_map_lev = ["TODOS"] + sorted([str(x) for x in df_notas_db['LEVANTADOR'].unique()])
+        op_map_reg = ["TODOS"] + sorted([str(x) for x in df_notas_db['REGIONAL'].unique()])
+        op_map_mun = ["TODOS"] + sorted([str(x) for x in df_notas_db['MUNICIPIO'].unique()])
 
-    f_lev = col_f1.selectbox("Filtro Levantador:", op_map_lev)
-    f_reg = col_f2.selectbox("Filtro Regional:", op_map_reg)
-    f_mun = col_f3.selectbox("Filtro Município:", op_map_mun)
-    
+        f_lev = col_f1.selectbox("Técnico / Equipe", op_map_lev)
+        f_reg = col_f2.selectbox("Regional", op_map_reg)
+        f_mun = col_f3.selectbox("Município Alvo", op_map_mun)
+        
+        camada = col_f4.file_uploader("Sobrepor KML/KMZ", type=['kml', 'kmz'], label_visibility="visible")
+        
     df_m = df_notas_db.copy()
     if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str) == f_lev]
     if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
     if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str) == f_mun]
     
-    st.info(f"📍 Renderizando {len(df_m)} obras no mapa.")
-    camada = st.file_uploader("Sobrepor KML/KMZ Rápido", type=['kml', 'kmz'], label_visibility="collapsed")
+    st.caption(f"📍 Renderizando **{len(df_m)}** obras baseadas nos filtros selecionados.")
+    
     camada_p = None
     if camada:
         ext = camada.name.split('.')[-1].lower()
@@ -276,5 +337,5 @@ def view_painel_executivo():
     df_e = df_equipes_db.copy()
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     
-    with st.spinner("Construindo base geográfica de satélite..."):
+    with st.spinner("Construindo renderização geográfica do terreno..."):
         render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p)
