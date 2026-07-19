@@ -154,7 +154,38 @@ def load_core_data():
         criticos = resumo_lev[resumo_lev['Total_Obras_Real'] < 45]['Levantador'].tolist()
         todos_levs = sorted([str(l) for l in resumo_lev['Levantador'].unique() if pd.notna(l) and str(l).strip() != ''])
 
-    return df_notas, df_equipes, resumo_lev, criticos, todos_levs, {}, {}, pd.DataFrame()
+    # =========================================================================
+    # CORREÇÃO APLICADA: CONSTRUÇÃO DE COORDENADAS DOS MUNICÍPIOS
+    # =========================================================================
+    mapa_lat = {}
+    mapa_lon = {}
+    municipios_por_levantador = pd.DataFrame()
+
+    if not df_notas.empty and 'MUNICIPIO' in df_notas.columns:
+        # 1. Tenta extrair a média das coordenadas que vieram válidas para o município
+        valid_coords = df_notas.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
+        if not valid_coords.empty:
+            valid_coords['MUN_CLEAN'] = valid_coords['MUNICIPIO'].astype(str).str.strip().str.upper()
+            mapa_lat = valid_coords.groupby('MUN_CLEAN')['Lat_Mapa'].mean().to_dict()
+            mapa_lon = valid_coords.groupby('MUN_CLEAN')['Lon_Mapa'].mean().to_dict()
+
+        # 2. Preenche os municípios que estão sem *nenhuma* coordenada com um fallback central (Região do Maranhão)
+        for mun in df_notas['MUNICIPIO'].dropna().unique():
+            mun_clean = str(mun).strip().upper()
+            if mun_clean not in mapa_lat or pd.isna(mapa_lat[mun_clean]):
+                # Coordenada central fictícia com leve variação para evitar travamento
+                mapa_lat[mun_clean] = -5.0 + np.random.uniform(-0.5, 0.5) 
+                mapa_lon[mun_clean] = -45.0 + np.random.uniform(-0.5, 0.5)
+
+        # 3. Reconstrói o DataFrame que renderiza o Gráfico "Top 15 Concentração"
+        if 'LEVANTADOR' in df_notas.columns:
+            m_df = df_notas[df_notas['LEVANTADOR'].notna() & (df_notas['LEVANTADOR'] != SEM_LEVANTADOR)].copy()
+            if not m_df.empty:
+                m_df['LEV_CLEAN'] = m_df['LEVANTADOR'].astype(str).str.strip().str.upper()
+                municipios_por_levantador = m_df.groupby('LEV_CLEAN')['MUNICIPIO'].nunique().reset_index(name='Qtd_Municipios')
+                municipios_por_levantador.rename(columns={'LEV_CLEAN': 'Levantador'}, inplace=True)
+
+    return df_notas, df_equipes, resumo_lev, criticos, todos_levs, mapa_lat, mapa_lon, municipios_por_levantador
 
 def save_notas_to_db(df, acao="Atualização", backup=False):
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
