@@ -92,7 +92,7 @@ def view_simulador():
         """
         
     st.markdown("<br>", unsafe_allow_html=True)
-    c1, c2, c3, c4, c5 = st.columns(5) # Agora com 5 colunas perfeitamente alinhadas
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.markdown(kpi_card("Total Municípios", f"{total_municipios}", "🗺️", "#3b82f6"), unsafe_allow_html=True) 
     c2.markdown(kpi_card("Mun. Cobertos", f"{int(mun_cobertos_projetado)}", "✅", "#10b981"), unsafe_allow_html=True) 
     c3.markdown(kpi_card("Mun. Livres (Gap)", f"{int(mun_livres_projetado)}", "⚠️", "#f59e0b"), unsafe_allow_html=True) 
@@ -109,6 +109,26 @@ def view_simulador():
     df_display = df_reg[['REGIONAL', 'Total_Obras', 'Equipes Atuais', 'Gap Atual (Munc)', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
     df_display.rename(columns={'Total_Obras': 'Total Obras (Geral)'}, inplace=True)
     
+    # -------------------------------------------------------------
+    # INSERÇÃO DA LINHA DE TOTAIS
+    # -------------------------------------------------------------
+    gap_atual_total = df_display['Gap Atual (Munc)'].sum()
+    gap_restante_total = df_display['Gap Restante'].sum()
+    cobertura_total_pond = 100 if gap_atual_total == 0 else min(100, (1 - (gap_restante_total / gap_atual_total)) * 100)
+    
+    linha_total = pd.DataFrame([{
+        'REGIONAL': 'TOTAL ESTADO',
+        'Total Obras (Geral)': df_display['Total Obras (Geral)'].sum(),
+        'Equipes Atuais': df_display['Equipes Atuais'].sum(),
+        'Gap Atual (Munc)': gap_atual_total,
+        'Novos Levantadores': df_display['Novos Levantadores'].sum(),
+        'Gap Restante': gap_restante_total,
+        'Cobertura %': cobertura_total_pond
+    }])
+    
+    df_display = pd.concat([df_display, linha_total], ignore_index=True)
+    # -------------------------------------------------------------
+
     edited_df = st.data_editor(
         df_display,
         column_config={
@@ -125,10 +145,15 @@ def view_simulador():
         key="simulador_editor"
     )
     
-    # Loop de Feedback Visual: Escuta edições e avisa o sistema para re-renderizar a tela com os Cards novos
+    # Loop de Feedback Visual: Escuta edições e avisa o sistema para re-renderizar a tela
     needs_rerun = False
     for index, row in edited_df.iterrows():
         reg = row['REGIONAL']
+        
+        # Impede que a edição na linha de TOTAIS afete a lógica do simulador
+        if reg == 'TOTAL ESTADO':
+            continue
+            
         atuais = row['Equipes Atuais']
         novos = row['Novos Levantadores']
         
