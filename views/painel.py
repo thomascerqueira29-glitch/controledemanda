@@ -94,15 +94,22 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
+        # Jitter Otimizado: ~30 metros (0.0003 graus) ao invés de 1km, mantendo na mesma rua, mas quebrando o empilhamento perfeito
         np.random.seed(42)
-        df_ob['Lat_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
-        df_ob['Lon_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
+        df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
+        df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
         
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
         else:
-            cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+            # Multiplicação de Clusters: maxClusterRadius reduzido para 35 e quebra total no zoom 16
+            cluster_obras = MarkerCluster(
+                name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)",
+                maxClusterRadius=35,
+                disableClusteringAtZoom=16,
+                spiderfyOnMaxZoom=True
+            )
             
             def get_s(val):
                 if pd.isna(val): return "-"
@@ -145,7 +152,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
 
 def view_painel_executivo():
-    df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, municipios_por_levantador = load_core_data()
+    df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("O banco de dados está vazio. Realize uma carga em lote para popular o painel.")
@@ -246,18 +253,24 @@ def view_painel_executivo():
 
     st.markdown("---")
     
-    # Restauração e limpeza do Gráfico de Municípios
     c_g1, c_g2 = st.columns(2)
     with c_g1:
-        if not municipios_por_levantador.empty: 
-            # Filtro para varrer e ocultar qualquer "0" ou "SEM LEVANTADOR" do gráfico
-            df_grafico = municipios_por_levantador[~municipios_por_levantador['Levantador'].astype(str).str.strip().isin(['0', '0.0', 'nan', 'SEM LEVANTADOR'])].copy()
+        # CÁLCULO AUTÔNOMO: Resolve o problema do sumiço do gráfico e barra lixos de "0"
+        df_mun = df_notas_db.copy()
+        lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None']
+        df_mun = df_mun[~df_mun['LEVANTADOR'].astype(str).str.strip().isin(lixos)]
+        
+        if not df_mun.empty and 'MUNICIPIO' in df_mun.columns:
+            municipios_por_levantador = df_mun.groupby('LEVANTADOR')['MUNICIPIO'].nunique().reset_index()
+            municipios_por_levantador.columns = ['Levantador', 'Qtd_Municipios']
             
-            if not df_grafico.empty:
-                fig1 = px.bar(df_grafico.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
-                              x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Concentração por Município", 
-                              text='Qtd_Municipios', color_discrete_sequence=['#1A4F7C'])
-                fig1.update_traces(textposition='outside')
+            if not municipios_por_levantador.empty:
+                fig1 = px.bar(
+                    municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
+                    x='Qtd_Municipios', y='Levantador', orientation='h', title="Top 15 Concentração por Município", 
+                    text='Qtd_Municipios', color_discrete_sequence=['#1A4F7C']
+                )
+                fig1.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
                 fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
                 st.plotly_chart(fig1, use_container_width=True)
             
@@ -268,7 +281,7 @@ def view_painel_executivo():
                 df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
                 df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
                 fig2 = px.bar(df_g.sort_values(['REGIONAL', 'Status_SLA']), x='REGIONAL', y='Qtd', color='Status_SLA', title="Monitoramento de SLA Regional", barmode='group', text='Qtd', color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'})
-                fig2.update_traces(textposition='outside')
+                fig2.update_traces(textposition='outside', textfont=dict(size=12))
                 fig2.update_layout(margin=dict(l=20, r=20, t=40, b=40), xaxis_title=None, yaxis=dict(showticklabels=False), legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title=None))
                 st.plotly_chart(fig2, use_container_width=True)
         except Exception: pass
@@ -276,9 +289,6 @@ def view_painel_executivo():
     st.markdown("---")
     st.markdown("### 🗺️ Roteirização Geoespacial")
     
-    # ---------------------------------------------------------
-    # BARRA LATERAL (SIDEBAR) EXPANDIDA COM NOVOS FILTROS
-    # ---------------------------------------------------------
     with st.sidebar:
         st.markdown("### 🔍 Filtros Territoriais")
         
@@ -301,10 +311,8 @@ def view_painel_executivo():
         st.markdown("---")
         st.markdown("### ⚙️ Configurações do Mapa")
         
-        # Escolha explícita entre Clusters (Agrupamento interativo) ou Calor (Mancha Térmica)
         estilo_mapa = st.radio("Visualização do Mapa:", ["Agrupamentos (Clusters)", "Calor (Heatmap)"])
         
-        # Cores só importam se estiver no modo Cluster
         visao_cores = "Produtividade"
         if estilo_mapa == "Agrupamentos (Clusters)":
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
@@ -312,7 +320,6 @@ def view_painel_executivo():
         st.markdown("---")
         camada = st.file_uploader("Sobrepor Camada (KML/KMZ)", type=['kml', 'kmz'])
 
-    # Aplicação massiva de filtros na base baseada na barra lateral
     df_m = df_notas_db.copy()
     if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str) == f_lev]
     if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str) == f_reg]
