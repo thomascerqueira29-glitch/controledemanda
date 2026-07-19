@@ -83,15 +83,13 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
         
-        # Mapeamento dinâmico para garantir que o código encontre as colunas independente de estar maiúsculo/minúsculo ou com espaços
+        # Mapeamento dinâmico para garantir o encontro das colunas
         cols_up = {str(c).upper().strip(): c for c in df_ob.columns}
-        
         c_lat = cols_up.get('LATITUDE')
         c_lon = cols_up.get('LONGITUDE')
         c_reg = cols_up.get('REGIONAL', 'REGIONAL')
         c_mun = cols_up.get('MUNICIPIO', 'MUNICIPIO')
         c_prot = cols_up.get('PROTOCOLO', 'PROTOCOLO')
-        # Tenta achar solicitante com várias possibilidades
         c_solic = cols_up.get('NOME DO SOLICITANTE', cols_up.get('SOLICITANTE', 'NOME DO SOLICITANTE'))
         c_stlist = cols_up.get('STATUS LIST', 'STATUS LIST')
         c_stsap = cols_up.get('STATUS SAP', 'STATUS SAP')
@@ -99,42 +97,56 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         c_tipo = cols_up.get('TIPO LIGACAO', cols_up.get('TIPO DE LIGAÇÃO', 'TIPO LIGACAO'))
         c_lev = cols_up.get('LEVANTADOR', 'LEVANTADOR')
         
-        # 1. Extração primária das coordenadas
+        # 1. Extração REAL das Coordenadas Exatas (com limpeza extrema anti-falhas)
         if c_lat and c_lon:
-            df_ob['Lat_Mapa'] = pd.to_numeric(df_ob[c_lat].astype(str).str.replace(',', '.'), errors='coerce')
-            df_ob['Lon_Mapa'] = pd.to_numeric(df_ob[c_lon].astype(str).str.replace(',', '.'), errors='coerce')
+            # Força conversão para string, limpa espaços ocultos e substitui vírgula brasileira por ponto americano
+            lat_clean = df_ob[c_lat].astype(str).str.strip().str.replace(' ', '').str.replace(',', '.')
+            lon_clean = df_ob[c_lon].astype(str).str.strip().str.replace(' ', '').str.replace(',', '.')
+            
+            df_ob['Lat_Real'] = pd.to_numeric(lat_clean, errors='coerce')
+            df_ob['Lon_Real'] = pd.to_numeric(lon_clean, errors='coerce')
         else:
-            df_ob['Lat_Mapa'] = np.nan
-            df_ob['Lon_Mapa'] = np.nan
+            df_ob['Lat_Real'] = np.nan
+            df_ob['Lon_Real'] = np.nan
 
-        # 2. Resgate de Coordenadas: Associa as obras sem latitude ao município de origem
+        # Cria as colunas oficiais de plotagem assumindo primeiro a coordenada real da base
+        df_ob['Lat_Mapa'] = df_ob['Lat_Real']
+        df_ob['Lon_Mapa'] = df_ob['Lon_Real']
+
+        # 2. Identifica apenas as obras que NÃO possuem coordenada (vazias na Governança)
+        mask_sem_coord = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
+
+        # 3. Resgate de Coordenadas APENAS para os vazios
         if mapa_lat is not None and mapa_lon is not None and c_mun in df_ob.columns:
-            mun_clean = df_ob[c_mun].astype(str).str.strip().str.upper()
+            mun_series = df_ob.loc[mask_sem_coord, c_mun].astype(str).str.split('-').str[0].str.strip().str.upper()
             mapa_lat_clean = {str(k).strip().upper(): v for k, v in mapa_lat.items()}
             mapa_lon_clean = {str(k).strip().upper(): v for k, v in mapa_lon.items()}
             
-            df_ob['Lat_Mapa'] = df_ob['Lat_Mapa'].fillna(mun_clean.map(mapa_lat_clean))
-            df_ob['Lon_Mapa'] = df_ob['Lon_Mapa'].fillna(mun_clean.map(mapa_lon_clean))
+            df_ob.loc[mask_sem_coord, 'Lat_Mapa'] = mun_series.map(mapa_lat_clean)
+            df_ob.loc[mask_sem_coord, 'Lon_Mapa'] = mun_series.map(mapa_lon_clean)
 
-        # 3. Descarta apenas o que for absolutamente impossível de mapear
+        # 4. Descarta o que foi absolutamente impossível de mapear
         df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
             
         if not df_ob.empty:
-            # 4. ESPALHAMENTO MATEMÁTICO (JITTER): A chave para exibir as 7352 obras
-            # Isso impede que milhares de obras fiquem sobrepostas no mesmo pixel central do município
-            # Espalhamento gera uma "nuvem" de obras na área do município, permitindo a separação do cluster.
-            np.random.seed(42)
-            df_ob['Lat_Mapa'] += np.random.uniform(-0.025, 0.025, len(df_ob))
-            df_ob['Lon_Mapa'] += np.random.uniform(-0.025, 0.025, len(df_ob))
+            # 5. ESPALHAMENTO MATEMÁTICO (JITTER) RESTRITO!
+            # Aplica o espalhamento SOMENTE nas obras que vieram vazias e pegaram o centro do município.
+            # OBRAS COM COORDENADAS REAIS FICAM INTACTAS NO SEU PONTO EXATO DA RUA.
+            mask_fake = df_ob['Lat_Real'].isna() | df_ob['Lon_Real'].isna()
             
-            # 5. O MarkerCluster gerenciará 100% da base
+            if mask_fake.any():
+                np.random.seed(42)
+                df_ob.loc[mask_fake, 'Lat_Mapa'] += np.random.uniform(-0.015, 0.015, mask_fake.sum())
+                df_ob.loc[mask_fake, 'Lon_Mapa'] += np.random.uniform(-0.015, 0.015, mask_fake.sum())
+            
+            # O MarkerCluster agrupa toda a base e separa conforme o zoom
             cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
             
             for _, row in df_ob.iterrows():
                 lev_obra = str(row.get(c_lev, SEM_LEVANTADOR))
                 cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                 
-                # 6. Criação do Pop-up detalhado protegido contra HTML Injection e valores vazios
+                # 6. Pop-up HTML blindado
                 info_html = f"""
                 <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
                     <b>Regional:</b> {html.escape(str(row.get(c_reg, '-')))} <br>
@@ -204,7 +216,6 @@ def view_painel_executivo():
     with col_t2:
         st.markdown("#### ⚡ Gestão de Fila")
         with st.container(border=True):
-            # Condensação da área de Ações Rápidas
             c_sel, c_inf = st.columns([3, 1])
             lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed")
             if st.session_state.get('last_lev') != lev_sel:
@@ -212,7 +223,6 @@ def view_painel_executivo():
                 
             obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
             
-            # Badge compacto de contexto
             cor_badge = "#e8f4f8" if obras_do_lev >= 45 else "#fce8e8"
             c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
             
@@ -304,18 +314,16 @@ def view_painel_executivo():
     c_g1, c_g2 = st.columns(2)
     with c_g1:
         if not municipios_por_levantador.empty: 
-            # Gráfico de Barras Azuis - Legibilidade Otimizada
             fig1 = px.bar(
                 municipios_por_levantador.sort_values('Qtd_Municipios', ascending=False).head(15).sort_values('Qtd_Municipios'), 
                 x='Qtd_Municipios', 
                 y='Levantador', 
                 orientation='h', 
                 title="Top 15 Concentração por Município", 
-                text='Qtd_Municipios', # Valor exato no fim da barra
+                text='Qtd_Municipios',
                 color_discrete_sequence=['#1A4F7C']
             )
             fig1.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
-            # Aumentando a margem esquerda para garantir a leitura dos nomes
             fig1.update_layout(margin=dict(l=150, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False))
             st.plotly_chart(fig1, use_container_width=True)
             
@@ -327,7 +335,6 @@ def view_painel_executivo():
                 df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
                 df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
                 
-                # Gráfico de Barras Verdes/SLA - Otimizando o eixo X
                 fig2 = px.bar(
                     df_g.sort_values(['REGIONAL', 'Status_SLA']), 
                     x='REGIONAL', 
@@ -335,13 +342,13 @@ def view_painel_executivo():
                     color='Status_SLA', 
                     title="Monitoramento de SLA Regional", 
                     barmode='group', 
-                    text='Qtd', # Exibindo os valores
+                    text='Qtd',
                     color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'}
                 )
                 fig2.update_traces(textposition='outside', textfont=dict(size=12))
                 fig2.update_layout(
                     margin=dict(l=20, r=20, t=40, b=40),
-                    xaxis=dict(tickangle=0, title=None, tickfont=dict(size=12)), # Tickangle reto para não deitar as letras
+                    xaxis=dict(tickangle=0, title=None, tickfont=dict(size=12)),
                     yaxis=dict(title=None, showticklabels=False),
                     legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5, title=None)
                 )
@@ -351,7 +358,6 @@ def view_painel_executivo():
     st.markdown("---")
     st.markdown("### 🗺️ Roteirização Geoespacial")
     
-    # Barra de Filtros Condensada e Lógica
     with st.container(border=True):
         st.markdown("<p style='font-size: 14px; font-weight: 600; color: #555; margin-bottom: 5px;'>🔍 Controles de Topografia e Rota</p>", unsafe_allow_html=True)
         col_f1, col_f2, col_f3, col_f4 = st.columns([2, 2, 2, 1.5])
@@ -384,5 +390,4 @@ def view_painel_executivo():
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     
     with st.spinner("Construindo renderização geográfica do terreno..."):
-        # Adição do mapa_lat e mapa_lon para resgate de coordenadas e renderização de 100% da base
         render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon)
