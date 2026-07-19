@@ -8,7 +8,6 @@ import plotly.express as px
 import io
 import html
 import tempfile
-import re
 from datetime import datetime
 
 # Importa as ferramentas pesadas do nosso motor central
@@ -27,24 +26,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def safe_float_coord(val):
-    """Limpador extremo de coordenadas: Remove letras, converte vírgula pra ponto e trata zeros nulos."""
-    try:
-        if pd.isna(val): return np.nan
-        v = str(val).strip().replace(',', '.')
-        v = re.sub(r'[^\d\.\-]', '', v) # Mantém apenas números, ponto e sinal de menos
-        if not v or v in ['-', '.']: return np.nan
-        parts = v.split('.')
-        if len(parts) > 2:
-            v = parts[0] + '.' + ''.join(parts[1:])
-        num = float(v)
-        # Se for exatamente 0.0, é erro de base, pois cai na África
-        if num == 0.0: return np.nan
-        return num
-    except:
-        return np.nan
-
 def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
+    """Novo Card de KPI: Maior legibilidade, hierarquia e contexto visual."""
     return f"""
     <div style="background-color: white; border-radius: 10px; padding: 15px; border-left: 6px solid {border_color}; box-shadow: 0 4px 6px rgba(0,0,0,0.05); height: 100%; border: 1px solid #f0f2f6;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -82,8 +65,8 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         c_lon_eq = cols_upper_eq.get('LONGITUDE')
         
         if c_lat_eq and c_lon_eq:
-            df_eq['Lat'] = df_eq[c_lat_eq].apply(safe_float_coord)
-            df_eq['Lon'] = df_eq[c_lon_eq].apply(safe_float_coord)
+            df_eq['Lat'] = pd.to_numeric(df_eq[c_lat_eq].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
+            df_eq['Lon'] = pd.to_numeric(df_eq[c_lon_eq].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
             df_eq_valid = df_eq.dropna(subset=['Lat', 'Lon'])
             
             for _, row in df_eq_valid.iterrows():
@@ -96,107 +79,88 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 ).add_to(fg_equipes)
     fg_equipes.add_to(mapa)
 
+    # =========================================================================
+    # RENDERIZAÇÃO ABSOLUTA DE OBRAS (REGRA DO DESCARTE ZERO)
+    # =========================================================================
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
         
-        # Mapeamento dinâmico para garantir que o código encontre as colunas
-        cols_up = {str(c).upper().strip(): c for c in df_ob.columns}
-        c_lat = cols_up.get('LATITUDE')
-        c_lon = cols_up.get('LONGITUDE')
-        c_mun = cols_up.get('MUNICIPIO')
+        # Padroniza todas as colunas para maiúsculo para garantir a leitura dos 8 itens solicitados
+        df_ob.columns = [str(c).upper().strip() for c in df_ob.columns]
         
-        # 1. Limpeza Extrema das Coordenadas Originais
-        if c_lat and c_lon:
-            df_ob['Lat_Mapa'] = df_ob[c_lat].apply(safe_float_coord)
-            df_ob['Lon_Mapa'] = df_ob[c_lon].apply(safe_float_coord)
+        # 1. Leitura Extrema de Coordenadas (substitui vírgula brasileira por ponto e força número)
+        if 'LATITUDE' in df_ob.columns and 'LONGITUDE' in df_ob.columns:
+            df_ob['Lat_Mapa'] = pd.to_numeric(df_ob['LATITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
+            df_ob['Lon_Mapa'] = pd.to_numeric(df_ob['LONGITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
         else:
             df_ob['Lat_Mapa'] = np.nan
             df_ob['Lon_Mapa'] = np.nan
 
-        # 2. Resgate de Municípios (Para obras sem Latitude/Longitude preenchidas)
-        mask_sem_coord = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
-        if mask_sem_coord.any() and c_mun:
-            # Remoção de acentos para garantir que os nomes das cidades deem 'match' com o dicionário
-            mun_series = df_ob.loc[mask_sem_coord, c_mun].astype(str).str.replace('Ó', 'O').str.replace('Í', 'I').str.replace('Á', 'A').str.replace('Ã', 'A').str.replace('É', 'E').str.replace('Ê', 'E').str.split('-').str[0].str.strip().str.upper()
-            
-            # Mescla do dicionário dinâmico do banco com o nosso dicionário estático nativo do MA
-            mapa_lat_clean = {str(k).strip().upper(): v for k, v in mapa_lat.items()} if mapa_lat else {}
-            mapa_lon_clean = {str(k).strip().upper(): v for k, v in mapa_lon.items()} if mapa_lon else {}
-            
+        # 2. Resgate de Emergência (Para obras onde a coordenada falhou ou está vazia)
+        mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
+        if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
+            # Dicionário do Estado do MA para garantir que a obra caia em sua respectiva cidade
             dict_ma_lat = {'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09, 'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'PACO DO LUMIAR': -2.52, 'BACABAL': -4.22, 'BALSAS': -7.53, 'SANTA INES': -3.66, 'PINHEIRO': -2.52, 'CHAPADINHA': -3.74, 'SANTA LUZIA': -4.15, 'BURITICUPU': -4.34, 'GRAJAU': -5.81, 'ITAPECURU MIRIM': -3.40, 'COROATA': -4.12, 'BARREIRINHAS': -2.74, 'TUTOIA': -2.76, 'VARGEM GRANDE': -3.53, 'VIANA': -3.21, 'ZE DOCA': -3.27, 'LAGO DA PEDRA': -4.33, 'COELHO NETO': -4.25, 'PRESIDENTE DUTRA': -5.28, 'BOM JARDIM': -3.56, 'SAO JOAO DOS PATOS': -6.49, 'ARARI': -3.45, 'AMARANTE DO MARANHAO': -5.56, 'PENALVA': -3.28, 'COLINAS': -6.02, 'ESTREITO': -6.56, 'ALDEIAS ALTAS': -4.62, 'BARRA DO CORDA': -5.50, 'TUNTUM': -5.25, 'DOM PEDRO': -5.03, 'MIRADOR': -6.37, 'RAPOSA': -2.42, 'ROSARIO': -2.93, 'SAO MATEUS DO MARANHAO': -4.04, 'ALCANTARA': -2.40, 'PINDARE MIRIM': -3.60, 'VITORINO FREIRE': -4.33, 'PEDREIRAS': -4.56, 'ESPERANTINOPOLIS': -4.86, 'PARNARAMA': -5.67, 'MATOES': -5.45, 'CAROLINA': -7.33, 'RIACHAO': -7.36, 'LORETO': -7.11, 'PASTOS BONS': -6.60, 'SAO RAIMUNDO DAS MANGABEIRAS': -7.02}
             dict_ma_lon = {'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'SAO JOSE DE RIBAMAR': -44.05, 'TIMON': -42.83, 'CAXIAS': -43.35, 'ACAILANDIA': -47.50, 'CODO': -43.89, 'PACO DO LUMIAR': -44.10, 'BACABAL': -44.78, 'BALSAS': -46.03, 'SANTA INES': -45.38, 'PINHEIRO': -45.08, 'CHAPADINHA': -43.35, 'SANTA LUZIA': -45.66, 'BURITICUPU': -46.40, 'GRAJAU': -46.14, 'ITAPECURU MIRIM': -44.35, 'COROATA': -44.12, 'BARREIRINHAS': -42.82, 'TUTOIA': -42.27, 'VARGEM GRANDE': -43.91, 'VIANA': -45.00, 'ZE DOCA': -45.65, 'LAGO DA PEDRA': -45.12, 'COELHO NETO': -43.01, 'PRESIDENTE DUTRA': -44.48, 'BOM JARDIM': -45.99, 'SAO JOAO DOS PATOS': -43.70, 'ARARI': -44.77, 'AMARANTE DO MARANHAO': -46.74, 'PENALVA': -45.17, 'COLINAS': -44.24, 'ESTREITO': -47.45, 'ALDEIAS ALTAS': -43.47, 'BARRA DO CORDA': -45.24, 'TUNTUM': -44.64, 'DOM PEDRO': -44.43, 'MIRADOR': -44.36, 'RAPOSA': -44.03, 'ROSARIO': -44.24, 'SAO MATEUS DO MARANHAO': -44.47, 'ALCANTARA': -44.41, 'PINDARE MIRIM': -45.34, 'VITORINO FREIRE': -45.23, 'PEDREIRAS': -44.60, 'ESPERANTINOPOLIS': -44.70, 'PARNARAMA': -43.09, 'MATOES': -43.19, 'CAROLINA': -47.46, 'RIACHAO': -46.38, 'LORETO': -45.13, 'PASTOS BONS': -44.07, 'SAO RAIMUNDO DAS MANGABEIRAS': -45.31}
+            
+            # Limpa o texto da cidade para casar com o dicionário
+            muns = df_ob.loc[mask_miss, 'MUNICIPIO'].astype(str).str.upper().str.strip()
+            muns = muns.str.replace('Ó', 'O').str.replace('Í', 'I').str.replace('Á', 'A').str.replace('Ã', 'A').str.replace('É', 'E').str.replace('Ê', 'E').str.split('-').str[0].str.strip()
+            
+            df_ob.loc[mask_miss, 'Lat_Mapa'] = muns.map(dict_ma_lat)
+            df_ob.loc[mask_miss, 'Lon_Mapa'] = muns.map(dict_ma_lon)
+            
+        # 3. Resgate Final: Se ainda assim a obra não tiver coordenada (ex: cidade não listada e coord vazia)
+        # ELA NÃO SERÁ APAGADA DA TELA. Receberá o centro geográfico do mapa para exibição obrigatória.
+        mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
+        if mask_still_miss.any():
+            df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
+            df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
+            
+        # 4. MICRO-ESPALHAMENTO MATEMÁTICO UNIVERSAL
+        # Desloca minunciosamente todas as 7352 obras para que elas não fiquem empilhadas milimetricamente no mesmo pixel
+        np.random.seed(42)
+        df_ob['Lat_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
+        df_ob['Lon_Mapa'] += np.random.uniform(-0.010, 0.010, len(df_ob))
+        
+        # 5. Instanciação do Agrupador com as 7352 obras garantidas
+        cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+        
+        # Função para garantir a leitura de textos quebrando qualquer formatação vazia
+        def get_s(val):
+            if pd.isna(val): return "-"
+            s = str(val).strip()
+            if s.lower() in ['nan', 'none', '<na>', '']: return "-"
+            return html.escape(s)
 
-            for k, v in dict_ma_lat.items():
-                if k not in mapa_lat_clean: mapa_lat_clean[k] = v
-            for k, v in dict_ma_lon.items():
-                if k not in mapa_lon_clean: mapa_lon_clean[k] = v
-
-            df_ob.loc[mask_sem_coord, 'Lat_Mapa'] = mun_series.map(mapa_lat_clean)
-            df_ob.loc[mask_sem_coord, 'Lon_Mapa'] = mun_series.map(mapa_lon_clean)
-
-        # 3. MÁXIMA SEGURANÇA: Se ainda assim a obra não tiver coordenada (ex: campo vazio e cidade desconhecida),
-        # ela NÃO SERÁ EXCLUÍDA. Ela ganhará uma coordenada central provisória no mapa.
-        mask_final_na = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
-        if mask_final_na.any():
-            df_ob.loc[mask_final_na, 'Lat_Mapa'] = -5.0
-            df_ob.loc[mask_final_na, 'Lon_Mapa'] = -45.0
+        # 6. Renderização dos Pop-ups com os 8 atributos solicitados
+        records = df_ob.to_dict('records')
+        for row in records:
+            lev_obra = get_s(row.get('LEVANTADOR'))
+            if lev_obra == '-': lev_obra = SEM_LEVANTADOR
+            cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
             
-        if not df_ob.empty:
-            # 4. MICRO-ESPALHAMENTO MATEMÁTICO UNIVERSAL
-            # Isso é vital. Cria uma variação de ~30 a 50 metros em todas as obras.
-            # Se você tiver 50 obras vinculadas a um único poste/cidade, elas não ficarão mais "escondidas" 
-            # uma atrás da outra. O cluster poderá ser clicado e desdobrado revelando as obras.
-            np.random.seed(42)
-            df_ob['Lat_Mapa'] += np.random.uniform(-0.0006, 0.0006, len(df_ob))
-            df_ob['Lon_Mapa'] += np.random.uniform(-0.0006, 0.0006, len(df_ob))
+            # POP-UP BLINDADO CONTRA FALHAS HTML (Campos Exatos Solicitados)
+            info_html = f"""
+            <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
+                <b>Regional:</b> {get_s(row.get('REGIONAL'))} <br>
+                <b>Município:</b> {get_s(row.get('MUNICIPIO'))} <br>
+                <b>Protocolo:</b> {get_s(row.get('PROTOCOLO'))} <br>
+                <b>Solicitante:</b> {get_s(row.get('NOME DO SOLICITANTE'))} <br>
+                <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
+                <b>Status SAP:</b> {get_s(row.get('STATUS SAP'))} <br>
+                <b>ID Sisco:</b> {get_s(row.get('ID SISCO'))} <br>
+                <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
+            </div>
+            """
             
-            # Instanciação do Agrupador para gerenciar os popups pesados
-            cluster_obras = MarkerCluster(
-                name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)",
-                disableClusteringAtZoom=17,
-                spiderfyOnMaxZoom=True
-            )
+            folium.Marker(
+                location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                popup=folium.Popup(info_html, max_width=350)
+            ).add_to(cluster_obras)
             
-            # 5. Otimização de Laço e mapeamento das 8 Colunas Solicitadas
-            records = df_ob.to_dict('records')
-            
-            k_reg = cols_up.get('REGIONAL', 'REGIONAL')
-            k_mun = cols_up.get('MUNICIPIO', 'MUNICIPIO')
-            k_prot = cols_up.get('PROTOCOLO', 'PROTOCOLO')
-            k_solic = cols_up.get('NOME DO SOLICITANTE', 'NOME DO SOLICITANTE')
-            k_stlist = cols_up.get('STATUS LIST', 'STATUS LIST')
-            k_stsap = cols_up.get('STATUS SAP', 'STATUS SAP')
-            k_idsisco = cols_up.get('ID SISCO', 'ID SISCO')
-            k_tipo = cols_up.get('TIPO LIGACAO', 'TIPO LIGACAO')
-            k_lev = cols_up.get('LEVANTADOR', 'LEVANTADOR')
-            
-            for row in records:
-                lev_obra = str(row.get(k_lev, SEM_LEVANTADOR)).strip()
-                if lev_obra in ['nan', 'None', '', '<NA>']: lev_obra = SEM_LEVANTADOR
-                
-                cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                
-                # HTML Limpo e Seguro do Pop-up (Todos os 8 atributos exigidos)
-                info_html = f"""
-                <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
-                    <b>Regional:</b> {html.escape(str(row.get(k_reg, '-')))} <br>
-                    <b>Município:</b> {html.escape(str(row.get(k_mun, '-')))} <br>
-                    <b>Protocolo:</b> {html.escape(str(row.get(k_prot, '-')))} <br>
-                    <b>Solicitante:</b> {html.escape(str(row.get(k_solic, '-')))} <br>
-                    <b>Status List:</b> {html.escape(str(row.get(k_stlist, '-')))} <br>
-                    <b>Status SAP:</b> {html.escape(str(row.get(k_stsap, '-')))} <br>
-                    <b>ID Sisco:</b> {html.escape(str(row.get(k_idsisco, '-')))} <br>
-                    <b>Tipo Ligação:</b> {html.escape(str(row.get(k_tipo, '-')))}
-                </div>
-                """
-                
-                folium.Marker(
-                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                    popup=folium.Popup(info_html, max_width=350)
-                ).add_to(cluster_obras)
-                
-            cluster_obras.add_to(mapa)
+        cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
