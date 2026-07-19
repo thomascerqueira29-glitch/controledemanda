@@ -1,4 +1,7 @@
 import streamlit as st
+# Inicia a página ocupando a tela toda (Deve ser sempre o primeiro comando do app!)
+st.set_page_config(layout="wide", page_title="Sistema NIP - Dash & Croqui")
+
 import pandas as pd
 import numpy as np
 import folium
@@ -15,6 +18,9 @@ from datetime import datetime
 from database import (load_core_data, save_notas_to_db, vectorized_haversine, 
                       parse_kmz_advanced, calcular_sla_vetorizado, 
                       SEM_LEVANTADOR, STATUS_PRODUTIVIDADE)
+
+# IMPORTAÇÃO DO NOVO MÓDULO DE CROQUIS!
+from modulo_croqui import view_gerador_croqui
 
 # Injeção de CSS para melhorar a Proporção e Legibilidade Global
 st.markdown("""
@@ -43,7 +49,6 @@ def calcular_saude_dados(df):
     return (has_lat & has_lon).mean() * 100
 
 def normalizar_municipios(series_mun):
-    """Remove acentos e padroniza para garantir o match com o dicionário."""
     s = series_mun.astype(str).str.upper()
     s = s.str.replace(r'[ÁÀÂÃÄ]', 'A', regex=True)
     s = s.str.replace(r'[ÉÈÊË]', 'E', regex=True)
@@ -83,18 +88,14 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         df_ob = df_notas_mapa.copy()
         df_ob.columns = [str(c).upper().strip() for c in df_ob.columns]
         
-        # 1. Tenta usar as coordenadas reais da obra se existirem
         if 'LATITUDE' in df_ob.columns and 'LONGITUDE' in df_ob.columns:
             df_ob['Lat_Mapa'] = pd.to_numeric(df_ob['LATITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
             df_ob['Lon_Mapa'] = pd.to_numeric(df_ob['LONGITUDE'].astype(str).str.replace(',', '.').str.replace(' ', ''), errors='coerce')
         else:
             df_ob['Lat_Mapa'] = df_ob['Lon_Mapa'] = np.nan
 
-        # 2. Resgate de Coordenadas Faltantes baseado no MUNICÍPIO
         mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
-            
-            # Super Dicionário com principais cidades do MA
             dict_ma_lat = {
                 'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09,
                 'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53,
@@ -126,7 +127,6 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 'RAPOSA': -44.09, 'BARRA DO CORDA': -45.24, 'PACO DO LUMIAR': -44.10
             }
             
-            # Mescla com os dados dinâmicos do Banco de Dados
             mapa_lat_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lat.items()} if mapa_lat else {}
             mapa_lon_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lon.items()} if mapa_lon else {}
             dict_ma_lat.update(mapa_lat_c); dict_ma_lon.update(mapa_lon_c)
@@ -135,13 +135,11 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob.loc[mask_miss, 'Lat_Mapa'] = muns_norm.map(dict_ma_lat)
             df_ob.loc[mask_miss, 'Lon_Mapa'] = muns_norm.map(dict_ma_lon)
             
-        # 3. Tratamento de última instância 
         mask_still_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         if mask_still_miss.any():
             df_ob.loc[mask_still_miss, 'Lat_Mapa'] = -5.2
             df_ob.loc[mask_still_miss, 'Lon_Mapa'] = -45.0
             
-        # Dispersão Radial (Nuvem circular para exibir perfeitamente o Cluster explodido)
         np.random.seed(42)
         raio = 0.012  
         r_dist = raio * np.sqrt(np.random.uniform(0, 1, len(df_ob)))
@@ -155,20 +153,12 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             s = str(val).strip()
             return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
 
-        # -------------------------------------------------------------
-        # SISTEMA DE CAMADAS: O Cluster Nativo e Avançado
-        # -------------------------------------------------------------
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
             HeatMap(heat_data, name="🔥 Densidade de Obras", radius=15, blur=20, max_zoom=10).add_to(mapa)
             
         elif estilo_mapa == "Agrupamentos (Clusters)":
-            cluster_obras = MarkerCluster(
-                name=f"🏗️ Obras Agrupadas ({len(df_ob)})",
-                maxClusterRadius=45, 
-                spiderfyOnMaxZoom=True 
-            )
-            
+            cluster_obras = MarkerCluster(name=f"🏗️ Obras Agrupadas ({len(df_ob)})", maxClusterRadius=45, spiderfyOnMaxZoom=True)
             for row in df_ob.to_dict('records'):
                 if visao_cores == "Prazos (SLA)":
                     sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
@@ -193,17 +183,11 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
                 </div>
                 """
-                folium.Marker(
-                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                    popup=folium.Popup(info_html, max_width=350)
-                ).add_to(cluster_obras)
-                
+                folium.Marker(location=[row['Lat_Mapa'], row['Lon_Mapa']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(info_html, max_width=350)).add_to(cluster_obras)
             cluster_obras.add_to(mapa)
 
         else:
             camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
-            
             for row in df_ob.to_dict('records'):
                 if visao_cores == "Prazos (SLA)":
                     sla_status = row.get('STATUS_SLA', row.get('STATUS SLA', 'No Prazo'))
@@ -228,12 +212,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
                 </div>
                 """
-                folium.Marker(
-                    location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                    icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                    popup=folium.Popup(info_html, max_width=350)
-                ).add_to(camada_obras)
-                
+                folium.Marker(location=[row['Lat_Mapa'], row['Lon_Mapa']], icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), popup=folium.Popup(info_html, max_width=350)).add_to(camada_obras)
             camada_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
@@ -379,7 +358,6 @@ def view_painel_executivo():
     with st.sidebar:
         st.markdown("### 🔍 Filtros Territoriais")
         
-        # O TRITURADOR DE DUPLICATAS: Força Maiúsculas, corta espaços invisíveis e usa o `set` para garantir itens únicos
         lista_tecnicos_limpa = sorted(list(set([str(x).strip() for x in df_notas_db['LEVANTADOR'].unique() if str(x).strip().upper() not in ['0', '0.0', 'NAN', 'NONE', '']])))
         lista_sap_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['STATUS SAP'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
         lista_list_limpa = sorted(list(set([str(x).strip().upper() for x in df_notas_db['STATUS LIST'].unique() if str(x).strip().upper() not in ['NAN', 'NONE', '']])))
@@ -416,7 +394,6 @@ def view_painel_executivo():
 
     df_m = df_notas_db.copy()
     
-    # Aplicação do Filtro Blindada: Faz a mesma limpeza na hora de buscar na tabela
     if f_lev != "TODOS": df_m = df_m[df_m['LEVANTADOR'].astype(str).str.strip() == f_lev]
     if f_reg != "TODOS": df_m = df_m[df_m['REGIONAL'].astype(str).str.strip().str.upper() == f_reg]
     if f_mun != "TODOS": df_m = df_m[df_m['MUNICIPIO'].astype(str).str.strip().str.upper() == f_mun]
@@ -439,3 +416,17 @@ def view_painel_executivo():
     
     with st.spinner("Construindo renderização geográfica do terreno..."):
         render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores)
+
+# ==============================================================
+# ESTRUTURA GLOBAL DO SISTEMA (ABAS PRINCIPAIS)
+# ==============================================================
+aba_principal, aba_croquis = st.tabs([
+    "📊 Painel de Obras (Executivo)", 
+    "🗺️ Gerador de Croquis Automático"
+])
+
+with aba_principal:
+    view_painel_executivo()
+
+with aba_croquis:
+    view_gerador_croqui()
