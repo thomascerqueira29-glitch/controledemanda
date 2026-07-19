@@ -6,27 +6,7 @@ from database import save_notas_to_db
 
 def view_carga():
     # =====================================================================
-    # 1. PAINEL LATERAL (Consistência Global)
-    # =====================================================================
-    with st.sidebar:
-        st.markdown("### 👥 Equipe Online")
-        st.info("Usuários ativos na plataforma.")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟢")
-        c2.markdown("**Thomas**\n\n*Admin*")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟢")
-        c2.markdown("**Ana (Coordenação)**\n\n*Visualização*")
-        
-        c1, c2 = st.columns([1, 4])
-        c1.markdown("🟡")
-        c2.markdown("**João (Campo)**\n\n*Ausente*")
-        st.markdown("---")
-
-    # =====================================================================
-    # 2. CABEÇALHO E DOWNLOAD DE TEMPLATE
+    # 1. CABEÇALHO E DOWNLOAD DE TEMPLATE
     # =====================================================================
     st.markdown("### ☁️ Carga de Lotes (Dropzone)")
     st.markdown("Carregue a sua base de obras atualizada. O sistema aceita formatos Excel (.xlsx) ou Texto Separado por Vírgulas (.csv).")
@@ -64,7 +44,7 @@ def view_carga():
     st.markdown("<br>", unsafe_allow_html=True)
 
     # =====================================================================
-    # 3. DROPZONE MODERNA E FEEDBACK VISUAL
+    # 2. DROPZONE MODERNA E FEEDBACK VISUAL
     # =====================================================================
     with st.container(border=True):
         st.markdown("<h4 style='text-align: center; color: #1A4F7C; margin-bottom: 5px;'>Arraste e solte seu arquivo aqui</h4>", unsafe_allow_html=True)
