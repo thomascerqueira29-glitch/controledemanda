@@ -162,7 +162,9 @@ def save_notas_to_db(df, acao="Atualização", backup=False):
     load_core_data.clear()
     return True
 
-# ---------------- NOVO: FUNÇÕES DE PLANILHA DE MUNICÍPIOS ----------------
+# -------------------------------------------------------------------------
+# FUNÇÕES DE GESTÃO DO TERRITÓRIO E SIMULADOR (ATUALIZADO)
+# -------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def get_base_levantadores():
     try:
@@ -177,6 +179,39 @@ def save_base_levantadores(df):
     get_base_levantadores.clear()
     load_core_data.clear()
     return True
+
+# Busca as equipes configuradas no Banco de Dados (Persistência do Simulador)
+def get_equipes_base_simulador():
+    try:
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS config_simulador (regional TEXT PRIMARY KEY, equipes_atuais INTEGER)')
+            df = pd.read_sql("SELECT * FROM config_simulador", conn)
+            return dict(zip(df['regional'], df['equipes_atuais']))
+    except Exception:
+        return {}
+
+# Salva as equipes simuladas no Banco APÓS checar a senha do usuário
+def save_equipes_base_simulador(novas_equipes_dict, username, senha_digitada):
+    try:
+        username = username.strip().upper()
+        with sqlite3.connect(DB_PATH, timeout=10) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT password FROM usuarios WHERE username=?", (username,))
+            row = cursor.fetchone()
+            
+            # Se o usuário não existir ou a senha não bater, aborta e retorna Falso
+            if not row or row[0] != hash_senha(senha_digitada):
+                return False 
+            
+            # Se passou pela senha, salva!
+            conn.execute('CREATE TABLE IF NOT EXISTS config_simulador (regional TEXT PRIMARY KEY, equipes_atuais INTEGER)')
+            for reg, qtd in novas_equipes_dict.items():
+                conn.execute("INSERT OR REPLACE INTO config_simulador (regional, equipes_atuais) VALUES (?, ?)", (reg, int(qtd)))
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
 # -------------------------------------------------------------------------
 
 def vectorized_haversine(lat1, lon1, lat2, lon2):
