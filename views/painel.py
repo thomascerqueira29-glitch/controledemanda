@@ -8,6 +8,7 @@ import plotly.express as px
 import io
 import html
 import tempfile
+import re
 from datetime import datetime
 
 # Importa as ferramentas pesadas do nosso motor central
@@ -26,8 +27,21 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def safe_float_coord(val):
+    """Limpador extremo de coordenadas: Remove letras, converte vírgula pra ponto."""
+    try:
+        if pd.isna(val): return np.nan
+        v = str(val).strip().replace(',', '.')
+        v = re.sub(r'[^\d\.\-]', '', v) # Mantém apenas números, ponto e sinal de menos
+        if not v or v in ['-', '.']: return np.nan
+        parts = v.split('.')
+        if len(parts) > 2:
+            v = parts[0] + '.' + ''.join(parts[1:])
+        return float(v)
+    except:
+        return np.nan
+
 def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
-    """Novo Card de KPI: Maior legibilidade, hierarquia e contexto visual."""
     return f"""
     <div style="background-color: white; border-radius: 10px; padding: 15px; border-left: 6px solid {border_color}; box-shadow: 0 4px 6px rgba(0,0,0,0.05); height: 100%; border: 1px solid #f0f2f6;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -61,15 +75,14 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         df_eq = df_eq_mapa_view.copy(deep=True)
         cols_upper_eq = {str(c).upper().strip(): c for c in df_eq.columns}
         
-        lat_col_eq = cols_upper_eq.get('LATITUDE')
-        lon_col_eq = cols_upper_eq.get('LONGITUDE')
+        c_lat_eq = cols_upper_eq.get('LATITUDE')
+        c_lon_eq = cols_upper_eq.get('LONGITUDE')
         
-        val_lat = pd.to_numeric(df_eq[lat_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lat_col_eq else np.nan
-        val_lon = pd.to_numeric(df_eq[lon_col_eq].astype(str).str.replace(',', '.'), errors='coerce') if lon_col_eq else np.nan
-        df_eq = df_eq.assign(Lat=val_lat, Lon=val_lon)
-        
-        if 'Lat' in df_eq.columns and 'Lon' in df_eq.columns:
+        if c_lat_eq and c_lon_eq:
+            df_eq['Lat'] = df_eq[c_lat_eq].apply(safe_float_coord)
+            df_eq['Lon'] = df_eq[c_lon_eq].apply(safe_float_coord)
             df_eq_valid = df_eq.dropna(subset=['Lat', 'Lon'])
+            
             for _, row in df_eq_valid.iterrows():
                 lev = str(row.get(cols_upper_eq.get('LEVANTADOR', 'Levantador'), ''))
                 cor = 'red' if lev in criticos_tuple else 'green'
@@ -83,80 +96,79 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
         
-        # Mapeamento dinâmico para garantir o encontro das colunas
+        # Mapeamento para garantir a localização das colunas independentemente de formatação
         cols_up = {str(c).upper().strip(): c for c in df_ob.columns}
         c_lat = cols_up.get('LATITUDE')
         c_lon = cols_up.get('LONGITUDE')
-        c_reg = cols_up.get('REGIONAL', 'REGIONAL')
-        c_mun = cols_up.get('MUNICIPIO', 'MUNICIPIO')
-        c_prot = cols_up.get('PROTOCOLO', 'PROTOCOLO')
-        c_solic = cols_up.get('NOME DO SOLICITANTE', cols_up.get('SOLICITANTE', 'NOME DO SOLICITANTE'))
-        c_stlist = cols_up.get('STATUS LIST', 'STATUS LIST')
-        c_stsap = cols_up.get('STATUS SAP', 'STATUS SAP')
-        c_idsisco = cols_up.get('ID SISCO', cols_up.get('SISCO', 'ID SISCO'))
-        c_tipo = cols_up.get('TIPO LIGACAO', cols_up.get('TIPO DE LIGAÇÃO', 'TIPO LIGACAO'))
-        c_lev = cols_up.get('LEVANTADOR', 'LEVANTADOR')
+        c_mun = cols_up.get('MUNICIPIO')
         
-        # 1. Extração REAL das Coordenadas Exatas (com limpeza extrema anti-falhas)
+        # 1. Limpeza Extrema e Conversão das Coordenadas vindas da Governança
         if c_lat and c_lon:
-            # Força conversão para string, limpa espaços ocultos e substitui vírgula brasileira por ponto americano
-            lat_clean = df_ob[c_lat].astype(str).str.strip().str.replace(' ', '').str.replace(',', '.')
-            lon_clean = df_ob[c_lon].astype(str).str.strip().str.replace(' ', '').str.replace(',', '.')
-            
-            df_ob['Lat_Real'] = pd.to_numeric(lat_clean, errors='coerce')
-            df_ob['Lon_Real'] = pd.to_numeric(lon_clean, errors='coerce')
+            df_ob['Lat_Mapa'] = df_ob[c_lat].apply(safe_float_coord)
+            df_ob['Lon_Mapa'] = df_ob[c_lon].apply(safe_float_coord)
         else:
-            df_ob['Lat_Real'] = np.nan
-            df_ob['Lon_Real'] = np.nan
+            df_ob['Lat_Mapa'] = np.nan
+            df_ob['Lon_Mapa'] = np.nan
 
-        # Cria as colunas oficiais de plotagem assumindo primeiro a coordenada real da base
-        df_ob['Lat_Mapa'] = df_ob['Lat_Real']
-        df_ob['Lon_Mapa'] = df_ob['Lon_Real']
-
-        # 2. Identifica apenas as obras que NÃO possuem coordenada (vazias na Governança)
+        # 2. Resgate de emergência: se alguma obra realmente não tiver coordenada salva
         mask_sem_coord = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
-
-        # 3. Resgate de Coordenadas APENAS para os vazios
-        if mapa_lat is not None and mapa_lon is not None and c_mun in df_ob.columns:
+        if mask_sem_coord.any() and mapa_lat and mapa_lon and c_mun:
             mun_series = df_ob.loc[mask_sem_coord, c_mun].astype(str).str.split('-').str[0].str.strip().str.upper()
             mapa_lat_clean = {str(k).strip().upper(): v for k, v in mapa_lat.items()}
             mapa_lon_clean = {str(k).strip().upper(): v for k, v in mapa_lon.items()}
-            
             df_ob.loc[mask_sem_coord, 'Lat_Mapa'] = mun_series.map(mapa_lat_clean)
             df_ob.loc[mask_sem_coord, 'Lon_Mapa'] = mun_series.map(mapa_lon_clean)
 
-        # 4. Descarta o que foi absolutamente impossível de mapear
+        # 3. Elimina o que falhou absolutamente
         df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
             
         if not df_ob.empty:
-            # 5. ESPALHAMENTO MATEMÁTICO (JITTER) RESTRITO!
-            # Aplica o espalhamento SOMENTE nas obras que vieram vazias e pegaram o centro do município.
-            # OBRAS COM COORDENADAS REAIS FICAM INTACTAS NO SEU PONTO EXATO DA RUA.
-            mask_fake = df_ob['Lat_Real'].isna() | df_ob['Lon_Real'].isna()
+            # 4. SOLUÇÃO DO EMPILHAMENTO: Micro-Espalhamento (Jitter)
+            # Adiciona uma variação minúscula (aprox 30 metros) em TODAS as obras. 
+            # Isso QUEBRA o empilhamento perfeito de coordenadas idênticas, permitindo que milhares de 
+            # obras sejam abertas ao clicar no cluster da cidade, sem destruir a precisão da rua.
+            np.random.seed(42)
+            df_ob['Lat_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
+            df_ob['Lon_Mapa'] += np.random.uniform(-0.0003, 0.0003, len(df_ob))
             
-            if mask_fake.any():
-                np.random.seed(42)
-                df_ob.loc[mask_fake, 'Lat_Mapa'] += np.random.uniform(-0.015, 0.015, mask_fake.sum())
-                df_ob.loc[mask_fake, 'Lon_Mapa'] += np.random.uniform(-0.015, 0.015, mask_fake.sum())
+            # Configuração otimizada para quebrar os agrupamentos nos zooms mais próximos
+            cluster_obras = MarkerCluster(
+                name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)",
+                disableClusteringAtZoom=17,
+                spiderfyOnMaxZoom=True
+            )
             
-            # O MarkerCluster agrupa toda a base e separa conforme o zoom
-            cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+            # 5. Otimização de Laço (Previne travamentos em bases grandes)
+            records = df_ob.to_dict('records')
             
-            for _, row in df_ob.iterrows():
-                lev_obra = str(row.get(c_lev, SEM_LEVANTADOR))
+            # Pre-mapeamento de chaves originais
+            k_reg = cols_up.get('REGIONAL', 'REGIONAL')
+            k_mun = cols_up.get('MUNICIPIO', 'MUNICIPIO')
+            k_prot = cols_up.get('PROTOCOLO', 'PROTOCOLO')
+            k_solic = cols_up.get('NOME DO SOLICITANTE', 'NOME DO SOLICITANTE')
+            k_stlist = cols_up.get('STATUS LIST', 'STATUS LIST')
+            k_stsap = cols_up.get('STATUS SAP', 'STATUS SAP')
+            k_idsisco = cols_up.get('ID SISCO', 'ID SISCO')
+            k_tipo = cols_up.get('TIPO LIGACAO', 'TIPO LIGACAO')
+            k_lev = cols_up.get('LEVANTADOR', 'LEVANTADOR')
+            
+            for row in records:
+                lev_obra = str(row.get(k_lev, SEM_LEVANTADOR)).strip()
+                if lev_obra in ['nan', 'None', '']: lev_obra = SEM_LEVANTADOR
+                
                 cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
                 
-                # 6. Pop-up HTML blindado
+                # Pop-up Formatado com os 8 campos solicitados protegidos
                 info_html = f"""
                 <div style="min-width: 250px; font-size: 13px; line-height: 1.5; font-family: sans-serif;">
-                    <b>Regional:</b> {html.escape(str(row.get(c_reg, '-')))} <br>
-                    <b>Município:</b> {html.escape(str(row.get(c_mun, '-')))} <br>
-                    <b>Protocolo:</b> {html.escape(str(row.get(c_prot, '-')))} <br>
-                    <b>Solicitante:</b> {html.escape(str(row.get(c_solic, '-')))} <br>
-                    <b>Status List:</b> {html.escape(str(row.get(c_stlist, '-')))} <br>
-                    <b>Status SAP:</b> {html.escape(str(row.get(c_stsap, '-')))} <br>
-                    <b>ID Sisco:</b> {html.escape(str(row.get(c_idsisco, '-')))} <br>
-                    <b>Tipo Ligação:</b> {html.escape(str(row.get(c_tipo, '-')))}
+                    <b>Regional:</b> {html.escape(str(row.get(k_reg, '-')))} <br>
+                    <b>Município:</b> {html.escape(str(row.get(k_mun, '-')))} <br>
+                    <b>Protocolo:</b> {html.escape(str(row.get(k_prot, '-')))} <br>
+                    <b>Solicitante:</b> {html.escape(str(row.get(k_solic, '-')))} <br>
+                    <b>Status List:</b> {html.escape(str(row.get(k_stlist, '-')))} <br>
+                    <b>Status SAP:</b> {html.escape(str(row.get(k_stsap, '-')))} <br>
+                    <b>ID Sisco:</b> {html.escape(str(row.get(k_idsisco, '-')))} <br>
+                    <b>Tipo Ligação:</b> {html.escape(str(row.get(k_tipo, '-')))}
                 </div>
                 """
                 
@@ -201,7 +213,6 @@ def view_painel_executivo():
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Proporção balanceada entre Tabela e Ações (60% / 40%)
     col_t1, col_t2 = st.columns([1.5, 1])
     with col_t1:
         st.markdown("#### 📋 Desempenho e Alocação")
@@ -310,7 +321,6 @@ def view_painel_executivo():
 
     st.markdown("---")
     
-    # 50/50 Split para os Gráficos
     c_g1, c_g2 = st.columns(2)
     with c_g1:
         if not municipios_por_levantador.empty: 
