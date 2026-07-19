@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import MarkerCluster, FastMarkerCluster
+from folium.plugins import MarkerCluster
 import plotly.express as px
 import io
 import html
@@ -27,7 +27,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
-    """Novo Card de KPI: Maior legibilidade, hierarquia e contexto visual."""
     return f"""
     <div style="background-color: white; border-radius: 10px; padding: 15px; border-left: 6px solid {border_color}; box-shadow: 0 4px 6px rgba(0,0,0,0.05); height: 100%; border: 1px solid #f0f2f6;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
@@ -47,6 +46,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     ).add_to(mapa)
     folium.TileLayer('OpenStreetMap', name='Ruas Padrão', overlay=False, control=True).add_to(mapa)
 
+    # 1. Camada KML (Opcional)
     if caminho_camada_temp:
         gdf_lines, gdf_points, bounds = parse_kmz_advanced(caminho_camada_temp)
         if not gdf_lines.empty:
@@ -56,7 +56,8 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         if bounds is not None:
             mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
-    fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores")
+    # 2. Camada Bases (Casinhas Verdes/Vermelhas)
+    fg_equipes = folium.FeatureGroup(name="📍 Bases dos Levantadores", show=False) # Inicia oculto para limpar a tela
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy(deep=True)
         lat_col_eq = next((c for c in df_eq.columns if str(c).upper() == 'LATITUDE'), None)
@@ -74,10 +75,11 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 folium.Marker(
                     location=[row['Lat'], row['Lon']], 
                     icon=folium.Icon(color=cor, icon='home', prefix='fa'), 
-                    tooltip=f"Base: {html.escape(lev)}"
+                    tooltip=f"Base (Residência): {html.escape(lev)}"
                 ).add_to(fg_equipes)
     fg_equipes.add_to(mapa)
 
+    # 3. Camada Obras Completas (Sem limite de visualização, com Pop-ups completos)
     if not df_notas_mapa.empty:
         df_ob = df_notas_mapa.copy(deep=True)
         lat_col = next((c for c in df_ob.columns if str(c).upper() == 'LATITUDE'), None)
@@ -91,27 +93,42 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             df_ob = df_ob.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
             
             if not df_ob.empty:
-                df_ob['Lat_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
-                df_ob['Lon_Mapa'] += np.random.normal(0, 0.003, len(df_ob))
+                # Dispersão micro para evitar que obras na mesma coordenada exata se escondam
+                df_ob['Lat_Mapa'] += np.random.normal(0, 0.0003, len(df_ob))
+                df_ob['Lon_Mapa'] += np.random.normal(0, 0.0003, len(df_ob))
                 
-                if len(df_ob) > 500:
-                    coords = df_ob[['Lat_Mapa', 'Lon_Mapa']].values.tolist()
-                    FastMarkerCluster(data=coords, name=f"🏗️ Demandas Ativas ({len(coords)} obras)").add_to(mapa)
-                else:
-                    cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
-                    for _, row in df_ob.iterrows():
-                        lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
-                        cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
-                        info_html = f"<b>Protocolo:</b> {row.get('PROTOCOLO', '')}<br><b>Levantador:</b> {lev_obra}"
-                        folium.Marker(
-                            location=[row['Lat_Mapa'], row['Lon_Mapa']], 
-                            icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
-                            popup=folium.Popup(info_html, max_width=300)
-                        ).add_to(cluster_obras)
-                    cluster_obras.add_to(mapa)
+                # Gera cluster tradicional que suporta Popups HTML
+                cluster_obras = MarkerCluster(name=f"🏗️ Demandas Ativas ({len(df_ob)} obras)")
+                for _, row in df_ob.iterrows():
+                    lev_obra = str(row.get('LEVANTADOR', SEM_LEVANTADOR))
+                    cor_marcador = 'orange' if lev_obra == SEM_LEVANTADOR else ('red' if lev_obra in criticos_tuple else 'blue')
+                    
+                    # Novo Pop-Up detalhado conforme solicitado
+                    info_html = f"""
+                    <div style="font-family: Arial; font-size: 12px; min-width: 250px;">
+                        <h4 style="margin-top:0; color:#1A4F7C; border-bottom: 1px solid #ccc; padding-bottom: 5px;">Detalhes da Obra</h4>
+                        <b>ID SISCO:</b> {row.get('ID SISCO', '')}<br>
+                        <b>Protocolo:</b> {row.get('PROTOCOLO', '')}<br>
+                        <b>Regional:</b> {row.get('REGIONAL', '')}<br>
+                        <b>Município:</b> {row.get('MUNICIPIO', '')}<br>
+                        <b>Solicitante:</b> {html.escape(str(row.get('NOME DO SOLICITANTE', '')))}<br>
+                        <b>Tipo Ligação:</b> {row.get('TIPO LIGACAO', '')}<br>
+                        <b>Status SAP:</b> {row.get('STATUS SAP', '')}<br>
+                        <b>Status LIST:</b> {row.get('STATUS LIST', '')}<br>
+                        <hr style="margin: 5px 0;">
+                        <b>Responsável:</b> {lev_obra}
+                    </div>
+                    """
+                    folium.Marker(
+                        location=[row['Lat_Mapa'], row['Lon_Mapa']], 
+                        icon=folium.Icon(color=cor_marcador, icon='wrench', prefix='fa'), 
+                        popup=folium.Popup(info_html, max_width=350)
+                    ).add_to(cluster_obras)
+                cluster_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
-    st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
+    # Aumentando um pouco a altura para facilitar a visualização da tela cheia
+    st_folium(mapa, use_container_width=True, height=750, returned_objects=[])
 
 def filtrar_levantador_governanca(nome_lev):
     st.session_state['filtro_lev_widget'] = nome_lev
