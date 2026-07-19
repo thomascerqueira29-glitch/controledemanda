@@ -24,7 +24,7 @@ def view_simulador():
     df_notas_validas = df_notas[~df_notas['REGIONAL'].astype(str).str.strip().str.upper().isin(lixos_reg)].copy()
 
     # =====================================================================
-    # 2. MOTOR DE SIMULAÇÃO (Calculado antes da interface visual)
+    # 2. MOTOR DE SIMULAÇÃO MATEMÁTICA
     # =====================================================================
     
     # Agrupamento de Obras por Regional
@@ -35,17 +35,29 @@ def view_simulador():
     col_lev = 'Levantador' if 'Levantador' in df_eq_clean.columns else 'LEVANTADOR'
     col_reg_eq = 'Regional' if 'Regional' in df_eq_clean.columns else 'REGIONAL'
     
+    # 2.1 Calcula o TOTAL de Municípios de cada Regional
+    mun_total_reg = df_eq_clean.groupby(col_reg_eq).size().reset_index(name='Total Municípios')
+    mun_total_reg['REGIONAL'] = mun_total_reg[col_reg_eq].astype(str).str.upper()
+    if col_reg_eq != 'REGIONAL':
+        mun_total_reg = mun_total_reg.drop(columns=[col_reg_eq])
+    
+    # 2.2 Calcula o GAP atual (Municípios SEM LEVANTADOR)
     df_eq_livres = df_eq_clean[df_eq_clean[col_lev].astype(str).str.strip().str.upper() == 'SEM LEVANTADOR']
     mun_livres_reg = df_eq_livres.groupby(col_reg_eq).size().reset_index(name='Gap Atual (Munc)')
     mun_livres_reg['REGIONAL'] = mun_livres_reg[col_reg_eq].astype(str).str.upper()
     if col_reg_eq != 'REGIONAL':
         mun_livres_reg = mun_livres_reg.drop(columns=[col_reg_eq])
     
+    # 2.3 Unifica as Bases
     df_reg['REGIONAL'] = df_reg['REGIONAL'].astype(str).str.upper()
+    
+    df_reg = pd.merge(df_reg, mun_total_reg, on='REGIONAL', how='left')
+    df_reg['Total Municípios'] = df_reg['Total Municípios'].fillna(0).astype(int)
+    
     df_reg = pd.merge(df_reg, mun_livres_reg, on='REGIONAL', how='left')
     df_reg['Gap Atual (Munc)'] = df_reg['Gap Atual (Munc)'].fillna(0).astype(int)
     
-    # Gerenciamento do Cache de Inputs do Usuário
+    # 2.4 Gerenciamento do Cache de Inputs do Usuário
     if 'sim_atuais' not in st.session_state:
         st.session_state.sim_atuais = {reg: 0 for reg in df_reg['REGIONAL']}
     if 'sim_novos' not in st.session_state:
@@ -58,19 +70,21 @@ def view_simulador():
     df_reg['Equipes Atuais'] = df_reg['REGIONAL'].map(st.session_state.sim_atuais).fillna(0).astype(int)
     df_reg['Novos Levantadores'] = df_reg['REGIONAL'].map(st.session_state.sim_novos).fillna(0).astype(int)
     
-    # Projeção Matemática Dinâmica
+    # 2.5 Projeção Matemática Dinâmica da Cobertura Absoluta
     META_MUNICIPIOS_POR_EQUIPE = 10 
     df_reg['Capacidade Adicional'] = df_reg['Novos Levantadores'] * META_MUNICIPIOS_POR_EQUIPE
     df_reg['Gap Restante'] = np.maximum(0, df_reg['Gap Atual (Munc)'] - df_reg['Capacidade Adicional'])
     
+    # Cálculo de Cobertura %: (Municipios Totais - Municípios no Gap Projetado) / Municípios Totais
+    df_reg['Mun Cobertos Projetado'] = df_reg['Total Municípios'] - df_reg['Gap Restante']
     df_reg['Cobertura %'] = np.where(
-        df_reg['Gap Atual (Munc)'] == 0, 
-        100, 
-        np.minimum(100, (1 - (df_reg['Gap Restante'] / df_reg['Gap Atual (Munc)'])) * 100)
+        df_reg['Total Municípios'] == 0, 
+        0, 
+        np.minimum(100, (df_reg['Mun Cobertos Projetado'] / df_reg['Total Municípios']) * 100)
     )
 
     # =====================================================================
-    # 3. CARDS DE INDICADORES (Agora Dinâmicos e Reativos)
+    # 3. CARDS DE INDICADORES
     # =====================================================================
     total_municipios = df_equipes_territorio['Município'].nunique() if 'Município' in df_equipes_territorio.columns else 217
     total_obras = len(df_notas_validas)
@@ -101,7 +115,7 @@ def view_simulador():
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     # =====================================================================
-    # 4. TABELA UNIFICADA INTERATIVA (Renderizada após os cálculos)
+    # 4. TABELA UNIFICADA INTERATIVA
     # =====================================================================
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Contratações por Regional</h4>", unsafe_allow_html=True)
     st.info("Insira o número de Equipes Atuais na sua operação e preveja a cobertura no campo 'Novos Levantadores'. (Pressione ENTER após digitar)")
@@ -112,9 +126,13 @@ def view_simulador():
     # -------------------------------------------------------------
     # INSERÇÃO DA LINHA DE TOTAIS
     # -------------------------------------------------------------
+    total_mun_estado = df_reg['Total Municípios'].sum()
     gap_atual_total = df_display['Gap Atual (Munc)'].sum()
     gap_restante_total = df_display['Gap Restante'].sum()
-    cobertura_total_pond = 100 if gap_atual_total == 0 else min(100, (1 - (gap_restante_total / gap_atual_total)) * 100)
+    
+    # A cobertura do estado é baseada na média ponderada de cobertura territorial
+    mun_cobertos_estado = total_mun_estado - gap_restante_total
+    cobertura_total_pond = 0 if total_mun_estado == 0 else min(100, (mun_cobertos_estado / total_mun_estado) * 100)
     
     linha_total = pd.DataFrame([{
         'REGIONAL': 'TOTAL ESTADO',
@@ -138,7 +156,7 @@ def view_simulador():
             "Gap Atual (Munc)": st.column_config.NumberColumn("Gap (Munc. Livres)", disabled=True),
             "Novos Levantadores": st.column_config.NumberColumn("✏️ Novos Levantadores (Input)", min_value=0, step=1),
             "Gap Restante": st.column_config.NumberColumn("Gap Projetado", disabled=True),
-            "Cobertura %": st.column_config.ProgressColumn("Recuperação %", format="%.1f%%", min_value=0, max_value=100),
+            "Cobertura %": st.column_config.ProgressColumn("Cobertura %", format="%.1f%%", min_value=0, max_value=100),
         },
         hide_index=True,
         use_container_width=True,
