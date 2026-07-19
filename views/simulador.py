@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from database import load_core_data, get_base_levantadores, save_base_levantadores, STATUS_PRODUTIVIDADE
 
 def view_simulador():
@@ -24,7 +25,7 @@ def view_simulador():
     df_notas_validas = df_notas[~df_notas['REGIONAL'].astype(str).str.strip().str.upper().isin(lixos_reg)].copy()
 
     # =====================================================================
-    # 2. MOTOR DE SIMULAÇÃO MATEMÁTICA
+    # 2. MOTOR DE SIMULAÇÃO (Calculado antes da interface visual)
     # =====================================================================
     
     # Agrupamento de Obras por Regional
@@ -75,7 +76,6 @@ def view_simulador():
     df_reg['Capacidade Adicional'] = df_reg['Novos Levantadores'] * META_MUNICIPIOS_POR_EQUIPE
     df_reg['Gap Restante'] = np.maximum(0, df_reg['Gap Atual (Munc)'] - df_reg['Capacidade Adicional'])
     
-    # Cálculo de Cobertura %: (Municipios Totais - Municípios no Gap Projetado) / Municípios Totais
     df_reg['Mun Cobertos Projetado'] = df_reg['Total Municípios'] - df_reg['Gap Restante']
     df_reg['Cobertura %'] = np.where(
         df_reg['Total Municípios'] == 0, 
@@ -89,7 +89,6 @@ def view_simulador():
     total_municipios = df_equipes_territorio['Município'].nunique() if 'Município' in df_equipes_territorio.columns else 217
     total_obras = len(df_notas_validas)
     
-    # As métricas globais puxam o resultado projetado das somas da simulação
     mun_livres_projetado = df_reg['Gap Restante'].sum()
     mun_cobertos_projetado = total_municipios - mun_livres_projetado
     cobertura_projetada = (mun_cobertos_projetado / total_municipios * 100) if total_municipios > 0 else 0
@@ -115,7 +114,7 @@ def view_simulador():
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     # =====================================================================
-    # 4. TABELA UNIFICADA INTERATIVA
+    # 4. TABELA UNIFICADA INTERATIVA + GRÁFICO LATERAL
     # =====================================================================
     st.markdown("<h4 style='color: #1A4F7C;'>🛠️ Simulação de Contratações por Regional</h4>", unsafe_allow_html=True)
     st.info("Insira o número de Equipes Atuais na sua operação e preveja a cobertura no campo 'Novos Levantadores'. (Pressione ENTER após digitar)")
@@ -123,14 +122,10 @@ def view_simulador():
     df_display = df_reg[['REGIONAL', 'Total_Obras', 'Equipes Atuais', 'Gap Atual (Munc)', 'Novos Levantadores', 'Gap Restante', 'Cobertura %']].copy()
     df_display.rename(columns={'Total_Obras': 'Total Obras (Geral)'}, inplace=True)
     
-    # -------------------------------------------------------------
-    # INSERÇÃO DA LINHA DE TOTAIS
-    # -------------------------------------------------------------
     total_mun_estado = df_reg['Total Municípios'].sum()
     gap_atual_total = df_display['Gap Atual (Munc)'].sum()
     gap_restante_total = df_display['Gap Restante'].sum()
     
-    # A cobertura do estado é baseada na média ponderada de cobertura territorial
     mun_cobertos_estado = total_mun_estado - gap_restante_total
     cobertura_total_pond = 0 if total_mun_estado == 0 else min(100, (mun_cobertos_estado / total_mun_estado) * 100)
     
@@ -145,32 +140,64 @@ def view_simulador():
     }])
     
     df_display = pd.concat([df_display, linha_total], ignore_index=True)
-    # -------------------------------------------------------------
-
-    edited_df = st.data_editor(
-        df_display,
-        column_config={
-            "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
-            "Total Obras (Geral)": st.column_config.NumberColumn("Total Obras (Geral)", disabled=True),
-            "Equipes Atuais": st.column_config.NumberColumn("✏️ Equipes Atuais (Input)", min_value=0, step=1),
-            "Gap Atual (Munc)": st.column_config.NumberColumn("Gap (Munc. Livres)", disabled=True),
-            "Novos Levantadores": st.column_config.NumberColumn("✏️ Novos Levantadores (Input)", min_value=0, step=1),
-            "Gap Restante": st.column_config.NumberColumn("Gap Projetado", disabled=True),
-            "Cobertura %": st.column_config.ProgressColumn("Cobertura %", format="%.1f%%", min_value=0, max_value=100),
-        },
-        hide_index=True,
-        use_container_width=True,
-        key="simulador_editor"
-    )
     
-    # Loop de Feedback Visual: Escuta edições e avisa o sistema para re-renderizar a tela
+    # -------------------------------------------------------------
+    # DIVISÃO DA TELA: TABELA ESTREITA E GRÁFICO (NOVO)
+    # -------------------------------------------------------------
+    col_tabela, col_grafico = st.columns([2.6, 1.2]) # Proporção: Tabela ocupa ~68%, Gráfico ~32%
+    
+    with col_tabela:
+        edited_df = st.data_editor(
+            df_display,
+            column_config={
+                "REGIONAL": st.column_config.TextColumn("Regional", disabled=True),
+                "Total Obras (Geral)": st.column_config.NumberColumn("Total Obras", disabled=True),
+                "Equipes Atuais": st.column_config.NumberColumn("✏️ Eq. Atuais", min_value=0, step=1),
+                "Gap Atual (Munc)": st.column_config.NumberColumn("Gap Inicial", disabled=True),
+                "Novos Levantadores": st.column_config.NumberColumn("✏️ Novos", min_value=0, step=1),
+                "Gap Restante": st.column_config.NumberColumn("Gap Final", disabled=True),
+                "Cobertura %": st.column_config.ProgressColumn("Cobertura", format="%.1f%%", min_value=0, max_value=100),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="simulador_editor"
+        )
+    
+    with col_grafico:
+        # Prepara os dados para o gráfico (Removendo o TOTAL ESTADO para não distorcer o comparativo)
+        df_plot = df_display[df_display['REGIONAL'] != 'TOTAL ESTADO'].copy()
+        df_plot = df_plot.sort_values('Cobertura %', ascending=True)
+        
+        fig = px.bar(
+            df_plot,
+            x='Cobertura %',
+            y='REGIONAL',
+            orientation='h',
+            color='Cobertura %',
+            color_continuous_scale=px.colors.sequential.Blues,
+            range_x=[0, 100]
+        )
+        # Formatação profissional do gráfico
+        fig.update_traces(texttemplate='<b>%{x:.1f}%</b>', textposition='outside', marker_line_width=0)
+        fig.update_layout(
+            title=dict(text="Cobertura Projetada por Regional", font=dict(size=14, color="#1A4F7C")),
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            margin=dict(l=0, r=30, t=40, b=0),
+            coloraxis_showscale=False,
+            height=250, # Altura alinhada com a tabela
+            xaxis=dict(showgrid=True, gridcolor='#e5e7eb', title="", showticklabels=False),
+            yaxis=dict(showgrid=False, title="")
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # -------------------------------------------------------------
+    
+    # Loop de Feedback Visual da Tabela
     needs_rerun = False
     for index, row in edited_df.iterrows():
         reg = row['REGIONAL']
-        
-        # Impede que a edição na linha de TOTAIS afete a lógica do simulador
-        if reg == 'TOTAL ESTADO':
-            continue
+        if reg == 'TOTAL ESTADO': continue
             
         atuais = row['Equipes Atuais']
         novos = row['Novos Levantadores']
