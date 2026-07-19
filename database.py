@@ -29,11 +29,27 @@ def init_databases():
 
 def init_business_db():
     colunas_oficiais = ['ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO']
+    
     if os.path.exists(DB_PATH): 
         return
+        
     try:
         with sqlite3.connect(DB_PATH, timeout=10) as conn:
-            df_legacy = pd.read_excel('NOTAS.xlsx').fillna("").astype(str) if os.path.exists('NOTAS.xlsx') else pd.DataFrame(columns=colunas_oficiais)
+            if os.path.exists('NOTAS.xlsx'):
+                # Caçador de Abas: Garante a leitura da aba correta (Busca e Governança)
+                xls = pd.ExcelFile('NOTAS.xlsx')
+                aba_alvo = xls.sheet_names[0] # Fallback para a primeira aba
+                
+                for nome_aba in xls.sheet_names:
+                    aba_limpa = nome_aba.lower().replace('ç', 'c').replace('ã', 'a')
+                    if 'busca' in aba_limpa and 'governanca' in aba_limpa:
+                        aba_alvo = nome_aba
+                        break
+                        
+                df_legacy = pd.read_excel('NOTAS.xlsx', sheet_name=aba_alvo).fillna("").astype(str)
+            else:
+                df_legacy = pd.DataFrame(columns=colunas_oficiais)
+                
             for col in colunas_oficiais:
                 if col not in df_legacy.columns: df_legacy[col] = ""
             df_legacy[colunas_oficiais].to_sql('notas', conn, if_exists='replace', index=False)
@@ -154,38 +170,7 @@ def load_core_data():
         criticos = resumo_lev[resumo_lev['Total_Obras_Real'] < 45]['Levantador'].tolist()
         todos_levs = sorted([str(l) for l in resumo_lev['Levantador'].unique() if pd.notna(l) and str(l).strip() != ''])
 
-    # =========================================================================
-    # CORREÇÃO APLICADA: CONSTRUÇÃO DE COORDENADAS DOS MUNICÍPIOS
-    # =========================================================================
-    mapa_lat = {}
-    mapa_lon = {}
-    municipios_por_levantador = pd.DataFrame()
-
-    if not df_notas.empty and 'MUNICIPIO' in df_notas.columns:
-        # 1. Tenta extrair a média das coordenadas que vieram válidas para o município
-        valid_coords = df_notas.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
-        if not valid_coords.empty:
-            valid_coords['MUN_CLEAN'] = valid_coords['MUNICIPIO'].astype(str).str.strip().str.upper()
-            mapa_lat = valid_coords.groupby('MUN_CLEAN')['Lat_Mapa'].mean().to_dict()
-            mapa_lon = valid_coords.groupby('MUN_CLEAN')['Lon_Mapa'].mean().to_dict()
-
-        # 2. Preenche os municípios que estão sem *nenhuma* coordenada com um fallback central (Região do Maranhão)
-        for mun in df_notas['MUNICIPIO'].dropna().unique():
-            mun_clean = str(mun).strip().upper()
-            if mun_clean not in mapa_lat or pd.isna(mapa_lat[mun_clean]):
-                # Coordenada central fictícia com leve variação para evitar travamento
-                mapa_lat[mun_clean] = -5.0 + np.random.uniform(-0.5, 0.5) 
-                mapa_lon[mun_clean] = -45.0 + np.random.uniform(-0.5, 0.5)
-
-        # 3. Reconstrói o DataFrame que renderiza o Gráfico "Top 15 Concentração"
-        if 'LEVANTADOR' in df_notas.columns:
-            m_df = df_notas[df_notas['LEVANTADOR'].notna() & (df_notas['LEVANTADOR'] != SEM_LEVANTADOR)].copy()
-            if not m_df.empty:
-                m_df['LEV_CLEAN'] = m_df['LEVANTADOR'].astype(str).str.strip().str.upper()
-                municipios_por_levantador = m_df.groupby('LEV_CLEAN')['MUNICIPIO'].nunique().reset_index(name='Qtd_Municipios')
-                municipios_por_levantador.rename(columns={'LEV_CLEAN': 'Levantador'}, inplace=True)
-
-    return df_notas, df_equipes, resumo_lev, criticos, todos_levs, mapa_lat, mapa_lon, municipios_por_levantador
+    return df_notas, df_equipes, resumo_lev, criticos, todos_levs, {}, {}, pd.DataFrame()
 
 def save_notas_to_db(df, acao="Atualização", backup=False):
     with sqlite3.connect(DB_PATH, timeout=10) as conn:
