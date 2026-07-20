@@ -1,47 +1,13 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
-import os
-
-# Tenta localizar o banco de dados correto
-if os.path.exists("controle_torre_nip.db"):
-    DB_NAME = "controle_torre_nip.db"
-elif os.path.exists("nip_database.db"):
-    DB_NAME = "nip_database.db"
-else:
-    DB_NAME = "database.db"
-
-def get_connection():
-    """Cria a conexão com o banco de dados SQLite"""
-    return sqlite3.connect(DB_NAME, check_same_thread=False)
-
-def init_db(conn):
-    """Garante que a tabela 'usuarios' exista antes de qualquer consulta."""
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS usuarios (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            role TEXT NOT NULL,
-            password TEXT
-        )
-    ''')
-    
-    # Se a tabela acabou de ser criada e está vazia, insere o usuário padrão
-    cursor.execute("SELECT COUNT(*) FROM usuarios")
-    if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO usuarios (username, role, password) VALUES ('THOMAS', 'ADMIN', '123456')")
-        
-    conn.commit()
+from utils.db_config import get_connection, get_db_path, hash_password
 
 def get_users():
-    """Lê os usuários do banco de dados, inicializando a tabela se necessário."""
+    """Lê os usuários do banco de dados centralizado."""
     conn = get_connection()
-    
-    # Cria a tabela antes do Pandas tentar ler
-    init_db(conn) 
-    
     try:
+        # Não trazemos a coluna password por segurança!
         df = pd.read_sql("SELECT username, role FROM usuarios", conn)
     except Exception as e:
         st.error(f"Erro ao ler banco de dados: {e}")
@@ -59,9 +25,8 @@ def view_acessos():
         return
 
     st.markdown("### Usuários Cadastrados")
-    st.info(f"Conectado ao banco de dados: `{DB_NAME}`")
+    st.info(f"Conectado ao banco de dados: `{get_db_path()}`")
     
-    # Leitura protegida (se não existir, é criada na hora)
     df_users = get_users()
     
     if not df_users.empty:
@@ -79,22 +44,27 @@ def view_acessos():
         col1, col2 = st.columns(2)
         with col1:
             novo_nome = st.text_input("Nome de Usuário (Username)")
+            # Campo de senha incluído para o novo usuário
+            nova_senha = st.text_input("Senha Temporária", type="password") 
         with col2:
             novo_perfil = st.selectbox("Perfil (Role)", ["ADMIN", "USUARIO", "LEVANTADOR"])
         
         submit = st.form_submit_button("Salvar Usuário")
         
         if submit:
-            if novo_nome:
+            if novo_nome and nova_senha:
                 conn = get_connection()
                 cursor = conn.cursor()
                 try:
+                    # Criptografa a senha antes de salvar no banco!
+                    senha_protegida = hash_password(nova_senha)
+                    
                     cursor.execute(
                         "INSERT INTO usuarios (username, role, password) VALUES (?, ?, ?)", 
-                        (novo_nome.upper(), novo_perfil, "123456")
+                        (novo_nome.upper(), novo_perfil, senha_protegida)
                     )
                     conn.commit()
-                    st.success(f"Usuário {novo_nome.upper()} adicionado com sucesso!")
+                    st.success(f"Usuário {novo_nome.upper()} adicionado com sucesso e senha criptografada!")
                     st.rerun() 
                 except sqlite3.IntegrityError:
                     st.error("Erro: Este usuário já existe no sistema.")
@@ -103,4 +73,4 @@ def view_acessos():
                 finally:
                     conn.close()
             else:
-                st.error("Por favor, preencha o nome de usuário.")
+                st.error("Por favor, preencha o nome de usuário e a senha.")
