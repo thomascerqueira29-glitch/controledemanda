@@ -1,7 +1,7 @@
 import streamlit as st
 
 # ==========================================
-# 1. CONFIGURAÇÃO GLOBAL DA PÁGINA
+# 1. CONFIGURAÇÃO GLOBAL DA PÁGINA (Deve ser a 1ª linha do app)
 # ==========================================
 st.set_page_config(
     page_title="Portal NIP", 
@@ -11,68 +11,110 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. IMPORTAÇÕES PRINCIPAIS
+# 2. INICIALIZAÇÃO E IMPORTAÇÃO DO BANCO
+# ==========================================
+from utils.db_config import init_db, get_connection, hash_password
+
+# Garante que as tabelas existem antes de qualquer coisa acontecer
+init_db()
+
+# ==========================================
+# 3. IMPORTAÇÕES DAS TELAS (VIEWS)
 # ==========================================
 from views.painel import view_painel_executivo
 from views.modulo_croqui import view_gerador_croqui
 
+try: from views.carga import view_carga 
+except ImportError: view_carga = None
+
+try: from views.levantadores import view_levantadores
+except ImportError: view_levantadores = None
+
+try: from views.acessos import view_acessos
+except ImportError: view_acessos = None
+
+try: from views.governanca import view_governanca
+except ImportError: view_governanca = None
+
+try: from views.simulador import view_simulador
+except ImportError: view_simulador = None
+
 # ==========================================
-# 3. IMPORTAÇÕES DAS OUTRAS TELAS
+# 4. CONTROLE DE SESSÃO E LOGIN
 # ==========================================
-try:
-    from views.carga import view_carga 
-except ImportError:
-    view_carga = None
+if "autenticado" not in st.session_state:
+    st.session_state.autenticado = False
+if "usuario" not in st.session_state:
+    st.session_state.usuario = None
+if "perfil_usuario" not in st.session_state:
+    st.session_state.perfil_usuario = None
 
-try:
-    from views.levantadores import view_levantadores
-except ImportError:
-    view_levantadores = None
+def fazer_login(username, password):
+    """Verifica as credenciais no banco usando criptografia"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    # Criptografa a senha que o usuário digitou para comparar com o banco
+    senha_criptografada = hash_password(password)
+    
+    cursor.execute(
+        "SELECT role FROM usuarios WHERE username = ? AND password = ?", 
+        (username.upper(), senha_criptografada)
+    )
+    resultado = cursor.fetchone()
+    conn.close()
+    
+    if resultado:
+        st.session_state.autenticado = True
+        st.session_state.usuario = username.upper()
+        st.session_state.perfil_usuario = resultado[0]
+        return True
+    return False
 
-try:
-    from views.acessos import view_acessos
-except ImportError:
-    view_acessos = None
+def tela_login():
+    """Interface da Tela de Autenticação"""
+    st.markdown("<h1 style='text-align: center;'>🔐 Acesso ao Portal NIP</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Faça login para continuar</p>", unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        with st.form("form_login"):
+            usuario_input = st.text_input("Usuário (Ex: THOMAS)")
+            senha_input = st.text_input("Senha (Ex: 123456)", type="password")
+            
+            submit_login = st.form_submit_button("Entrar", use_container_width=True)
+            
+            if submit_login:
+                if fazer_login(usuario_input, senha_input):
+                    st.success("Acesso concedido! Carregando...")
+                    st.rerun()
+                else:
+                    st.error("Usuário ou senha incorretos.")
 
-try:
-    from views.governanca import view_governanca
-except ImportError:
-    view_governanca = None
-
-try:
-    from views.simulador import view_simulador
-except ImportError:
-    view_simulador = None
-
-
+# ==========================================
+# 5. APLICATIVO PRINCIPAL (MAESTRO)
+# ==========================================
 def main():
-    # ==========================================
-    # 4. INICIALIZAÇÃO DE VARIÁVEIS DE SESSÃO
-    # (Evita o erro AttributeError em telas restritas)
-    # ==========================================
-    if "perfil_usuario" not in st.session_state:
-        st.session_state.perfil_usuario = "ADMIN"
-        
-    if "usuario" not in st.session_state:
-        st.session_state.usuario = "THOMAS"
+    # Bloqueia a execução se não estiver logado
+    if not st.session_state.autenticado:
+        tela_login()
+        return
 
+    # A PARTIR DAQUI, O USUÁRIO ESTÁ LOGADO
+    
     # ==========================================
-    # 5. CABEÇALHO DA BARRA LATERAL (PERFIL)
+    # BARRA LATERAL (MENU)
     # ==========================================
     st.sidebar.markdown("### 👤 Portal NIP")
     st.sidebar.markdown(f"**Usuário:** {st.session_state.usuario}")
     st.sidebar.markdown(f"**Perfil:** {st.session_state.perfil_usuario}")
     
-    # Lógica do botão de Sair
     if st.sidebar.button("🚪 SAIR / DESLOGAR", use_container_width=True):
         st.session_state.clear()
         st.rerun()
         
     st.sidebar.markdown("---")
 
-    # ==========================================
-    # 6. MENU DE NAVEGAÇÃO DO SISTEMA
-    # ==========================================
     menu_opcoes = [
         "📊 Painel Executivo",
         "🗺️ Gerador de Croquis Automático", 
@@ -92,9 +134,8 @@ def main():
     st.sidebar.markdown("---") 
 
     # ==========================================
-    # 7. ROTEADOR OFICIAL
+    # ROTEADOR DE TELAS
     # ==========================================
-    
     if pagina_selecionada == "📊 Painel Executivo":
         view_painel_executivo()
 
@@ -102,35 +143,24 @@ def main():
         view_gerador_croqui()
 
     elif pagina_selecionada == "☁️ Carga De Lotes":
-        if view_carga: 
-            view_carga()
-        else: 
-            st.error("⚠️ Verifique o nome da FUNÇÃO dentro do arquivo `views/carga.py`. Atualize a linha 24 deste arquivo (meu_app.py) para o nome correto.")
+        if view_carga: view_carga()
+        else: st.error("⚠️ view_carga não encontrada.")
 
     elif pagina_selecionada == "📇 Levantadores":
-        if view_levantadores: 
-            view_levantadores()
-        else: 
-            st.error("⚠️ Verifique o nome da FUNÇÃO dentro do arquivo `views/levantadores.py`. Atualize a linha 29 deste arquivo para o nome correto.")
+        if view_levantadores: view_levantadores()
+        else: st.error("⚠️ view_levantadores não encontrada.")
 
     elif pagina_selecionada == "🛡️ Gerenciamento De Acessos":
-        if view_acessos: 
-            view_acessos()
-        else: 
-            st.error("⚠️ Verifique o nome da FUNÇÃO dentro do arquivo `views/acessos.py`. Atualize a linha 34 deste arquivo para o nome correto.")
+        if view_acessos: view_acessos()
+        else: st.error("⚠️ view_acessos não encontrada.")
 
     elif pagina_selecionada == "🔍 Busca E Governança":
-        if view_governanca: 
-            view_governanca()
-        else: 
-            st.error("⚠️ Verifique o nome da FUNÇÃO dentro do arquivo `views/governanca.py`. Atualize a linha 39 deste arquivo para o nome correto.")
+        if view_governanca: view_governanca()
+        else: st.error("⚠️ view_governanca não encontrada.")
 
     elif pagina_selecionada == "⚙️ Simulador De Alocação":
-        if view_simulador: 
-            view_simulador()
-        else: 
-            st.error("⚠️ Verifique o nome da FUNÇÃO dentro do arquivo `views/simulador.py`. Atualize a linha 44 deste arquivo para o nome correto.")
+        if view_simulador: view_simulador()
+        else: st.error("⚠️ view_simulador não encontrada.")
 
-# Verifica se é o script principal rodando
 if __name__ == "__main__":
     main()
