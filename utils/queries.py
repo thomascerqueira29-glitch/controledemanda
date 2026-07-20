@@ -33,3 +33,20 @@ def get_dados_painel():
         'LON': [-44.2829, -47.4761, -44.2900, -42.8276, -43.3592, -47.4800, -44.2700, -42.8200]  # Longitudes MA
     }
     return pd.DataFrame(dados_exemplo)
+
+# =====================================================================
+# NOVO: MÓDULO DE INSERÇÃO DE DADOS (CARGA DE LOTES)
+# =====================================================================
+def save_notas_to_db(df):
+    """
+    Recebe o dataframe validado pela regra Strict e salva no banco de dados.
+    """
+    conn = get_connection()
+    try:
+        # ATENÇÃO: Substitua 'sua_tabela_de_obras' pelo nome real da sua tabela no banco!
+        # O parâmetro if_exists='append' garante que os dados sejam somados aos que já existem.
+        df.to_sql('sua_tabela_de_obras', conn, if_exists='append', index=False)
+    except Exception as e:
+        raise e
+    finally:
+        conn.close()
