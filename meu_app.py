@@ -17,7 +17,7 @@ from views.painel import view_painel_executivo
 from views.modulo_croqui import view_gerador_croqui
 
 # ==========================================
-# 3. IMPORTAÇÕES DAS OUTRAS TELAS (Nomes exatos da sua pasta views)
+# 3. IMPORTAÇÕES DAS OUTRAS TELAS
 # ==========================================
 try:
     from views.carga import view_carga 
@@ -92,7 +92,7 @@ def main():
     st.sidebar.markdown("---") 
 
     # ==========================================
-    # 7. ROTEADOR OFICIAL (O MAESTRO DAS TELAS)
+    # 7. ROTEADOR OFICIAL
     # ==========================================
     
     if pagina_selecionada == "📊 Painel Executivo":
