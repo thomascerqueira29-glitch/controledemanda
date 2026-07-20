@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import io
-from database import save_notas_to_db
+from utils.queries import save_notas_to_db # 🔄 MUDANÇA AQUI: Aponta para o arquivo correto
 
 def view_carga():
     # =====================================================================
