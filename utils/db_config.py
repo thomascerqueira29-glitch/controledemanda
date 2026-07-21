@@ -38,6 +38,19 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Tabela de Equipes (ADICIONADA AQUI)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS equipes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            Levantador TEXT NOT NULL,
+            Equipe TEXT,
+            Residencia TEXT,
+            Município TEXT,
+            Latitude TEXT,
+            Longitude TEXT
+        )
+    ''')
     
     # Cria usuário ADMIN padrão se não existir (senha: admin123)
     cursor.execute("SELECT * FROM usuarios WHERE username = 'ADMIN'")
