@@ -1,51 +1,49 @@
 import sqlite3
+import bcrypt
 import os
-import hashlib
+from dotenv import load_dotenv
 
-def hash_password(password):
-    """Criptografa a senha usando SHA-256 para não ser salva em texto puro."""
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def get_db_path():
-    """Localiza ou define o nome correto do banco de dados"""
-    if os.path.exists("controle_torre_nip.db"):
-        return "controle_torre_nip.db"
-    elif os.path.exists("nip_database.db"):
-        return "nip_database.db"
-    else:
-        return "database.db"
+load_dotenv()
+DB_PATH = os.getenv('DB_PATH', 'portal_nip.db')
 
 def get_connection():
-    """Cria a conexão centralizada com o banco de dados SQLite"""
-    return sqlite3.connect(get_db_path(), check_same_thread=False)
+    return sqlite3.connect(DB_PATH)
+
+def hash_password(password):
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password, hashed_password):
+    return bcrypt.checkpw(password.encode('utf-8'), hashed_password.encode('utf-8'))
 
 def init_db():
-    """
-    Inicializa as tabelas obrigatórias no início do app.
-    Garante que o DB exista antes das telas carregarem.
-    """
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Cria a tabela de usuários com a coluna de senha
+    # Tabela de Usuários
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS usuarios (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            role TEXT NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            role TEXT NOT NULL
         )
     ''')
     
-    # Verifica se existem usuários. Se não, cria o admin padrão.
-    cursor.execute("SELECT COUNT(*) FROM usuarios")
-    if cursor.fetchone()[0] == 0:
-        # Insere a senha já criptografada!
-        senha_padrao_criptografada = hash_password("123456")
-        cursor.execute(
-            "INSERT INTO usuarios (username, role, password) VALUES (?, ?, ?)",
-            ('THOMAS', 'ADMIN', senha_padrao_criptografada)
+    # Tabela de Auditoria
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            acao TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-        
+    ''')
+    
+    # Cria usuário ADMIN padrão se não existir (senha: admin123)
+    cursor.execute("SELECT * FROM usuarios WHERE username = 'ADMIN'")
+    if not cursor.fetchone():
+        cursor.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", 
+                       ("ADMIN", hash_password("admin123"), "ADMIN"))
+                       
     conn.commit()
     conn.close()
