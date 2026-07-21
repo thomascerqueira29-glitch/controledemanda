@@ -17,3 +17,5 @@ playwright
 ezdxf
 geopandas
 shapely
+bcrypt
+python-dotenv
