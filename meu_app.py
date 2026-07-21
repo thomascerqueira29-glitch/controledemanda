@@ -13,7 +13,8 @@ st.set_page_config(
 # ==========================================
 # 2. INICIALIZAÇÃO E IMPORTAÇÃO DO BANCO
 # ==========================================
-from utils.db_config import init_db, get_connection, hash_password
+# IMPORTANTE: Adicionamos o verify_password aqui!
+from utils.db_config import init_db, get_connection, hash_password, verify_password
 
 # Garante que as tabelas existem antes de qualquer coisa acontecer
 init_db()
@@ -21,8 +22,11 @@ init_db()
 # ==========================================
 # 3. IMPORTAÇÕES DAS TELAS (VIEWS)
 # ==========================================
-from views.painel import view_painel_executivo
-from views.modulo_croqui import view_gerador_croqui
+try: from views.painel import view_painel_executivo
+except ImportError: view_painel_executivo = None
+
+try: from views.modulo_croqui import view_gerador_croqui
+except ImportError: view_gerador_croqui = None
 
 try: from views.carga import view_carga 
 except ImportError: view_carga = None
@@ -50,46 +54,57 @@ if "perfil_usuario" not in st.session_state:
     st.session_state.perfil_usuario = None
 
 def fazer_login(username, password):
-    """Verifica as credenciais no banco usando criptografia"""
+    """Verifica as credenciais corretamente usando o bcrypt e inclui Override Mestre"""
+    user_upper = username.strip().upper()
+    
+    # 🔴 OVERRIDE MESTRE: Acesso garantido
+    if user_upper == "THOMAS" and password == "admin123":
+        st.session_state.autenticado = True
+        st.session_state.usuario = "THOMAS"
+        st.session_state.perfil_usuario = "ADMIN"
+        return True
+
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Criptografa a senha que o usuário digitou para comparar com o banco
-    senha_criptografada = hash_password(password)
-    
-    cursor.execute(
-        "SELECT role FROM usuarios WHERE username = ? AND password = ?", 
-        (username.upper(), senha_criptografada)
-    )
+    # Forma correta de lidar com bcrypt: Busca a hash do banco pelo nome de usuário
+    cursor.execute("SELECT password, role FROM usuarios WHERE username = ?", (user_upper,))
     resultado = cursor.fetchone()
     conn.close()
     
     if resultado:
-        st.session_state.autenticado = True
-        st.session_state.usuario = username.upper()
-        st.session_state.perfil_usuario = resultado[0]
-        return True
+        senha_salva_no_banco = resultado[0]
+        perfil = resultado[1]
+        
+        # Compara a senha digitada com a hash salva usando a biblioteca
+        if verify_password(password, senha_salva_no_banco):
+            st.session_state.autenticado = True
+            st.session_state.usuario = user_upper
+            st.session_state.perfil_usuario = perfil
+            return True
+            
     return False
 
 def tela_login():
     """Interface da Tela de Autenticação"""
+    st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("<h1 style='text-align: center;'>🔐 Acesso ao Portal NIP</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Faça login para continuar</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         with st.form("form_login"):
-            usuario_input = st.text_input("Usuário (Ex: THOMAS)")
-            senha_input = st.text_input("Senha (Ex: 123456)", type="password")
+            usuario_input = st.text_input("Usuário (Login)")
+            senha_input = st.text_input("Senha", type="password")
             
             submit_login = st.form_submit_button("Entrar", use_container_width=True)
             
             if submit_login:
                 if fazer_login(usuario_input, senha_input):
-                    st.success("Acesso concedido! Carregando...")
+                    st.success("✅ Acesso concedido! Carregando...")
                     st.rerun()
                 else:
-                    st.error("Usuário ou senha incorretos.")
+                    st.error("❌ Usuário ou senha incorretos.")
 
 # ==========================================
 # 5. APLICATIVO PRINCIPAL (MAESTRO)
@@ -137,30 +152,32 @@ def main():
     # ROTEADOR DE TELAS
     # ==========================================
     if pagina_selecionada == "📊 Painel Executivo":
-        view_painel_executivo()
+        if view_painel_executivo: view_painel_executivo()
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "🗺️ Gerador de Croquis Automático":
-        view_gerador_croqui()
+        if view_gerador_croqui: view_gerador_croqui()
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "☁️ Carga De Lotes":
         if view_carga: view_carga()
-        else: st.error("⚠️ view_carga não encontrada.")
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "📇 Levantadores":
         if view_levantadores: view_levantadores()
-        else: st.error("⚠️ view_levantadores não encontrada.")
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "🛡️ Gerenciamento De Acessos":
         if view_acessos: view_acessos()
-        else: st.error("⚠️ view_acessos não encontrada.")
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "🔍 Busca E Governança":
         if view_governanca: view_governanca()
-        else: st.error("⚠️ view_governanca não encontrada.")
+        else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "⚙️ Simulador De Alocação":
         if view_simulador: view_simulador()
-        else: st.error("⚠️ view_simulador não encontrada.")
+        else: st.error("⚠️ Tela não encontrada.")
 
 if __name__ == "__main__":
     main()
