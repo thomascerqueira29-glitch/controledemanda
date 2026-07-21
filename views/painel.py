@@ -214,14 +214,35 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
 
 # ==============================================================
-# VIEW PRINCIPAL (SEM NAVEGAÇÃO INTERNA)
+# VIEW PRINCIPAL (SEGURANÇA EM NÍVEL DE LINHA - RLS)
 # ==============================================================
 def view_painel_executivo():
-    """Painel 100% focado em Indicadores e Execução."""
+    """Painel focado em Indicadores e Execução com Row-Level Security integrado."""
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
+    # -------------------------------------------------------------
+    # 🔒 SEGURANÇA EM NÍVEL DE LINHA (RLS)
+    # Filtra os dados na raiz antes de renderizar qualquer gráfico ou mapa.
+    # -------------------------------------------------------------
+    perfil_atual = st.session_state.get("perfil_usuario")
+    usuario_atual = st.session_state.get("usuario")
+    
+    if perfil_atual == "LEVANTADOR" and usuario_atual:
+        usuario_limpo = usuario_atual.strip().upper()
+        
+        # Filtra Obras, Equipes e Resumos
+        df_notas_db = df_notas_db[df_notas_db['LEVANTADOR'].str.strip().str.upper() == usuario_limpo]
+        df_equipes_db = df_equipes_db[df_equipes_db['Levantador'].str.strip().str.upper() == usuario_limpo]
+        resumo_levantadores = resumo_levantadores[resumo_levantadores['Levantador'].str.strip().str.upper() == usuario_limpo]
+        
+        # Filtra a lista geral de técnicos
+        todos_levantadores = [usuario_limpo]
+        
+        st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
+    # -------------------------------------------------------------
+    
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
-        st.warning("O banco de dados está vazio. Realize uma carga em lote para popular o painel.")
+        st.warning("Nenhum dado encontrado para exibição nos filtros atuais ou banco vazio.")
         return
 
     try: df_notas_db = calcular_sla_vetorizado(df_notas_db)
@@ -232,7 +253,11 @@ def view_painel_executivo():
     
     k1.markdown(kpi_card("Obras", int(resumo_levantadores['Total_Obras_Real'].sum()), "Em execução", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
     k2.markdown(kpi_card("Equipes", len(resumo_levantadores), "Ativas em campo", "👥", "#10B981"), unsafe_allow_html=True)
-    k3.markdown(kpi_card("Fila", len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]), "Aguardando", "⏳", "#F59E0B"), unsafe_allow_html=True)
+    
+    # O KPI de Fila (Obras aguardando alocação) só faz sentido para o Admin
+    fila_count = 0 if perfil_atual == "LEVANTADOR" else len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))])
+    k3.markdown(kpi_card("Fila", fila_count, "Aguardando", "⏳", "#F59E0B"), unsafe_allow_html=True)
+    
     k4.markdown(kpi_card("Risco", len(levantadores_criticos), "Abaixo da meta", "🚨", "#EF4444" if len(levantadores_criticos) > 0 else "#10B981"), unsafe_allow_html=True)
     
     taxa_dados = calcular_saude_dados(df_notas_db)
@@ -251,7 +276,14 @@ def view_painel_executivo():
         st.markdown("#### ⚡ Gestão de Fila")
         with st.container(border=True):
             c_sel, c_inf = st.columns([3, 1])
-            lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed")
+            
+            # Se for Levantador, trava o selectbox.
+            if perfil_atual == "LEVANTADOR":
+                lev_sel = usuario_atual.upper()
+                c_sel.markdown(f"**Técnico Ativo:**<br>{lev_sel}", unsafe_allow_html=True)
+            else:
+                lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed")
+                
             if st.session_state.get('last_lev') != lev_sel:
                 st.session_state.assign_step = 0; st.session_state.show_demanda = False; st.session_state.last_lev = lev_sel
                 
@@ -283,7 +315,7 @@ def view_painel_executivo():
                                 att = df_livres.sort_values('D_KM').head(45 - obras_do_lev).index
                                 df_update = df_notas_db.copy()
                                 df_update.loc[att, 'LEVANTADOR'] = lev_sel
-                                if save_notas_to_db(df_update): st.success("Viculado!"); st.session_state.assign_step = 2; load_core_data.clear(); st.rerun()
+                                if save_notas_to_db(df_update): st.success("Vinculado!"); st.session_state.assign_step = 2; load_core_data.clear(); st.rerun()
                         if c_b.button("❌ Não", use_container_width=True): st.session_state.assign_step = 0; st.rerun()
                     elif st.session_state.assign_step == 2:
                         st.success("✅ Atribuição Concluída.")
@@ -292,9 +324,10 @@ def view_painel_executivo():
                     st.success("✅ Meta Atingida.")
                     if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
             else: 
-                st.warning("🔒 Atribuição restrita.")
+                # UI Limpa para o Levantador, sem botões de atribuição restrita
+                st.success(f"✅ Demanda Sincronizada.")
+                if st.button("📋 Gerar Minha Demanda (Excel)", use_container_width=True, type="primary"): st.session_state.show_demanda = True
                 
-            # (Sugestão 4) Equilíbrio Visual da Altura da Caixa e Informação Útil
             tech_muns = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
             tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
             muns_str = ", ".join(tech_muns) if tech_muns else "Nenhuma cidade ativa."
@@ -311,6 +344,7 @@ def view_painel_executivo():
         df_demanda = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
         if len(df_demanda) > 0:
             tr = df_equipes_db[df_equipes_db['Levantador'] == lev_sel]
+            
             r_lat = mapa_lat.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Latitude']).replace(',','.'))
             r_lon = mapa_lon.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Longitude']).replace(',','.'))
             
@@ -333,7 +367,6 @@ def view_painel_executivo():
     
     c_g1, c_g2 = st.columns(2)
     with c_g1:
-        # (Sugestão 2 - Correção do Eixo) Agora conta por MUNICIPIO corretamente
         df_mun = df_notas_db.copy()
         lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None']
         df_mun = df_mun[~df_mun['MUNICIPIO'].astype(str).str.strip().isin(lixos)]
@@ -348,19 +381,16 @@ def view_painel_executivo():
                     text='Qtd_Obras', color_discrete_sequence=['#1A4F7C']
                 )
                 fig1.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
-                # Eixo Y liberado para mostrar as Cidades (showticklabels=True)
                 fig1.update_layout(margin=dict(l=10, r=20, t=40, b=20), xaxis_title=None, yaxis_title=None, xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=True))
                 st.plotly_chart(fig1, use_container_width=True)
             
     with c_g2:
         try:
-            # (Sugestão 2 - Gráfico Empilhado de SLA)
             df_sla = df_notas_db[df_notas_db['Status_SLA'].isin(['No Prazo', 'Vencimento Próximo', 'Vencida'])]
             if not df_sla.empty:
                 df_g = df_sla.groupby(['REGIONAL', 'Status_SLA']).size().reset_index(name='Qtd')
                 df_g['Status_SLA'] = pd.Categorical(df_g['Status_SLA'], categories=['No Prazo', 'Vencimento Próximo', 'Vencida'], ordered=True)
                 
-                # Transformado em Stacked Bar (barmode='stack')
                 fig2 = px.bar(
                     df_g.sort_values(['REGIONAL', 'Status_SLA']), 
                     x='REGIONAL', y='Qtd', color='Status_SLA', 
@@ -369,7 +399,6 @@ def view_painel_executivo():
                     color_discrete_map={'No Prazo': '#10B981', 'Vencimento Próximo': '#F59E0B', 'Vencida': '#EF4444'}
                 )
                 fig2.update_traces(textposition='inside', textfont=dict(size=12, color='white'))
-                # Eixo X liberado (showticklabels=True) e Legenda no Topo
                 fig2.update_layout(margin=dict(l=20, r=20, t=40, b=40), xaxis_title=None, yaxis=dict(showticklabels=False), xaxis=dict(showticklabels=True), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None))
                 st.plotly_chart(fig2, use_container_width=True)
         except Exception: pass
@@ -392,7 +421,13 @@ def view_painel_executivo():
         op_map_sap = ["TODOS"] + lista_sap_limpa
         op_map_list = ["TODOS"] + lista_list_limpa
 
-        f_lev = st.selectbox("Técnico / Equipe", op_map_lev)
+        # Comportamento adaptativo do filtro de Técnico na Barra Lateral
+        if perfil_atual == "LEVANTADOR":
+            f_lev = usuario_atual.upper()
+            st.markdown(f"**Técnico:**<br>{f_lev}", unsafe_allow_html=True)
+        else:
+            f_lev = st.selectbox("Técnico / Equipe", op_map_lev)
+            
         f_reg = st.selectbox("Regional", op_map_reg)
         f_mun = st.selectbox("Município Alvo", op_map_mun)
         f_sap = st.selectbox("Status SAP", op_map_sap)
