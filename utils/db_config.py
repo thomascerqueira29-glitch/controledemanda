@@ -39,7 +39,7 @@ def init_db():
         )
     ''')
 
-    # Tabela de Equipes (ADICIONADA AQUI)
+    # Tabela de Equipes
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS equipes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,11 +52,11 @@ def init_db():
         )
     ''')
     
-    # Cria usuário ADMIN padrão se não existir (senha: admin123)
-    cursor.execute("SELECT * FROM usuarios WHERE username = 'ADMIN'")
+    # Garante que o usuário THOMAS seja o administrador padrão do sistema
+    cursor.execute("SELECT * FROM usuarios WHERE username = 'THOMAS'")
     if not cursor.fetchone():
         cursor.execute("INSERT INTO usuarios (username, password, role) VALUES (?, ?, ?)", 
-                       ("ADMIN", hash_password("admin123"), "ADMIN"))
+                       ("THOMAS", hash_password("admin123"), "ADMIN"))
                        
     conn.commit()
     conn.close()
