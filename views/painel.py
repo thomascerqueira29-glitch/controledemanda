@@ -268,9 +268,34 @@ def view_painel_executivo():
     col_t1, col_t2 = st.columns([1.5, 1])
     with col_t1:
         st.markdown("#### 📋 Desempenho e Alocação")
-        st.dataframe(resumo_levantadores[['Levantador', 'Equipe', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
-                     use_container_width=True, hide_index=True, height=280, 
-                     column_config={"Levantador": "Técnico", "Equipe": "Equipe", "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 45)", format="%d", min_value=0, max_value=45)})
+        
+        # --- LÓGICA DE CRUZAMENTO DE TERRITÓRIO ---
+        col_mun_eq = 'Município' if 'Município' in df_equipes_db.columns else 'MUNICIPIO'
+        
+        if not df_equipes_db.empty and col_mun_eq in df_equipes_db.columns and 'Levantador' in df_equipes_db.columns:
+            muns_atribuidos = df_equipes_db[df_equipes_db['Levantador'] != SEM_LEVANTADOR].groupby('Levantador')[col_mun_eq].apply(
+                lambda x: ', '.join(sorted(list(set([str(m).title() for m in x if pd.notna(m) and str(m).strip() != '']))))
+            ).reset_index(name='Area_Atuacao')
+            
+            resumo_view = pd.merge(resumo_levantadores, muns_atribuidos, on='Levantador', how='left')
+            resumo_view['Area_Atuacao'] = resumo_view['Area_Atuacao'].replace('', '-').fillna('Fila Geral / Sem Território Fixo')
+        else:
+            resumo_view = resumo_levantadores.copy()
+            resumo_view['Area_Atuacao'] = '-'
+        # -------------------------------------------
+
+        st.dataframe(
+            resumo_view[['Levantador', 'Equipe', 'Area_Atuacao', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
+            use_container_width=True, 
+            hide_index=True, 
+            height=280, 
+            column_config={
+                "Levantador": "Técnico", 
+                "Equipe": "Equipe", 
+                "Area_Atuacao": st.column_config.TextColumn("📍 Cidades Alocadas", width="large"),
+                "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 45)", format="%d", min_value=0, max_value=45)
+            }
+        )
         
     with col_t2:
         st.markdown("#### ⚡ Gestão de Fila")
@@ -421,7 +446,6 @@ def view_painel_executivo():
         op_map_sap = ["TODOS"] + lista_sap_limpa
         op_map_list = ["TODOS"] + lista_list_limpa
 
-        # Comportamento adaptativo do filtro de Técnico na Barra Lateral
         if perfil_atual == "LEVANTADOR":
             f_lev = usuario_atual.upper()
             st.markdown(f"**Técnico:**<br>{f_lev}", unsafe_allow_html=True)
