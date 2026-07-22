@@ -293,7 +293,7 @@ def view_painel_executivo():
                 "Levantador": "Técnico", 
                 "Equipe": "Equipe", 
                 "Area_Atuacao": st.column_config.TextColumn("📍 Cidades Alocadas", width="large"),
-                "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 45)", format="%d", min_value=0, max_value=45)
+                "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 50)", format="%d", min_value=0, max_value=50)
             }
         )
         
@@ -313,15 +313,15 @@ def view_painel_executivo():
                 st.session_state.assign_step = 0; st.session_state.show_demanda = False; st.session_state.last_lev = lev_sel
                 
             obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
-            cor_badge = "#e8f4f8" if obras_do_lev >= 45 else "#fce8e8"
+            cor_badge = "#e8f4f8" if obras_do_lev >= 50 else "#fce8e8"
             c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
             
             st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
             
             if st.session_state.get('perfil_usuario') == "ADMIN":
-                if obras_do_lev < 45:
+                if obras_do_lev < 50:
                     if st.session_state.get('assign_step', 0) == 0:
-                        if st.button(f"➕ Atribuir {45 - obras_do_lev} Obras", use_container_width=True, type="primary"): st.session_state.assign_step = 1; st.rerun()
+                        if st.button(f"➕ Atribuir {50 - obras_do_lev} Obras", use_container_width=True, type="primary"): st.session_state.assign_step = 1; st.rerun()
                     elif st.session_state.assign_step == 1:
                         st.info("Confirmar geo-atribuição?")
                         c_a, c_b = st.columns(2)
@@ -337,7 +337,7 @@ def view_painel_executivo():
                                 df_livres['L_Lon'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
                                 df_livres['D_KM'] = vectorized_haversine(r_lat, r_lon, df_livres['L_Lat'], df_livres['L_Lon'])
                                 
-                                att = df_livres.sort_values('D_KM').head(45 - obras_do_lev).index
+                                att = df_livres.sort_values('D_KM').head(50 - obras_do_lev).index
                                 df_update = df_notas_db.copy()
                                 df_update.loc[att, 'LEVANTADOR'] = lev_sel
                                 if save_notas_to_db(df_update): st.success("Vinculado!"); st.session_state.assign_step = 2; load_core_data.clear(); st.rerun()
@@ -351,7 +351,7 @@ def view_painel_executivo():
             else: 
                 # UI Limpa para o Levantador, sem botões de atribuição restrita
                 st.success(f"✅ Demanda Sincronizada.")
-                if st.button("📋 Gerar Minha Demanda (Excel)", use_container_width=True, type="primary"): st.session_state.show_demanda = True
+                if st.button("📋 Gerar Minha Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
                 
             tech_muns = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
             tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
@@ -367,34 +367,124 @@ def view_painel_executivo():
     if st.session_state.get('show_demanda', False):
         st.markdown("---")
         df_demanda = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
+        
         if len(df_demanda) > 0:
             tr = df_equipes_db[df_equipes_db['Levantador'] == lev_sel]
-            
             r_lat = mapa_lat.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Latitude']).replace(',','.'))
             r_lon = mapa_lon.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Longitude']).replace(',','.'))
             
             df_demanda['D_KM'] = vectorized_haversine(r_lat, r_lon, pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lat), errors='coerce'), pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lon), errors='coerce'))
             df_demanda = df_demanda.sort_values('D_KM')
             
-            # --- CORREÇÃO DO KEYERROR AQUI ---
-            # Define colunas críticas que DEVEM existir no DataFrame para a validação ocorrer
+            # Validação
             colunas_criticas = [c for c in ['TIPO LIGACAO', 'NOME DO SOLICITANTE', 'LATITUDE', 'LONGITUDE'] if c in df_demanda.columns]
             valid_mask = df_demanda.apply(lambda r: all(str(r.get(k, '')).strip().upper() not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0'] for k in colunas_criticas), axis=1)
             
-            # Define as colunas que queremos exportar e cruza apenas com as que realmente existem
             colunas_ideais = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
             colunas_presentes = [col for col in colunas_ideais if col in df_demanda.columns]
             
             df_exp = df_demanda[valid_mask][colunas_presentes].copy()
-            # ----------------------------------
             
+            # --- INTELIGÊNCIA DE NOMEAÇÃO DO ARQUIVO ---
+            muns_unicos = df_exp['MUNICIPIO'].dropna().unique()
+            if len(muns_unicos) == 1:
+                mun_nome = str(muns_unicos[0]).strip().upper()
+            elif len(muns_unicos) > 1:
+                mun_nome = f"{str(muns_unicos[0]).strip().upper()} E OUTROS"
+            else:
+                mun_nome = "DEMANDA"
+            
+            data_hoje = datetime.now().strftime('%d.%m.%Y')
+            lev_nome = str(lev_sel).strip().upper()
+            base_filename = f"{mun_nome} - {data_hoje} ({lev_nome})"
+            # ---------------------------------------------
+            
+            # --- GERAÇÃO DO ARQUIVO KML (XML NATIVO) ---
+            kml_str = f'''<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>{base_filename}.xlsx</name>
+    <Style id="icon-1899-0288D1-normal">
+      <IconStyle>
+        <color>ffd18802</color>
+        <scale>1</scale>
+        <Icon>
+          <href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href>
+        </Icon>
+        <hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/>
+      </IconStyle>
+      <LabelStyle>
+        <scale>0</scale>
+      </LabelStyle>
+    </Style>
+    <Style id="icon-1899-0288D1-highlight">
+      <IconStyle>
+        <color>ffd18802</color>
+        <scale>1</scale>
+        <Icon>
+          <href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href>
+        </Icon>
+        <hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/>
+      </IconStyle>
+      <LabelStyle>
+        <scale>1</scale>
+      </LabelStyle>
+    </Style>
+    <StyleMap id="icon-1899-0288D1">
+      <Pair>
+        <key>normal</key>
+        <styleUrl>#icon-1899-0288D1-normal</styleUrl>
+      </Pair>
+      <Pair>
+        <key>highlight</key>
+        <styleUrl>#icon-1899-0288D1-highlight</styleUrl>
+      </Pair>
+    </StyleMap>
+'''
+            for _, r in df_exp.iterrows():
+                desc_parts = []
+                ext_data_parts = []
+                for col in colunas_presentes:
+                    val = str(r.get(col, '')).strip()
+                    
+                    if col != 'NOME DO SOLICITANTE':
+                        desc_parts.append(f"{col}: {val}")
+                        
+                    ext_data_parts.append(f'<Data name="{col}">\n          <value>{html.escape(val)}</value>\n        </Data>')
+                    
+                desc_cdata = "<br>".join(desc_parts)
+                ext_data_str = "\n        ".join(ext_data_parts)
+                
+                nome_solic = html.escape(str(r.get('NOME DO SOLICITANTE', '')))
+                lon = str(r.get('LONGITUDE', '')).replace(',','.')
+                lat = str(r.get('LATITUDE', '')).replace(',','.')
+                
+                kml_str += f'''    <Placemark>
+      <name>{nome_solic}</name>
+      <description><![CDATA[{desc_cdata}]]></description>
+      <styleUrl>#icon-1899-0288D1</styleUrl>
+      <ExtendedData>
+        {ext_data_str}
+      </ExtendedData>
+      <Point>
+        <coordinates>
+          {lon},{lat},0
+        </coordinates>
+      </Point>
+    </Placemark>\n'''
+            kml_str += '''  </Document>\n</kml>'''
+            # ---------------------------------------------
+            
+            # --- GERAÇÃO DO ARQUIVO EXCEL ---
             buf = io.BytesIO()
             df_exp.to_excel(buf, index=False, engine='openpyxl')
             
             st.info(f"⚡ **{len(df_exp)} obras validadas** prontas para exportação.")
-            c_b1, c_b3 = st.columns([2.5, 4])
-            hj = datetime.now().strftime('%d_%m_%Y')
-            c_b1.download_button("📥 Planilha Oficial (Excel)", data=buf.getvalue(), file_name=f"Demanda_{lev_sel}_{hj}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            
+            c_b1, c_b2, c_b3 = st.columns([2.5, 2.5, 4])
+            c_b1.download_button("📥 Planilha (Excel)", data=buf.getvalue(), file_name=f"{base_filename}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            c_b2.download_button("🗺️ Mapa (KML)", data=kml_str.encode('utf-8'), file_name=f"{base_filename}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True)
+            
             if c_b3.button("Fechar Ferramenta", use_container_width=True): st.session_state.show_demanda = False; st.rerun()
 
     st.markdown("---")
