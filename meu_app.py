@@ -4,7 +4,7 @@ import streamlit as st
 # 1. CONFIGURAÇÃO GLOBAL DA PÁGINA (Deve ser a 1ª linha do app)
 # ==========================================
 st.set_page_config(
-    page_title="Portal NIP", 
+    page_title="CONTROLE DEMANDA - MA", 
     page_icon="🗺️", 
     layout="wide", 
     initial_sidebar_state="expanded"
@@ -91,7 +91,7 @@ def fazer_login(username, password):
 def tela_login():
     """Interface da Tela de Autenticação"""
     st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("<h1 style='text-align: center;'>🔐 Acesso ao Portal NIP</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>🔐 CONTROLE DEMANDA - MA</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Faça login para continuar</p>", unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -123,7 +123,7 @@ def main():
     # ==========================================
     # BARRA LATERAL (MENU)
     # ==========================================
-    st.sidebar.markdown("### 👤 Portal NIP")
+    st.sidebar.markdown("### 👤 CONTROLE DEMANDA - MA")
     st.sidebar.markdown(f"**Usuário:** {st.session_state.usuario}")
     st.sidebar.markdown(f"**Perfil:** {st.session_state.perfil_usuario}")
     
@@ -135,7 +135,7 @@ def main():
 
     menu_opcoes = [
         "📊 Painel Executivo",
-        "🗺️ Roteirização Geoespacial",
+        "🗺️ Mapa de Obras",
         "🗺️ Gerador de Croquis Automático", 
         "☁️ Carga De Lotes",
         "📇 Levantadores",
@@ -159,7 +159,7 @@ def main():
         if view_painel_executivo: view_painel_executivo()
         else: st.error("⚠️ Tela não encontrada.")
         
-    elif pagina_selecionada == "🗺️ Roteirização Geoespacial":
+    elif pagina_selecionada == "🗺️ Mapa de Obras":
         if view_mapa: view_mapa()
         else: st.error("⚠️ Tela não encontrada.")
 
