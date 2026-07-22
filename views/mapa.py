@@ -3,11 +3,20 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-from folium.plugins import HeatMap, MarkerCluster
+# Importando as novas ferramentas avançadas do Folium
+from folium.plugins import HeatMap, MarkerCluster, Fullscreen, Draw, MiniMap
 import html
 import tempfile
 
 from database import load_core_data, parse_kmz_advanced, SEM_LEVANTADOR
+
+# Injeção de CSS para melhorar a Proporção e Legibilidade Global
+st.markdown("""
+<style>
+    .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
+    .stSelectbox label, .stFileUploader label, .stRadio label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
+</style>
+""", unsafe_allow_html=True)
 
 def normalizar_municipios(series_mun):
     s = series_mun.astype(str).str.upper()
@@ -20,7 +29,42 @@ def normalizar_municipios(series_mun):
     return s.str.split('-').str[0].str.strip()
 
 def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, estilo_mapa, visao_cores):
-    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None)
+    # control_scale=True adiciona a régua de distância km/m no canto
+    mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None, control_scale=True)
+    
+    # --- NOVAS FUNCIONALIDADES DO MAPA (PLUGINS) ---
+    # 1. Botão de Tela Cheia (Fullscreen)
+    Fullscreen(
+        position='topright', 
+        title='Expandir para Tela Cheia', 
+        title_cancel='Sair da Tela Cheia', 
+        force_separate_button=True
+    ).add_to(mapa)
+
+    # 2. Ferramentas de Medição e Desenho
+    Draw(
+        export=False, 
+        position='topleft', 
+        draw_options={
+            'polyline': True, # Para medir distâncias
+            'polygon': True,  # Para marcar áreas
+            'circle': True, 
+            'marker': False, 
+            'circlemarker': False, 
+            'rectangle': False
+        }
+    ).add_to(mapa)
+
+    # 3. Mini-Mapa de Orientação
+    MiniMap(
+        toggle_display=True, 
+        position='bottomleft', 
+        zoom_level_offset=-5, 
+        width=150, 
+        height=150
+    ).add_to(mapa)
+    # -----------------------------------------------
+
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
         attr='Esri', name='Visão de Satélite', overlay=False, control=True
@@ -177,11 +221,13 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
             camada_obras.add_to(mapa)
 
     folium.LayerControl(position='bottomright').add_to(mapa)
-    st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
+    
+    # 4. AUMENTO DA ALTURA DO MAPA (De 650 para 850)
+    st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
 
 def view_mapa():
-    st.markdown("### 🗺️ Roteirização Geoespacial")
-    st.markdown("Visualize as obras no território e aplique sobreposições (KML).")
+    st.markdown("### 🗺️ Mapa de Obras")
+    st.markdown("Visualize as obras no território, meça distâncias e aplique sobreposições (KML/KMZ).")
     
     df_notas_db, df_equipes_db, _, levantadores_criticos, _, mapa_lat, mapa_lon, _ = load_core_data()
     
