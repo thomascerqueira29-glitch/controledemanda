@@ -25,6 +25,9 @@ init_db()
 try: from views.painel import view_painel_executivo
 except ImportError: view_painel_executivo = None
 
+try: from views.mapa import view_mapa
+except ImportError: view_mapa = None
+
 try: from views.modulo_croqui import view_gerador_croqui
 except ImportError: view_gerador_croqui = None
 
@@ -132,6 +135,7 @@ def main():
 
     menu_opcoes = [
         "📊 Painel Executivo",
+        "🗺️ Roteirização Geoespacial",
         "🗺️ Gerador de Croquis Automático", 
         "☁️ Carga De Lotes",
         "📇 Levantadores",
@@ -153,6 +157,10 @@ def main():
     # ==========================================
     if pagina_selecionada == "📊 Painel Executivo":
         if view_painel_executivo: view_painel_executivo()
+        else: st.error("⚠️ Tela não encontrada.")
+        
+    elif pagina_selecionada == "🗺️ Roteirização Geoespacial":
+        if view_mapa: view_mapa()
         else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "🗺️ Gerador de Croquis Automático":
