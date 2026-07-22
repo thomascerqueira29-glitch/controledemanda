@@ -3,24 +3,18 @@ import pandas as pd
 import numpy as np
 import folium
 from streamlit_folium import st_folium
-import html
-import tempfile
-import io
-
 # Ferramentas Avançadas do Folium
 from folium.plugins import HeatMap, MarkerCluster, Fullscreen, Draw, MiniMap, LocateControl, MeasureControl
-try:
-    from folium.plugins import Geocoder
-except ImportError:
-    Geocoder = None
+import html
+import tempfile
 
-from database import load_core_data, parse_kmz_advanced, vectorized_haversine, SEM_LEVANTADOR
+from database import load_core_data, parse_kmz_advanced, SEM_LEVANTADOR
 
 # Injeção de CSS para melhorar a Proporção e Legibilidade Global
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem !important; padding-bottom: 2rem !important; }
-    .stSelectbox label, .stFileUploader label, .stRadio label, .stSlider label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
+    .stSelectbox label, .stFileUploader label, .stRadio label { font-size: 15px !important; font-weight: 600 !important; color: #1A4F7C !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,64 +33,37 @@ def get_s(val):
     s = str(val).strip()
     return "-" if s.lower() in ['nan', 'none', '<na>', ''] else html.escape(s)
 
-# Algoritmo de roteirização em cadeia (Guloso / Nearest Neighbor)
-def get_optimized_route(base_lat, base_lon, df_points):
-    route = [(base_lat, base_lon)]
-    unvisited = df_points[['Lat_Mapa', 'Lon_Mapa']].copy()
-    
-    curr_lat, curr_lon = base_lat, base_lon
-    while not unvisited.empty:
-        dist = vectorized_haversine(curr_lat, curr_lon, unvisited['Lat_Mapa'], unvisited['Lon_Mapa'])
-        closest_idx = dist.idxmin()
-        closest = unvisited.loc[closest_idx]
-        route.append((closest['Lat_Mapa'], closest['Lon_Mapa']))
-        curr_lat, curr_lon = closest['Lat_Mapa'], closest['Lon_Mapa']
-        unvisited = unvisited.drop(closest_idx)
-    return route
-
-# Motor de colisão para capturar obras dentro dos desenhos do mapa
-def point_in_polygon(lat, lon, poly_points):
-    x, y = lat, lon
-    n = len(poly_points)
-    inside = False
-    p1x, p1y = poly_points[0]
-    for i in range(1, n + 1):
-        p2x, p2y = poly_points[i % n]
-        if y > min(p1y, p2y):
-            if y <= max(p1y, p2y):
-                if x <= max(p1x, p2x):
-                    if p1y != p2y:
-                        xints = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                    if p1x == p2x or x <= xints:
-                        inside = not inside
-        p1x, p1y = p2x, p2y
-    return inside
-
-def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, estilo_mapa, visao_cores, camada_fundo, raio_km, tipo_rota):
-    # Base vazia para adicionar o TileLayer correto depois
+def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminho_camada_temp, mapa_lat, mapa_lon, estilo_mapa, visao_cores):
+    # control_scale=True adiciona a régua de distância km/m no canto
     mapa = folium.Map(location=[-5.2, -45.0], zoom_start=7, tiles=None, control_scale=True)
-    
-    # --- CAMADAS DE MAPA AVANÇADAS ---
-    if camada_fundo == "Satélite":
-        folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri', name='Satélite', control=True).add_to(mapa)
-    elif camada_fundo == "Modo Escuro (Dark)":
-        folium.TileLayer('CartoDB dark_matter', name='Modo Escuro', control=True).add_to(mapa)
-    elif camada_fundo == "Topografia":
-        folium.TileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', attr='Topo', name='Topografia', control=True).add_to(mapa)
-    else:
-        folium.TileLayer('OpenStreetMap', name='Ruas Padrão', control=True).add_to(mapa)
     
     # ==========================================
     # NOVAS FUNCIONALIDADES DO MAPA (PLUGINS)
     # ==========================================
+    # 1. Botão de Tela Cheia (Fullscreen)
     Fullscreen(position='topright', title='Expandir para Tela Cheia', title_cancel='Sair da Tela Cheia', force_separate_button=True).add_to(mapa)
-    Draw(export=False, position='topleft', draw_options={'polyline': False, 'polygon': True, 'rectangle': True, 'circle': False, 'marker': False, 'circlemarker': False}).add_to(mapa)
+
+    # 2. Ferramentas de Desenho (Zonas)
+    Draw(
+        export=False, position='topleft', 
+        draw_options={'polyline': False, 'polygon': True, 'circle': True, 'marker': False, 'circlemarker': False, 'rectangle': False}
+    ).add_to(mapa)
+
+    # 3. Trena de Medição Profissional
     MeasureControl(position='topright', primary_length_unit='kilometers', secondary_length_unit='meters', primary_area_unit='sqmeters').add_to(mapa)
-    LocateControl(auto_start=False, position='topleft', strings={'title': 'Mostrar minha localização no GPS'}).add_to(mapa)
+
+    # 4. GPS em Tempo Real (Localizar Usuário)
+    LocateControl(auto_start=False, position='topleft', strings={'title': 'Mostrar minha localização atual no GPS'}).add_to(mapa)
+
+    # 5. Mini-Mapa de Orientação Geográfica
     MiniMap(toggle_display=True, position='bottomleft', zoom_level_offset=-5, width=150, height=150).add_to(mapa)
-    
-    if Geocoder: Geocoder(position='topright').add_to(mapa)
     # ==========================================
+
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
+        attr='Esri', name='Visão de Satélite', overlay=False, control=True
+    ).add_to(mapa)
+    folium.TileLayer('OpenStreetMap', name='Ruas Padrão', overlay=False, control=True).add_to(mapa)
 
     if caminho_camada_temp:
         gdf_lines, gdf_points, bounds = parse_kmz_advanced(caminho_camada_temp)
@@ -105,7 +72,7 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         if bounds is not None: mapa.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
 
     fg_equipes = folium.FeatureGroup(name="📍 Bases dos Técnicos")
-    dict_bases = {}
+    dict_bases = {} # Dicionário para salvar a localização das bases para a teia de aranha
     
     if not df_eq_mapa_view.empty:
         df_eq = df_eq_mapa_view.copy()
@@ -117,16 +84,6 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                 cor = 'red' if lev in [c.upper() for c in criticos_tuple] else 'green'
                 folium.Marker([row['Lat'], row['Lon']], icon=folium.Icon(color=cor, icon='home', prefix='fa'), tooltip=f"Base: {html.escape(lev)}").add_to(fg_equipes)
                 dict_bases[lev] = (row['Lat'], row['Lon'])
-                
-                # --- RAIO LOGÍSTICO (BUFFER) ---
-                if raio_km > 0:
-                    folium.Circle(
-                        location=[row['Lat'], row['Lon']],
-                        radius=raio_km * 1000, # Em metros
-                        color='#10b981', fill=True, fill_opacity=0.1, weight=1,
-                        tooltip=f"Cobertura Logística: {raio_km}km"
-                    ).add_to(fg_equipes)
-                    
     fg_equipes.add_to(mapa)
 
     if not df_notas_mapa.empty:
@@ -139,12 +96,42 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         else:
             df_ob['Lat_Mapa'] = df_ob['Lon_Mapa'] = np.nan
 
+        # Mapeia quem tem GPS estimado (Falso/Cidade)
         mask_miss = df_ob['Lat_Mapa'].isna() | df_ob['Lon_Mapa'].isna()
         df_ob['GPS_ESTIMADO'] = mask_miss
 
         if mask_miss.any() and 'MUNICIPIO' in df_ob.columns:
-            dict_ma_lat = {'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'BALSAS': -7.53, 'PINHEIRO': -2.52} # Adicionado suporte principal
-            dict_ma_lon = {'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'BALSAS': -46.03, 'PINHEIRO': -45.08}
+            dict_ma_lat = {
+                'SAO LUIS': -2.53, 'IMPERATRIZ': -5.52, 'SAO JOSE DE RIBAMAR': -2.56, 'TIMON': -5.09,
+                'CAXIAS': -4.86, 'ACAILANDIA': -4.94, 'CODO': -4.45, 'BACABAL': -4.22, 'BALSAS': -7.53,
+                'SANTA INES': -3.66, 'PINHEIRO': -2.52, 'CHAPADINHA': -3.73, 'SANTA LUZIA': -4.05,
+                'BURITICUPU': -4.33, 'GRAJAU': -5.81, 'ITAPECURU MIRIM': -3.39, 'COROATA': -4.12,
+                'BARREIRINHAS': -2.75, 'TUTOIA': -2.76, 'VARGEM GRANDE': -3.53, 'VIANA': -3.22,
+                'ZE DOCA': -3.27, 'LAGO DA PEDRA': -4.33, 'COELHO NETO': -4.25, 'PRESIDENTE DUTRA': -5.28,
+                'SAO DOMINGOS DO MARANHAO': -5.57, 'ARAIOSES': -2.89, 'SANTA HELENA': -2.23, 'ESTREITO': -6.55,
+                'PEDREIRAS': -4.57, 'ROSARIO': -2.93, 'SAO JOAO DOS PATOS': -6.49, 'DOM PEDRO': -5.03,
+                'BURITI': -3.87, 'TUNTUM': -5.25, 'COLINAS': -6.02, 'AMARANTE DO MARANHAO': -5.57,
+                'BOM JARDIM': -3.56, 'PARNARAMA': -4.31, 'MATOES': -5.52, 'ITINGA DO MARANHAO': -4.36,
+                'PENALVA': -3.28, 'ALTO ALEGRE DO PINDARE': -3.68, 'TURIACU': -1.66, 'CURURUPU': -1.82,
+                'VITORIA DO MEARIM': -3.46, 'CARUTAPERA': -1.19, 'VITORINO FREIRE': -4.32, 'MIRINZAL': -2.06,
+                'RAPOSA': -2.42, 'BARRA DO CORDA': -5.50, 'PACO DO LUMIAR': -2.53
+            }
+            dict_ma_lon = {
+                'SAO LUIS': -44.30, 'IMPERATRIZ': -47.47, 'SAO JOSE DE RIBAMAR': -44.05, 'TIMON': -42.83,
+                'CAXIAS': -43.35, 'ACAILANDIA': -47.50, 'CODO': -43.89, 'BACABAL': -44.78, 'BALSAS': -46.03,
+                'SANTA INES': -45.38, 'PINHEIRO': -45.08, 'CHAPADINHA': -43.35, 'SANTA LUZIA': -45.90,
+                'BURITICUPU': -46.40, 'GRAJAU': -46.13, 'ITAPECURU MIRIM': -44.35, 'COROATA': -43.98,
+                'BARREIRINHAS': -42.82, 'TUTOIA': -42.27, 'VARGEM GRANDE': -43.92, 'VIANA': -45.00,
+                'ZE DOCA': -45.65, 'LAGO DA PEDRA': -45.13, 'COELHO NETO': -42.93, 'PRESIDENTE DUTRA': -44.49,
+                'SAO DOMINGOS DO MARANHAO': -44.38, 'ARAIOSES': -41.90, 'SANTA HELENA': -45.29, 'ESTREITO': -47.45,
+                'PEDREIRAS': -44.60, 'ROSARIO': -44.23, 'SAO JOAO DOS PATOS': -43.70, 'DOM PEDRO': -44.46,
+                'BURITI': -43.08, 'TUNTUM': -44.64, 'COLINAS': -44.24, 'AMARANTE DO MARANHAO': -46.74,
+                'BOM JARDIM': -45.98, 'PARNARAMA': -43.09, 'MATOES': -43.19, 'ITINGA DO MARANHAO': -47.53,
+                'PENALVA': -45.17, 'ALTO ALEGRE DO PINDARE': -45.85, 'TURIACU': -45.37, 'CURURUPU': -44.86,
+                'VITORIA DO MEARIM': -44.87, 'CARUTAPERA': -46.02, 'VITORINO FREIRE': -45.23, 'MIRINZAL': -44.75,
+                'RAPOSA': -44.09, 'BARRA DO CORDA': -45.24, 'PACO DO LUMIAR': -44.10
+            }
+            
             mapa_lat_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lat.items()} if mapa_lat else {}
             mapa_lon_c = {normalizar_municipios(pd.Series([k])).iloc[0]: v for k, v in mapa_lon.items()} if mapa_lon else {}
             dict_ma_lat.update(mapa_lat_c); dict_ma_lon.update(mapa_lon_c)
@@ -166,23 +153,17 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         df_ob['Lat_Mapa'] += r_dist * np.cos(angulos)
         df_ob['Lon_Mapa'] += r_dist * np.sin(angulos)
         
-        # --- ROTEIRIZAÇÃO LINEAR ---
-        if tipo_rota != "Nenhuma":
-            fg_linhas = folium.FeatureGroup(name="🛣️ Roteamento de Obras", show=True)
-            for lev, base_coords in dict_bases.items():
-                obras_lev = df_ob[df_ob['LEVANTADOR'].str.upper() == lev]
-                if obras_lev.empty: continue
-                
-                if tipo_rota == "Teia de Aranha (Base -> Obra)":
-                    for _, row in obras_lev.iterrows():
-                        if pd.notna(row['Lat_Mapa']):
-                            folium.PolyLine([base_coords, (row['Lat_Mapa'], row['Lon_Mapa'])], color='#1A4F7C', weight=1, opacity=0.4, dash_array='5, 5').add_to(fg_linhas)
-                elif tipo_rota == "Caminho Otimizado (Cadeia)":
-                    valid_obras = obras_lev.dropna(subset=['Lat_Mapa', 'Lon_Mapa'])
-                    if not valid_obras.empty:
-                        rota_opt = get_optimized_route(base_coords[0], base_coords[1], valid_obras)
-                        folium.PolyLine(rota_opt, color='#e63946', weight=2, opacity=0.8).add_to(fg_linhas)
-            fg_linhas.add_to(mapa)
+        # --- ROTEIRIZAÇÃO LINEAR (TEIA DE ARANHA) ---
+        fg_linhas = folium.FeatureGroup(name="🕸️ Roteirização Linear (Base -> Obra)", show=False) # Vem desmarcado por padrão para não poluir
+        for row in df_ob.to_dict('records'):
+            lev_obra = str(row.get('LEVANTADOR', '')).strip().upper()
+            if lev_obra in dict_bases:
+                folium.PolyLine(
+                    locations=[dict_bases[lev_obra], (row['Lat_Mapa'], row['Lon_Mapa'])],
+                    color='#1A4F7C', weight=1, opacity=0.4, dash_array='5, 5'
+                ).add_to(fg_linhas)
+        fg_linhas.add_to(mapa)
+        # --------------------------------------------
 
         if estilo_mapa == "Calor (Heatmap)":
             heat_data = [[row['Lat_Mapa'], row['Lon_Mapa']] for _, row in df_ob.iterrows()]
@@ -191,7 +172,11 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         elif estilo_mapa == "Agrupamentos (Clusters)":
             cluster_obras = MarkerCluster(name=f"🏗️ Obras Agrupadas ({len(df_ob)})", maxClusterRadius=45, spiderfyOnMaxZoom=True)
             for row in df_ob.to_dict('records'):
-                if row.get('GPS_ESTIMADO', False): cor_marcador, icone = 'lightgray', 'question'
+                # Verifica se o GPS é real ou estimado para mudar o ícone
+                is_estimated = row.get('GPS_ESTIMADO', False)
+                if is_estimated:
+                    cor_marcador = 'lightgray'
+                    icone = 'question'
                 else:
                     icone = 'wrench'
                     if visao_cores == "Prazos (SLA)":
@@ -213,7 +198,12 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
                     <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
                     <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
-                    <a href="https://www.google.com/maps/dir/?api=1&destination={row['Lat_Mapa']},{row['Lon_Mapa']}" target="_blank" style="display:block; margin-top:12px; background-color:#1A4F7C; color:white; text-align:center; padding:8px; border-radius:6px; text-decoration:none; font-weight:bold;">🚗 Traçar Rota no Google Maps</a>
+                    
+                    <a href="https://www.google.com/maps/dir/?api=1&destination={row['Lat_Mapa']},{row['Lon_Mapa']}" 
+                       target="_blank" 
+                       style="display:block; margin-top:12px; background-color:#1A4F7C; color:white; text-align:center; padding:8px; border-radius:6px; text-decoration:none; font-weight:bold;">
+                       🚗 Traçar Rota no Google Maps
+                    </a>
                 </div>
                 """
                 folium.Marker(location=[row['Lat_Mapa'], row['Lon_Mapa']], icon=folium.Icon(color=cor_marcador, icon=icone, prefix='fa'), popup=folium.Popup(info_html, max_width=350)).add_to(cluster_obras)
@@ -222,7 +212,11 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
         else:
             camada_obras = folium.FeatureGroup(name=f"🏗️ Pinos Individuais ({len(df_ob)})")
             for row in df_ob.to_dict('records'):
-                if row.get('GPS_ESTIMADO', False): cor_marcador, icone = 'lightgray', 'question'
+                # Verifica se o GPS é real ou estimado para mudar o ícone
+                is_estimated = row.get('GPS_ESTIMADO', False)
+                if is_estimated:
+                    cor_marcador = 'lightgray'
+                    icone = 'question'
                 else:
                     icone = 'wrench'
                     if visao_cores == "Prazos (SLA)":
@@ -244,7 +238,12 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
                     <b>Status List:</b> {get_s(row.get('STATUS LIST'))} <br>
                     <b>SLA:</b> {get_s(row.get('STATUS_SLA', row.get('STATUS SLA', '-')))} <br>
                     <b>Tipo Ligação:</b> {get_s(row.get('TIPO LIGACAO'))}
-                    <a href="https://www.google.com/maps/dir/?api=1&destination={row['Lat_Mapa']},{row['Lon_Mapa']}" target="_blank" style="display:block; margin-top:12px; background-color:#1A4F7C; color:white; text-align:center; padding:8px; border-radius:6px; text-decoration:none; font-weight:bold;">🚗 Traçar Rota no Google Maps</a>
+                    
+                    <a href="https://www.google.com/maps/dir/?api=1&destination={row['Lat_Mapa']},{row['Lon_Mapa']}" 
+                       target="_blank" 
+                       style="display:block; margin-top:12px; background-color:#1A4F7C; color:white; text-align:center; padding:8px; border-radius:6px; text-decoration:none; font-weight:bold;">
+                       🚗 Traçar Rota no Google Maps
+                    </a>
                 </div>
                 """
                 folium.Marker(location=[row['Lat_Mapa'], row['Lon_Mapa']], icon=folium.Icon(color=cor_marcador, icon=icone, prefix='fa'), popup=folium.Popup(info_html, max_width=350)).add_to(camada_obras)
@@ -252,14 +251,12 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
 
     folium.LayerControl(position='bottomright').add_to(mapa)
     
-    # Extrai o estado do mapa para habilitar o Filtro por Desenho (Lasso)
-    map_data = st_folium(mapa, use_container_width=True, height=850, returned_objects=["all_drawings"])
-    return map_data, df_ob
-
+    # Renderização estendida para 850px de altura
+    st_folium(mapa, use_container_width=True, height=850, returned_objects=[])
 
 def view_mapa():
-    st.markdown("### 🗺️ Mapa de Obras e Roteirização Geoespacial")
-    st.markdown("Visualize o território, meça distâncias, gere rotas de execução ou desenhe áreas no mapa para extrair dados.")
+    st.markdown("### 🗺️ Mapa de Obras")
+    st.markdown("Visualize as obras no território, acesse rotas no Google Maps, meça distâncias e aplique sobreposições (KML/KMZ).")
     
     df_notas_db, df_equipes_db, _, levantadores_criticos, _, mapa_lat, mapa_lon, _ = load_core_data()
     
@@ -301,17 +298,15 @@ def view_mapa():
         st.markdown("---")
         st.markdown("### ⚙️ Configurações do Mapa")
         
-        camada_fundo = st.selectbox("Fundo do Mapa", ["Ruas (Padrão)", "Satélite", "Modo Escuro (Dark)", "Topografia"])
-        
-        estilo_mapa = st.radio("Visualização das Obras:", ["Pinos Individuais", "Agrupamentos (Clusters)", "Calor (Heatmap)"])
+        estilo_mapa = st.radio("Visualização do Mapa:", [
+            "Agrupamentos (Clusters)", 
+            "Pinos Individuais", 
+            "Calor (Heatmap)"
+        ])
         
         visao_cores = "Produtividade"
         if estilo_mapa in ["Pinos Individuais", "Agrupamentos (Clusters)"]:
             visao_cores = st.radio("Colorir pinos por:", ["Técnico (Produtividade)", "Prazos (SLA)"])
-            
-        tipo_rota = st.radio("Roteirização e Linhas:", ["Nenhuma", "Teia de Aranha (Base -> Obra)", "Caminho Otimizado (Cadeia)"])
-        
-        raio_km = st.slider("Raio Logístico da Base (KM)", 0, 100, 0, step=5, help="Desenha um círculo de cobertura ao redor da Base do Levantador")
         
         st.markdown("---")
         camada = st.file_uploader("Sobrepor Camada (KML/KMZ)", type=['kml', 'kmz'])
@@ -326,6 +321,8 @@ def view_mapa():
     
     df_m = df_m[~df_m['LEVANTADOR'].astype(str).isin(['0', '0.0'])]
     
+    st.caption(f"📍 Renderizando **{len(df_m)}** obras baseadas nos filtros selecionados na barra lateral.")
+    
     camada_p = None
     if camada:
         ext = camada.name.split('.')[-1].lower()
@@ -336,45 +333,5 @@ def view_mapa():
     df_e = df_equipes_db.copy()
     if f_lev != "TODOS": df_e = df_e[df_e['Levantador'].astype(str).str.upper() == f_lev]
     
-    with st.spinner("Construindo renderização geográfica de alta precisão..."):
-        map_state, df_plotado = render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores, camada_fundo, raio_km, tipo_rota)
-
-    # --- SELEÇÃO MÁGICA POR DESENHO (LASSO) ---
-    if map_state and map_state.get("all_drawings"):
-        drawings = map_state["all_drawings"]
-        polygons = []
-        
-        # Procura os desenhos feitos pelo usuário
-        for d in drawings:
-            geom = d.get("geometry", {})
-            if geom.get("type") in ["Polygon", "Rectangle"]:
-                coords = geom.get("coordinates", [[]])[0]
-                polygons.append([(c[1], c[0]) for c in coords]) # Converte GeoJSON [lon, lat] para [lat, lon]
-                
-        if polygons:
-            st.markdown("---")
-            st.markdown("### 🖍️ Extrator de Dados por Área Desenhada")
-            st.info("O sistema identificou uma área selecionada no mapa e cruzou com o banco de dados.")
-            
-            # Junta todos os polígonos e filtra a base principal
-            mask_total = pd.Series([False] * len(df_plotado), index=df_plotado.index)
-            for poly in polygons:
-                mask_poly = df_plotado.apply(lambda row: point_in_polygon(row['Lat_Mapa'], row['Lon_Mapa'], poly), axis=1)
-                mask_total = mask_total | mask_poly
-                
-            df_selecionado = df_plotado[mask_total]
-            
-            if not df_selecionado.empty:
-                st.success(f"Foram encontradas **{len(df_selecionado)} obras** dentro da área desenhada!")
-                
-                # Exibe uma tabela compacta das obras capturadas
-                colunas_mostrar = ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS LIST', 'LEVANTADOR']
-                cols_presentes = [c for c in colunas_mostrar if c in df_selecionado.columns]
-                st.dataframe(df_selecionado[cols_presentes], use_container_width=True, hide_index=True)
-                
-                # Botão para baixar apenas as obras dentro do desenho
-                buf = io.BytesIO()
-                df_selecionado.to_excel(buf, index=False, engine='openpyxl')
-                st.download_button("📥 Baixar Planilha dessa Área (Excel)", data=buf.getvalue(), file_name="Extracao_Mapa_Desenhado.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            else:
-                st.warning("Nenhuma obra foi encontrada dentro do desenho.")
+    with st.spinner("Construindo renderização geográfica do terreno..."):
+        render_mapa_otimizado(df_m, df_e, tuple(levantadores_criticos), camada_p, mapa_lat, mapa_lon, estilo_mapa, visao_cores)
