@@ -212,34 +212,19 @@ def render_mapa_otimizado(df_notas_mapa, df_eq_mapa_view, criticos_tuple, caminh
     folium.LayerControl(position='bottomright').add_to(mapa)
     st_folium(mapa, use_container_width=True, height=650, returned_objects=[])
 
-
-# ==============================================================
-# VIEW PRINCIPAL (SEGURANÇA EM NÍVEL DE LINHA - RLS)
-# ==============================================================
 def view_painel_executivo():
-    """Painel focado em Indicadores e Execução com Row-Level Security integrado."""
     df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, todos_levantadores, mapa_lat, mapa_lon, _ = load_core_data()
     
-    # -------------------------------------------------------------
-    # 🔒 SEGURANÇA EM NÍVEL DE LINHA (RLS)
-    # Filtra os dados na raiz antes de renderizar qualquer gráfico ou mapa.
-    # -------------------------------------------------------------
     perfil_atual = st.session_state.get("perfil_usuario")
     usuario_atual = st.session_state.get("usuario")
     
     if perfil_atual == "LEVANTADOR" and usuario_atual:
         usuario_limpo = usuario_atual.strip().upper()
-        
-        # Filtra Obras, Equipes e Resumos
         df_notas_db = df_notas_db[df_notas_db['LEVANTADOR'].str.strip().str.upper() == usuario_limpo]
         df_equipes_db = df_equipes_db[df_equipes_db['Levantador'].str.strip().str.upper() == usuario_limpo]
         resumo_levantadores = resumo_levantadores[resumo_levantadores['Levantador'].str.strip().str.upper() == usuario_limpo]
-        
-        # Filtra a lista geral de técnicos
         todos_levantadores = [usuario_limpo]
-        
         st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
-    # -------------------------------------------------------------
     
     if len(resumo_levantadores) == 0 or len(df_notas_db) == 0:
         st.warning("Nenhum dado encontrado para exibição nos filtros atuais ou banco vazio.")
@@ -253,11 +238,8 @@ def view_painel_executivo():
     
     k1.markdown(kpi_card("Obras", int(resumo_levantadores['Total_Obras_Real'].sum()), "Em execução", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
     k2.markdown(kpi_card("Equipes", len(resumo_levantadores), "Ativas em campo", "👥", "#10B981"), unsafe_allow_html=True)
-    
-    # O KPI de Fila (Obras aguardando alocação) só faz sentido para o Admin
     fila_count = 0 if perfil_atual == "LEVANTADOR" else len(df_notas_db[(df_notas_db['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))])
     k3.markdown(kpi_card("Fila", fila_count, "Aguardando", "⏳", "#F59E0B"), unsafe_allow_html=True)
-    
     k4.markdown(kpi_card("Risco", len(levantadores_criticos), "Abaixo da meta", "🚨", "#EF4444" if len(levantadores_criticos) > 0 else "#10B981"), unsafe_allow_html=True)
     
     taxa_dados = calcular_saude_dados(df_notas_db)
@@ -268,8 +250,6 @@ def view_painel_executivo():
     col_t1, col_t2 = st.columns([1.5, 1])
     with col_t1:
         st.markdown("#### 📋 Desempenho e Alocação")
-        
-        # --- LÓGICA DE CRUZAMENTO DE TERRITÓRIO ---
         col_mun_eq = 'Município' if 'Município' in df_equipes_db.columns else 'MUNICIPIO'
         
         if not df_equipes_db.empty and col_mun_eq in df_equipes_db.columns and 'Levantador' in df_equipes_db.columns:
@@ -282,16 +262,12 @@ def view_painel_executivo():
         else:
             resumo_view = resumo_levantadores.copy()
             resumo_view['Area_Atuacao'] = '-'
-        # -------------------------------------------
 
         st.dataframe(
             resumo_view[['Levantador', 'Equipe', 'Area_Atuacao', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
-            use_container_width=True, 
-            hide_index=True, 
-            height=280, 
+            use_container_width=True, hide_index=True, height=280, 
             column_config={
-                "Levantador": "Técnico", 
-                "Equipe": "Equipe", 
+                "Levantador": "Técnico", "Equipe": "Equipe", 
                 "Area_Atuacao": st.column_config.TextColumn("📍 Cidades Alocadas", width="large"),
                 "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 50)", format="%d", min_value=0, max_value=50)
             }
@@ -302,7 +278,6 @@ def view_painel_executivo():
         with st.container(border=True):
             c_sel, c_inf = st.columns([3, 1])
             
-            # Se for Levantador, trava o selectbox.
             if perfil_atual == "LEVANTADOR":
                 lev_sel = usuario_atual.upper()
                 c_sel.markdown(f"**Técnico Ativo:**<br>{lev_sel}", unsafe_allow_html=True)
@@ -349,7 +324,6 @@ def view_painel_executivo():
                     st.success("✅ Meta Atingida.")
                     if st.button("📋 Gerar Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
             else: 
-                # UI Limpa para o Levantador, sem botões de atribuição restrita
                 st.success(f"✅ Demanda Sincronizada.")
                 if st.button("📋 Gerar Minha Demanda", use_container_width=True, type="primary"): st.session_state.show_demanda = True
                 
@@ -369,37 +343,35 @@ def view_painel_executivo():
         df_demanda = df_notas_db[(df_notas_db['LEVANTADOR'] == lev_sel) & (df_notas_db['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
         
         if len(df_demanda) > 0:
-            tr = df_equipes_db[df_equipes_db['Levantador'] == lev_sel]
-            r_lat = mapa_lat.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Latitude']).replace(',','.'))
-            r_lon = mapa_lon.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Longitude']).replace(',','.'))
+            df_exp = df_demanda.copy()
             
-            df_demanda['D_KM'] = vectorized_haversine(r_lat, r_lon, pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lat), errors='coerce'), pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lon), errors='coerce'))
-            df_demanda = df_demanda.sort_values('D_KM')
+            # --- 1. MATRIZ EXATA DE COLUNAS OBRIGATÓRIAS ---
+            colunas_exigidas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
             
-            # Validação
-            colunas_criticas = [c for c in ['TIPO LIGACAO', 'NOME DO SOLICITANTE', 'LATITUDE', 'LONGITUDE'] if c in df_demanda.columns]
-            valid_mask = df_demanda.apply(lambda r: all(str(r.get(k, '')).strip().upper() not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0'] for k in colunas_criticas), axis=1)
+            # Força a existência de todas as colunas para evitar o KeyError e garantir o padrão
+            for col in colunas_exigidas:
+                if col not in df_exp.columns:
+                    # Tenta encontrar variações ortográficas no banco
+                    if col == 'ENDEREÇO' and 'ENDERECO' in df_exp.columns: df_exp['ENDEREÇO'] = df_exp['ENDERECO']
+                    elif col == 'INSTALACAO' and 'INSTALAÇÃO' in df_exp.columns: df_exp['INSTALACAO'] = df_exp['INSTALAÇÃO']
+                    elif col == 'TIPO LIGACAO' and 'TIPO LIGAÇÃO' in df_exp.columns: df_exp['TIPO LIGACAO'] = df_exp['TIPO LIGAÇÃO']
+                    else: df_exp[col] = '' # Se não existir de jeito nenhum, cria em branco
             
-            colunas_ideais = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
-            colunas_presentes = [col for col in colunas_ideais if col in df_demanda.columns]
+            # Aplica o filtro exato
+            df_exp = df_exp[colunas_exigidas]
             
-            df_exp = df_demanda[valid_mask][colunas_presentes].copy()
-            
-            # --- INTELIGÊNCIA DE NOMEAÇÃO DO ARQUIVO ---
-            muns_unicos = df_exp['MUNICIPIO'].dropna().unique()
-            if len(muns_unicos) == 1:
-                mun_nome = str(muns_unicos[0]).strip().upper()
-            elif len(muns_unicos) > 1:
-                mun_nome = f"{str(muns_unicos[0]).strip().upper()} E OUTROS"
-            else:
-                mun_nome = "DEMANDA"
+            # --- 2. INTELIGÊNCIA DE NOMEAÇÃO DO ARQUIVO ---
+            muns_unicos = df_exp['MUNICIPIO'].dropna().replace(['', 'NAN', 'NONE'], pd.NA).dropna().unique()
+            if len(muns_unicos) == 1: mun_nome = str(muns_unicos[0]).strip().upper()
+            elif len(muns_unicos) > 1: mun_nome = f"{str(muns_unicos[0]).strip().upper()} E OUTROS"
+            else: mun_nome = "DEMANDA"
             
             data_hoje = datetime.now().strftime('%d.%m.%Y')
             lev_nome = str(lev_sel).strip().upper()
             base_filename = f"{mun_nome} - {data_hoje} ({lev_nome})"
             # ---------------------------------------------
             
-            # --- GERAÇÃO DO ARQUIVO KML (XML NATIVO) ---
+            # --- 3. GERAÇÃO DO ARQUIVO KML (XML NATIVO E SEGURO) ---
             kml_str = f'''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
@@ -442,22 +414,27 @@ def view_painel_executivo():
     </StyleMap>
 '''
             for _, r in df_exp.iterrows():
+                lon_raw = str(r.get('LONGITUDE', '')).replace(',','.')
+                lat_raw = str(r.get('LATITUDE', '')).replace(',','.')
+                
+                # Só cria pino no mapa se tiver coordenada numérica válida
+                try:
+                    lon_val = float(lon_raw)
+                    lat_val = float(lat_raw)
+                    coords_kml = f"{lon_val},{lat_val},0"
+                except:
+                    continue # Pula a criação do Point no mapa para obras sem coordenada
+                
                 desc_parts = []
                 ext_data_parts = []
-                for col in colunas_presentes:
+                for col in colunas_exigidas:
                     val = str(r.get(col, '')).strip()
-                    
-                    if col != 'NOME DO SOLICITANTE':
-                        desc_parts.append(f"{col}: {val}")
-                        
+                    if col != 'NOME DO SOLICITANTE': desc_parts.append(f"{col}: {val}")
                     ext_data_parts.append(f'<Data name="{col}">\n          <value>{html.escape(val)}</value>\n        </Data>')
                     
                 desc_cdata = "<br>".join(desc_parts)
                 ext_data_str = "\n        ".join(ext_data_parts)
-                
                 nome_solic = html.escape(str(r.get('NOME DO SOLICITANTE', '')))
-                lon = str(r.get('LONGITUDE', '')).replace(',','.')
-                lat = str(r.get('LATITUDE', '')).replace(',','.')
                 
                 kml_str += f'''    <Placemark>
       <name>{nome_solic}</name>
@@ -468,18 +445,18 @@ def view_painel_executivo():
       </ExtendedData>
       <Point>
         <coordinates>
-          {lon},{lat},0
+          {coords_kml}
         </coordinates>
       </Point>
     </Placemark>\n'''
             kml_str += '''  </Document>\n</kml>'''
             # ---------------------------------------------
             
-            # --- GERAÇÃO DO ARQUIVO EXCEL ---
+            # --- 4. GERAÇÃO DO ARQUIVO EXCEL ---
             buf = io.BytesIO()
             df_exp.to_excel(buf, index=False, engine='openpyxl')
             
-            st.info(f"⚡ **{len(df_exp)} obras validadas** prontas para exportação.")
+            st.info(f"⚡ **{len(df_exp)} obras processadas** para exportação. (O Excel conterá 100% da carga. O KML mapeará apenas os locais com coordenadas válidas).")
             
             c_b1, c_b2, c_b3 = st.columns([2.5, 2.5, 4])
             c_b1.download_button("📥 Planilha (Excel)", data=buf.getvalue(), file_name=f"{base_filename}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
