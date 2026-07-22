@@ -376,8 +376,17 @@ def view_painel_executivo():
             df_demanda['D_KM'] = vectorized_haversine(r_lat, r_lon, pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lat), errors='coerce'), pd.to_numeric(df_demanda['MUNICIPIO'].map(mapa_lon), errors='coerce'))
             df_demanda = df_demanda.sort_values('D_KM')
             
-            valid_mask = df_demanda.apply(lambda r: all(str(r.get(k, '')).strip().upper() not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0'] for k in ['TIPO LIGACAO', 'NOME DO SOLICITANTE', 'LATITUDE', 'LONGITUDE']), axis=1)
-            df_exp = df_demanda[valid_mask][['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']].copy()
+            # --- CORREÇÃO DO KEYERROR AQUI ---
+            # Define colunas críticas que DEVEM existir no DataFrame para a validação ocorrer
+            colunas_criticas = [c for c in ['TIPO LIGACAO', 'NOME DO SOLICITANTE', 'LATITUDE', 'LONGITUDE'] if c in df_demanda.columns]
+            valid_mask = df_demanda.apply(lambda r: all(str(r.get(k, '')).strip().upper() not in ['', 'NAN', 'NONE', '<NA>', '0', '0.0'] for k in colunas_criticas), axis=1)
+            
+            # Define as colunas que queremos exportar e cruza apenas com as que realmente existem
+            colunas_ideais = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
+            colunas_presentes = [col for col in colunas_ideais if col in df_demanda.columns]
+            
+            df_exp = df_demanda[valid_mask][colunas_presentes].copy()
+            # ----------------------------------
             
             buf = io.BytesIO()
             df_exp.to_excel(buf, index=False, engine='openpyxl')
