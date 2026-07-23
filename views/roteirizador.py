@@ -79,7 +79,7 @@ def obter_coordenadas_municipio_cached(municipio):
         time.sleep(1.2)
         mun_str = str(municipio).strip()
         url = f"https://nominatim.openstreetmap.org/search?q={mun_str},+Maranhão,+Brasil&format=json&limit=1"
-        headers = {"User-Agent": "GeradorRotasOperacional/4.0"}
+        headers = {"User-Agent": "GeradorRotasOperacional/4.5"}
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
@@ -91,7 +91,7 @@ def obter_coordenadas_municipio_cached(municipio):
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
     try:
-        headers = {"User-Agent": "GeradorRotasOperacional/3.2"}
+        headers = {"User-Agent": "GeradorRotasOperacional/4.5"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -115,6 +115,7 @@ def identificar_icone_folium(row, colunas):
     if 'MANUT' in tipo_str or 'REPARO' in tipo_str: return 'wrench'
     if 'INSP' in tipo_str or 'VISTORIA' in tipo_str: return 'eye-open'
     if row.get('PROTOCOLO') == 'RETORNO_BASE': return 'home'
+    if row.get('PROTOCOLO') == 'PAUSA_ALMOCO': return 'cutlery'
     return 'info-sign'
 
 # ==========================================
@@ -123,11 +124,9 @@ def identificar_icone_folium(row, colunas):
 def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
     df_export = df.copy()
     
-    # Remove as coordenadas brutas da rota geométrica do Excel
     if 'ROTA_GEOMETRIA' in df_export.columns:
         df_export = df_export.drop(columns=['ROTA_GEOMETRIA'])
         
-    # Organiza o layout final garantindo as colunas originais à esquerda
     if colunas_originais:
         cols_atuais = df_export.columns.tolist()
         cols_novas_geradas = [c for c in cols_atuais if c not in colunas_originais]
@@ -166,6 +165,10 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
   </Style>
   <Style id="icon-green">
     <IconStyle><color>ff00ff00</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+  </Style>
+  <Style id="icon-yellow">
+    <IconStyle><color>ff00ffff</color><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/dining.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>1.0</scale></LabelStyle>
   </Style>
 '''
 
@@ -206,6 +209,11 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                         ext_data_str = ""
                         nome_ponto = "🏠 FIM DO DIA - RETORNO"
                         style_url = "#icon-green"
+                    elif row.get('PROTOCOLO') == 'PAUSA_ALMOCO':
+                        desc_cdata = "<b>PAUSA PROGRAMADA PARA REFEIÇÃO (1h)</b>"
+                        ext_data_str = ""
+                        nome_ponto = "🍔 ALMOÇO DA EQUIPE"
+                        style_url = "#icon-yellow"
                     else:
                         for col in cols_exibir:
                             if col in row:
@@ -270,25 +278,59 @@ def view_roteirizador():
         st.session_state.colunas_originais = []
 
     # -------------------------------------------------------------
-    # TELA DE RESULTADOS
+    # TELA DE RESULTADOS E EDIÇÃO (PÓS-ROTEIRIZAÇÃO)
     # -------------------------------------------------------------
     if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Roteirização Corporativa")
         
-        df_routed = st.session_state.df_routed
+        # O data_editor permite edição em tempo real (Ajuste Fino)
+        st.markdown("### ✍️ Ajuste Fino Manual (Painel do Despachante)")
+        st.info("Dê um **duplo clique** nas células abaixo para alterar o responsável ou a ordem das obras. Suas edições sairão direto nos downloads finais.")
+        
+        df_editado_ui = st.data_editor(
+            st.session_state.df_routed,
+            use_container_width=True,
+            column_config={
+                "ROTA_GEOMETRIA": None, # Esconde o código geográfico gigante para não poluir a tela
+                "LATITUDE": st.column_config.NumberColumn(disabled=True),
+                "LONGITUDE": st.column_config.NumberColumn(disabled=True),
+                "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.NumberColumn(disabled=True)
+            }
+        )
+        
+        # Atualiza a base para os downloads usando a versão editada pelo usuário
+        df_routed = df_editado_ui.copy()
+        
         bases_records = st.session_state.bases_records
         tipo_periodo = st.session_state.tipo_periodo
         colunas_exibir = st.session_state.colunas_exibir
         col_prioridade = st.session_state.col_prioridade
         colunas_originais = st.session_state.colunas_originais
         
-        df_real_tasks = df_routed[df_routed['PROTOCOLO'] != 'RETORNO_BASE']
+        # Filtra registros não operacionais para métricas
+        df_real_tasks = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
         
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("📌 Obras Roteirizadas", len(df_real_tasks))
         k2.metric("👥 Equipes em Campo", df_routed['BASE_ATRIBUIDA'].nunique())
         k3.metric("🛣️ KM Total Projetado", f"{df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km")
         k4.metric("🚨 Prioridades", len(df_real_tasks[df_real_tasks['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_real_tasks else 0)
+
+        # --- DASHBOARDS DE PRODUTIVIDADE NATIVOS ---
+        st.markdown("---")
+        st.markdown("### 📊 Dashboards de Produtividade")
+        c_dash1, c_dash2 = st.columns(2)
+        
+        with c_dash1:
+            st.markdown("##### 📦 Volume de Obras por Equipe")
+            obras_por_equipe = df_real_tasks['BASE_ATRIBUIDA'].value_counts()
+            st.bar_chart(obras_por_equipe, color="#1A4F7C")
+            
+        with c_dash2:
+            st.markdown("##### 🛣️ Quilometragem Projetada por Equipe")
+            km_por_equipe = df_routed.groupby('BASE_ATRIBUIDA')['DISTANCIA_PONTO_ANTERIOR_KM'].sum()
+            st.bar_chart(km_por_equipe, color="#FF4B4B")
+        st.markdown("---")
 
         st.markdown("#### 🗺️ Visualização Geográfica do Plano")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
@@ -319,7 +361,7 @@ def view_roteirizador():
                 fg_linhas.add_to(mapa)
                 
                 for _, r in df_periodo.iterrows():
-                    if r['PROTOCOLO'] == 'RETORNO_BASE': continue
+                    if r['PROTOCOLO'] in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                     
                     icone = identificar_icone_folium(r, df_routed.columns)
                     cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else cor_rota
@@ -350,22 +392,33 @@ def view_roteirizador():
             
             # 2. Base Power BI
             nome_pbi = f"Base_Dashboards_PowerBI_{data_atual}.csv"
-            # Ordenar colunas do BI também
             cols_atuais_bi = df_routed.columns.tolist()
             cols_novas_bi = [c for c in cols_atuais_bi if c not in colunas_originais]
             cols_finais_bi = [c for c in colunas_originais if c in cols_atuais_bi] + cols_novas_bi
             csv_pbi = df_routed[cols_finais_bi].to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
             zip_xl.writestr(nome_pbi, csv_pbi)
             planilhas_geradas.append(nome_pbi)
+            
+            # 3. Layout SAP (Blindado: Remove Pausa Almoço e Retorno)
+            sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
+            if sap_cols:
+                nome_sap = f"Layout_Importacao_SAP_{data_atual}.xlsx"
+                df_sap = df_real_tasks[sap_cols].copy()
+                df_sap['NOVO_STATUS_ATUALIZACAO'] = ''
+                zip_xl.writestr(nome_sap, gerar_excel_bytes(df_sap, "Nenhuma"))
+                planilhas_geradas.append(nome_sap)
 
-            # 3. Relatório de Expectativa
+            # 4. Relatório de Expectativa
             nome_resumo = f"Expectativa_{'Semanal' if tipo_periodo == 'Semana' else 'Diaria'}_{data_atual}.xlsx"
             resumo_data = []
+            
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
+                
                 for periodo in df_base['PERIODO'].unique():
                     df_periodo = df_base[df_base['PERIODO'] == periodo]
-                    df_periodo_real = df_periodo[df_periodo['PROTOCOLO'] != 'RETORNO_BASE']
+                    df_periodo_real = df_periodo[~df_periodo['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+                    
                     qtd_obras = len(df_periodo_real)
                     qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
                     km_total = round(df_periodo['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
@@ -377,6 +430,7 @@ def view_roteirizador():
                         'OBRAS PRIORITARIAS': qtd_prio,
                         'KM TOTAL PROJETADO': km_total
                     })
+            
             df_resumo = pd.DataFrame(resumo_data)
             buf_resumo = io.BytesIO()
             with pd.ExcelWriter(buf_resumo, engine='openpyxl') as writer:
@@ -384,7 +438,7 @@ def view_roteirizador():
             zip_xl.writestr(nome_resumo, buf_resumo.getvalue())
             planilhas_geradas.append(nome_resumo)
 
-            # 4. Planilhas Individuais (por Levantador)
+            # 5. Planilhas Individuais (por Levantador)
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
@@ -537,11 +591,8 @@ def view_roteirizador():
             dfs = []
             for f in task_files:
                 df_temp = pd.read_excel(f)
-                
-                # Salvando as colunas exatas do modelo (template) antes da limpeza
                 if len(dfs) == 0:
                     st.session_state.colunas_originais = df_temp.columns.tolist()
-                    
                 df_temp.columns = normalize_cols(df_temp.columns)
                 dfs.append(df_temp)
             df_tasks = pd.concat(dfs, ignore_index=True)
@@ -633,7 +684,6 @@ def view_roteirizador():
         with st.expander("🛠️ 3. Configuração de Roteirização (Filtros e Prioridades)", expanded=True):
             c_ex1, c_ex2 = st.columns(2)
             
-            # NOVO: FILTRO TIPO DE NOTA
             if 'TIPO NOTA' in df_tasks_alocadas.columns:
                 tipos_nota_unicos = sorted(df_tasks_alocadas['TIPO NOTA'].astype(str).dropna().unique().tolist())
                 tipos_selecionados = c_ex1.multiselect("🏷️ Filtrar TIPO DE NOTA (Opcional):", tipos_nota_unicos, default=tipos_nota_unicos)
@@ -690,8 +740,32 @@ def view_roteirizador():
             periodo_atual = 1
             obras_no_periodo_atual = 0
             tempo_acumulado_periodo = 0.0
+            almoco_inserido = False
             
             while not unvisited.empty:
+                
+                # ------ LÓGICA DA PAUSA PARA ALMOÇO AUTOMÁTICA ------
+                if modo_limite == "Carga Horária (Tempo Estimado)" and tempo_acumulado_periodo >= 4.0 and not almoco_inserido:
+                    progresso_texto.text(f"🍔 Programando parada de almoço para {b_name}...")
+                    routed_data.append({
+                        'PROTOCOLO': 'PAUSA_ALMOCO',
+                        'NOME DO SOLICITANTE': '🍔 HORÁRIO DE ALMOÇO (1h)',
+                        'LATITUDE': curr_lat,
+                        'LONGITUDE': curr_lon,
+                        'BASE_ATRIBUIDA': b_name,
+                        'ORDEM': ordem_absoluta,
+                        'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
+                        'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
+                        'PERIODO': periodo_atual,
+                        'DISTANCIA_PONTO_ANTERIOR_KM': 0.0,
+                        'ROTA_GEOMETRIA': [[curr_lon, curr_lat], [curr_lon, curr_lat]],
+                        'PRIORIDADE': 'Não'
+                    })
+                    tempo_acumulado_periodo += 1.0 
+                    ordem_absoluta += 1
+                    almoco_inserido = True
+
+                # ====== LÓGICA DE FURAR A FILA (PRIORIDADE) ======
                 unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
                 
                 if not unvisited_prio.empty:
@@ -742,6 +816,7 @@ def view_roteirizador():
                     ordem_absoluta = 1
                     obras_no_periodo_atual = 0
                     tempo_acumulado_periodo = 0.0
+                    almoco_inserido = False
                     curr_lat, curr_lon = base_lat, base_lon 
                     
                     if periodo_atual > limite_periodos:
