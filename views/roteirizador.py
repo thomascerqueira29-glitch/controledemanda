@@ -74,7 +74,6 @@ def gerar_kml_rota(df_rota, base_nome, base_lat, base_lon, dia, semana, cols_exi
       <Pair><key>highlight</key><styleUrl>#icon-red-highlight</styleUrl></Pair>
     </StyleMap>
 '''
-    # Adiciona a Base
     kml_str += f'''    <Placemark>
       <name>BASE: {html.escape(str(base_nome))}</name>
       <styleUrl>#icon-blue</styleUrl>
@@ -83,7 +82,6 @@ def gerar_kml_rota(df_rota, base_nome, base_lat, base_lon, dia, semana, cols_exi
 
     coords_linha = f"{base_lon},{base_lat},0\n"
 
-    # Adiciona os Pontos (Obras)
     for _, row in df_rota.iterrows():
         lon, lat = str(row['LONGITUDE']).replace(',','.'), str(row['LATITUDE']).replace(',','.')
         coords_linha += f"          {lon},{lat},0\n"
@@ -100,7 +98,6 @@ def gerar_kml_rota(df_rota, base_nome, base_lat, base_lon, dia, semana, cols_exi
         ext_data_str = "\n        ".join(ext_data_parts)
         nome_ponto = f"{row['ORDEM']} - {html.escape(str(row.get('NOME DO SOLICITANTE', 'OBRA')))}"
         
-        # Pinta de vermelho no KML se for prioritário
         style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
         
         kml_str += f'''    <Placemark>
@@ -113,7 +110,6 @@ def gerar_kml_rota(df_rota, base_nome, base_lat, base_lon, dia, semana, cols_exi
       <Point><coordinates>{lon},{lat},0</coordinates></Point>
     </Placemark>\n'''
 
-    # Adiciona a Linha (Caminho)
     kml_str += f'''    <Placemark>
       <name>Caminho do Roteiro</name>
       <styleUrl>#linha-rota</styleUrl>
@@ -135,14 +131,16 @@ def view_roteirizador():
 
     _, df_equipes_db, _, _, _, _, _, _ = load_core_data()
     
-    # Prepara a base de equipes
+    # Prepara a base de equipes do sistema
     if not df_equipes_db.empty:
-        col_mun_eq = 'Município' if 'Município' in df_equipes_db.columns else 'MUNICIPIO'
         df_equipes_db.columns = [str(c).strip().upper() for c in df_equipes_db.columns]
-        df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-        df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-        df_equipes_db = df_equipes_db.dropna(subset=['LATITUDE', 'LONGITUDE', 'LEVANTADOR'])
-        lista_levantadores = sorted(df_equipes_db['LEVANTADOR'].unique().tolist())
+        if 'LATITUDE' in df_equipes_db.columns and 'LONGITUDE' in df_equipes_db.columns:
+            df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+            df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+        if 'LEVANTADOR' in df_equipes_db.columns:
+            lista_levantadores = sorted([str(x) for x in df_equipes_db['LEVANTADOR'].dropna().unique().tolist()])
+        else:
+            lista_levantadores = []
     else:
         lista_levantadores = []
 
@@ -162,15 +160,41 @@ def view_roteirizador():
             levs_selecionados = st.multiselect("Selecione os Levantadores para Roteirizar:", lista_levantadores)
             if levs_selecionados:
                 df_bases = df_equipes_db[df_equipes_db['LEVANTADOR'].isin(levs_selecionados)].copy()
+                df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
                 st.success(f"{len(df_bases)} equipe(s) ativada(s).")
         else:
             base_file = st.file_uploader("Upload Planilha Levantadores_MA", type=["xlsx", "xls"])
             if base_file:
-                df_bases = pd.read_excel(base_file)
-                df_bases.columns = [str(c).strip().upper() for c in df_bases.columns]
-                levs_selecionados = st.multiselect("Selecione as Equipes:", df_bases['LEVANTADOR'].dropna().unique().tolist())
-                if levs_selecionados:
-                    df_bases = df_bases[df_bases['LEVANTADOR'].isin(levs_selecionados)].copy()
+                try:
+                    df_bases_temp = pd.read_excel(base_file)
+                    df_bases_temp.columns = [str(c).strip().upper() for c in df_bases_temp.columns]
+                    
+                    # Inteligência para encontrar a coluna de Levantador caso venha com nome diferente
+                    if 'LEVANTADOR' not in df_bases_temp.columns:
+                        for possivel_nome in ['NOME', 'TÉCNICO', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
+                            if possivel_nome in df_bases_temp.columns:
+                                df_bases_temp = df_bases_temp.rename(columns={possivel_nome: 'LEVANTADOR'})
+                                break
+                                
+                    if 'LEVANTADOR' not in df_bases_temp.columns:
+                        st.error("❌ A planilha anexada não possui uma coluna chamada 'LEVANTADOR', 'NOME' ou 'TÉCNICO'.")
+                    else:
+                        opcoes_levs = df_bases_temp['LEVANTADOR'].dropna().unique().tolist()
+                        levs_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs)
+                        
+                        if levs_selecionados:
+                            df_bases = df_bases_temp[df_bases_temp['LEVANTADOR'].isin(levs_selecionados)].copy()
+                            
+                            # Verifica se tem Latitude e Longitude na planilha enviada. Se não tiver, puxa do DB.
+                            if 'LATITUDE' not in df_bases.columns or 'LONGITUDE' not in df_bases.columns:
+                                if not df_equipes_db.empty and 'LATITUDE' in df_equipes_db.columns:
+                                    df_bases = df_bases.merge(df_equipes_db[['LEVANTADOR', 'LATITUDE', 'LONGITUDE']], on='LEVANTADOR', how='left')
+                                    st.info("ℹ️ Coordenadas importadas do Banco de Dados pois a planilha enviada não possuía.")
+                                else:
+                                    st.error("❌ A planilha não possui colunas LATITUDE e LONGITUDE.")
+                                    df_bases = pd.DataFrame()
+                except Exception as e:
+                    st.error(f"Erro ao ler a planilha de Levantadores: {e}")
 
         st.markdown("### 📍 Regra de Atribuição")
         tipo_atribuicao = st.radio(
@@ -191,7 +215,6 @@ def view_roteirizador():
         st.info("👆 Por favor, envie os arquivos de demanda (obras) na caixa acima para começar a configuração.")
         return
 
-    # Processamento dos Arquivos de Tarefas
     try:
         dfs = []
         for f in task_files:
@@ -203,7 +226,6 @@ def view_roteirizador():
         st.error(f"Erro ao unificar as planilhas: {e}")
         return
 
-    # Validação Estrutural
     if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
         st.error("❌ Os arquivos enviados não possuem as colunas obrigatórias 'LATITUDE' e 'LONGITUDE'.")
         return
@@ -215,16 +237,13 @@ def view_roteirizador():
     df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
     df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
     
-    # Remove Obras Sem Coordenada
     df_tasks = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE'])
     df_tasks = df_tasks[(df_tasks['LATITUDE'] != 0.0) & (df_tasks['LONGITUDE'] != 0.0)]
     
-    # Remove Sem Nome
     if 'NOME DO SOLICITANTE' in df_tasks.columns:
         df_tasks = df_tasks.dropna(subset=['NOME DO SOLICITANTE'])
         df_tasks = df_tasks[df_tasks['NOME DO SOLICITANTE'].astype(str).str.strip() != '']
         
-    # Remove Status Morto
     if 'STATUS SAP' in df_tasks.columns:
         df_tasks = df_tasks[~df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])]
 
@@ -257,7 +276,7 @@ def view_roteirizador():
     # --- EXECUÇÃO ---
     if st.button("🚀 Iniciar Motor de Roteirização", type="primary", use_container_width=True):
         if df_bases.empty:
-            st.error("❌ Selecione ao menos 1 Levantador na barra lateral para gerar rotas.")
+            st.error("❌ Selecione ao menos 1 Levantador na barra lateral (com LATITUDE e LONGITUDE válidas) para gerar rotas.")
             return
 
         with st.spinner("Processando Inteligência de Terreno e Roteirização Neural..."):
@@ -271,9 +290,11 @@ def view_roteirizador():
                     min_dist = float('inf')
                     best_base = None
                     for b in bases_records:
-                        d = haversine_vectorized(lat, lon, float(str(b['LATITUDE']).replace(',','.')), float(str(b['LONGITUDE']).replace(',','.')))
-                        if d < min_dist:
-                            min_dist, best_base = d, b['LEVANTADOR']
+                        b_lat, b_lon = b.get('LATITUDE'), b.get('LONGITUDE')
+                        if pd.notna(b_lat) and pd.notna(b_lon):
+                            d = haversine_vectorized(lat, lon, float(str(b_lat).replace(',','.')), float(str(b_lon).replace(',','.')))
+                            if d < min_dist:
+                                min_dist, best_base = d, b['LEVANTADOR']
                     return best_base
                 df_tasks['BASE_ATRIBUIDA'] = df_tasks.apply(lambda r: get_nearest_base(r['LATITUDE'], r['LONGITUDE']), axis=1)
 
@@ -282,7 +303,6 @@ def view_roteirizador():
                     st.error("A coluna 'MUNICIPIO' precisa existir nas Obras e na base de Levantadores para este modo funcionar.")
                     return
                 
-                # Mapeamento Mun -> Levantador
                 mun_to_lev = {}
                 for b in bases_records:
                     muns_atendidos = str(b.get('MUNICIPIO', '')).split(',')
@@ -297,7 +317,6 @@ def view_roteirizador():
             elif tipo_atribuicao == "Balancear Geograficamente (Mesma Região)":
                 lev_names = [b['LEVANTADOR'] for b in bases_records]
                 n_lev = len(lev_names)
-                # Ordena espacialmente para criar fatias geográficas
                 df_tasks = df_tasks.sort_values(by=['LATITUDE', 'LONGITUDE']).reset_index(drop=True)
                 chunks = np.array_split(df_tasks.index, n_lev)
                 for i, chunk in enumerate(chunks):
@@ -315,6 +334,10 @@ def view_roteirizador():
             routed_data = []
             for base in bases_records:
                 b_name = base['LEVANTADOR']
+                
+                if pd.isna(base.get('LATITUDE')) or pd.isna(base.get('LONGITUDE')):
+                    continue
+                
                 b_lat = float(str(base['LATITUDE']).replace(',','.'))
                 b_lon = float(str(base['LONGITUDE']).replace(',','.'))
                 
@@ -362,7 +385,7 @@ def view_roteirizador():
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("📌 Obras Roteirizadas", len(df_routed))
             k2.metric("👥 Técnicos em Campo", df_routed['BASE_ATRIBUIDA'].nunique())
-            k3.metric("📅 Total de Dias Utilizados", df_routed.groupby('BASE_ATRIBUIDA')['DIA'].max().sum())
+            k3.metric("📅 Total de Dias Utilizados", df_routed.groupby('BASE_ATRIBUIDA')['DIA'].max().sum() if not df_routed.empty else 0)
             k4.metric("🚨 Obras Prioritárias", len(df_routed[df_routed['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_routed else 0)
 
             if not df_unallocated.empty:
@@ -371,7 +394,6 @@ def view_roteirizador():
             # --- MAPA FOLIUM ---
             st.markdown("#### 🗺️ Visualização Geográfica do Plano")
             mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8)
-            
             cores = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
             
             for idx, base_nome in enumerate(df_routed['BASE_ATRIBUIDA'].unique()):
@@ -391,7 +413,6 @@ def view_roteirizador():
                         folium.PolyLine(pontos_linha, color=cor_rota, weight=3, opacity=0.7).add_to(fg)
                         
                         for _, r in df_dia.iterrows():
-                            # Cores prioritárias no Mapa
                             icone = 'star' if r['PRIORIDADE'] == "Sim" else 'info-sign'
                             cor_icone = 'red' if r['PRIORIDADE'] == "Sim" else cor_rota
                             
@@ -409,7 +430,7 @@ def view_roteirizador():
             folium.LayerControl().add_to(mapa)
             st_folium(mapa, use_container_width=True, height=500, returned_objects=[])
 
-            # --- EXPORTAÇÕES (EXCEL COM OPENPYXL E KML) ---
+            # --- EXPORTAÇÕES (EXCEL E KML) ---
             st.markdown("#### 📥 Exportar Resultados Finais")
             col_b1, col_b2, col_b3 = st.columns(3)
 
@@ -420,24 +441,21 @@ def view_roteirizador():
                 wb = writer.book
                 ws = writer.sheets['Roteiro']
                 
-                # Procura as colunas para pintar
                 red_font = Font(color="FF0000", bold=True)
-                prio_flag_idx = df_routed.columns.get_loc('PRIORIDADE') + 1 # openpyxl usa 1-based index
+                prio_flag_idx = df_routed.columns.get_loc('PRIORIDADE') + 1 
                 
                 if col_prioridade != "Nenhuma" and col_prioridade in df_routed.columns:
                     prio_col_idx = df_routed.columns.get_loc(col_prioridade) + 1
                     
                     for row_idx in range(2, len(df_routed) + 2):
                         if ws.cell(row=row_idx, column=prio_flag_idx).value == "Sim":
-                            # Pinta a célula específica do valor prioritário
                             ws.cell(row=row_idx, column=prio_col_idx).font = red_font
-                            # Opcional: pinta também a flag "Sim"
                             ws.cell(row=row_idx, column=prio_flag_idx).font = red_font
             
-            col_b1.download_button("📥 Baixar Excel Geral Formertado", data=buf_xl.getvalue(), file_name="roteiro_operacional.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            col_b1.download_button("📥 Baixar Planilha Oficial (Excel)", data=buf_xl.getvalue(), file_name="roteiro_operacional.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
             csv_data = df_routed.to_csv(index=False, sep=';').encode('utf-8-sig')
-            col_b2.download_button("📥 Baixar CSV Geral", data=csv_data, file_name="roteiro_operacional.csv", mime="text/csv", use_container_width=True)
+            col_b2.download_button("📥 Baixar Planilha em CSV", data=csv_data, file_name="roteiro_operacional.csv", mime="text/csv", use_container_width=True)
 
             # Arquivos KML Zippados (Divididos por Base, Semana e Dia)
             buf_zip = io.BytesIO()
@@ -451,7 +469,8 @@ def view_roteirizador():
                         for dia in df_base[df_base['SEMANA'] == semana]['DIA'].unique():
                             df_dia = df_base[(df_base['SEMANA'] == semana) & (df_base['DIA'] == dia)]
                             kml_str = gerar_kml_rota(df_dia, base_nome, b_lat, b_lon, dia, semana, colunas_exibir)
-                            # Nome do arquivo super organizado: ROTA_JEFFERSON_SEM_1_DIA_1.kml
-                            zip_file.writestr(f"ROTA_{base_nome}_SEM_{semana}_DIA_{dia}.kml", kml_str.encode('utf-8'))
+                            # Remove espaços estranhos do nome do arquivo
+                            nome_arquivo_seguro = base_nome.replace(" ", "_")
+                            zip_file.writestr(f"ROTA_{nome_arquivo_seguro}_SEM_{semana}_DIA_{dia}.kml", kml_str.encode('utf-8'))
             
             col_b3.download_button("🗺️ Baixar Todas as Rotas (KML ZIP)", data=buf_zip.getvalue(), file_name="rotas_kml.zip", mime="application/zip", use_container_width=True)
