@@ -28,6 +28,9 @@ except ImportError: view_painel_executivo = None
 try: from views.mapa import view_mapa
 except ImportError: view_mapa = None
 
+try: from views.roteirizador import view_roteirizador
+except ImportError: view_roteirizador = None
+
 try: from views.modulo_croqui import view_gerador_croqui
 except ImportError: view_gerador_croqui = None
 
@@ -136,6 +139,7 @@ def main():
     menu_opcoes = [
         "📊 Painel Executivo",
         "🗺️ Mapa de Obras",
+        "🚙 Roteirizador Operacional",
         "🗺️ Gerador de Croquis Automático", 
         "☁️ Carga De Lotes",
         "📇 Levantadores",
@@ -161,6 +165,10 @@ def main():
         
     elif pagina_selecionada == "🗺️ Mapa de Obras":
         if view_mapa: view_mapa()
+        else: st.error("⚠️ Tela não encontrada.")
+        
+    elif pagina_selecionada == "🚙 Roteirizador Operacional":
+        if view_roteirizador: view_roteirizador()
         else: st.error("⚠️ Tela não encontrada.")
 
     elif pagina_selecionada == "🗺️ Gerador de Croquis Automático":
