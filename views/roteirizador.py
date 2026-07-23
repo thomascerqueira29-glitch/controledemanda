@@ -70,6 +70,30 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
     c = 2 * np.arcsin(np.sqrt(a))
     return R * c
 
+@st.cache_data(show_spinner=False)
+def obter_coordenadas_municipio_cached(municipio):
+    """
+    Geocodificação Dinâmica: Transforma o nome do município escolhido na aba 
+    Levantadores em Latitude e Longitude via satélite (OpenStreetMap/Nominatim).
+    """
+    if not municipio or pd.isna(municipio) or str(municipio).strip() == "":
+        return np.nan, np.nan
+    try:
+        # Pausa para respeitar limite da API gratuita e não sofrer bloqueio
+        time.sleep(1.2)
+        mun_str = str(municipio).strip()
+        url = f"https://nominatim.openstreetmap.org/search?q={mun_str},+Maranhão,+Brasil&format=json&limit=1"
+        headers = {"User-Agent": "GeradorRotasOperacional/4.0"}
+        r = requests.get(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            if len(data) > 0:
+                return float(data[0]['lat']), float(data[0]['lon'])
+    except Exception:
+        pass
+    
+    return np.nan, np.nan
+
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
     try:
         headers = {"User-Agent": "GeradorRotasOperacional/3.2"}
@@ -140,9 +164,12 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
         base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base_nome), None)
         b_lat, b_lon = float(str(base_ref['LATITUDE']).replace(',','.')), float(str(base_ref['LONGITUDE']).replace(',','.'))
 
+        # Puxando o nome da Residência para o Label do Base
+        res_nome = str(base_ref.get('RESIDENCIA', base_nome))
+
         kml += f'  <Folder>\n    <name>Levantador: {html.escape(str(base_nome))}</name>\n'
         kml += f'''    <Placemark>
-      <name>BASE: {html.escape(str(base_nome))}</name>
+      <name>BASE: {html.escape(str(res_nome))}</name>
       <styleUrl>#icon-green</styleUrl>
       <Point><coordinates>{b_lon},{b_lat},0</coordinates></Point>
     </Placemark>\n'''
@@ -263,7 +290,8 @@ def view_roteirizador():
             
             base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base_nome), None)
             b_lat, b_lon = float(str(base_ref['LATITUDE']).replace(',','.')), float(str(base_ref['LONGITUDE']).replace(',','.'))
-            folium.Marker([b_lat, b_lon], icon=folium.Icon(color='black', icon='home', prefix='fa'), tooltip=f"Base: {base_nome}").add_to(mapa)
+            res_nome = str(base_ref.get('RESIDENCIA', base_nome))
+            folium.Marker([b_lat, b_lon], icon=folium.Icon(color='black', icon='home', prefix='fa'), tooltip=f"Base: {res_nome}").add_to(mapa)
             
             for periodo_val in df_base_rota['PERIODO'].unique():
                 df_periodo = df_base_rota[df_base_rota['PERIODO'] == periodo_val]
@@ -299,7 +327,6 @@ def view_roteirizador():
 
         st.markdown("#### 📥 Baixar Resultados e Integrações")
         
-        # Variável com a data atual formatada
         data_atual = datetime.now().strftime("%d_%m_%Y")
         
         buf_zip_xl = io.BytesIO()
@@ -426,14 +453,34 @@ def view_roteirizador():
             _, df_equipes_db, _, _, _, _, _, _ = load_core_data()
             if not df_equipes_db.empty:
                 df_equipes_db.columns = normalize_cols(df_equipes_db.columns)
-                df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
-                df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                
+                # --- BUSCAR LAT/LON BASEADO NA COLUNA RESIDENCIA DINAMICAMENTE ---
+                if 'RESIDENCIA' in df_equipes_db.columns:
+                    muns_unicos = df_equipes_db['RESIDENCIA'].dropna().unique()
+                    mapa_coords = {}
+                    
+                    with st.spinner("🌍 Mapeando coordenadas dos municípios-base (Satélite)..."):
+                        for mun in muns_unicos:
+                            if str(mun).strip() != "":
+                                lat, lon = obter_coordenadas_municipio_cached(mun)
+                                mapa_coords[mun] = (lat, lon)
+                                
+                    df_equipes_db['LATITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[0])
+                    df_equipes_db['LONGITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[1])
+                else:
+                    df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                    df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                # ------------------------------------------------------------------
+
                 lista_lev = sorted([str(x) for x in df_equipes_db['LEVANTADOR'].dropna().unique().tolist()])
                 
                 levs_selecionados = st.multiselect("Selecione as Equipes que irão a campo:", lista_lev)
                 if levs_selecionados:
                     df_bases = df_equipes_db[df_equipes_db['LEVANTADOR'].isin(levs_selecionados)].copy()
                     df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                    
+                    if len(df_bases) < len(levs_selecionados):
+                        st.warning("⚠️ Alguns levantadores foram ignorados pois o município de residência deles não pôde ser localizado ou configurado.")
         else:
             base_file = st.file_uploader("Suba a planilha Levantadores_MA", type=["xlsx", "xls"])
             if base_file:
@@ -450,6 +497,24 @@ def view_roteirizador():
                         levs_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs)
                         if levs_selecionados:
                             df_bases = df_bases_temp[df_bases_temp['LEVANTADOR'].isin(levs_selecionados)].copy()
+                            
+                            # Transforma Residência em LAT/LON mesmo em planilha manual
+                            if 'RESIDENCIA' in df_bases.columns:
+                                muns_unicos = df_bases['RESIDENCIA'].dropna().unique()
+                                mapa_coords = {}
+                                with st.spinner("🌍 Mapeando coordenadas dos municípios-base (Satélite)..."):
+                                    for mun in muns_unicos:
+                                        lat, lon = obter_coordenadas_municipio_cached(mun)
+                                        mapa_coords[mun] = (lat, lon)
+                                df_bases['LATITUDE'] = df_bases['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[0])
+                                df_bases['LONGITUDE'] = df_bases['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[1])
+                            else:
+                                df_bases['LATITUDE'] = pd.to_numeric(df_bases.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                                df_bases['LONGITUDE'] = pd.to_numeric(df_bases.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                                
+                            df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                            if len(df_bases) < len(levs_selecionados):
+                                st.warning("⚠️ Alguns levantadores foram ignorados pela falta de coordenadas ou Residência válida.")
                 except Exception as e:
                     st.error(f"Erro ao ler a planilha: {e}")
 
