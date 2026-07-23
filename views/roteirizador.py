@@ -7,6 +7,7 @@ import io
 import zipfile
 import html
 import re
+import os
 import requests
 import time
 from openpyxl.styles import Font
@@ -52,12 +53,13 @@ def normalize_cols(cols):
     new_cols = []
     for c in cols:
         c = str(c).strip().upper()
-        c = re.sub(r'[ÁÀÂÃÄ]', 'A', regex=True)
-        c = re.sub(r'[ÉÈÊË]', 'E', regex=True)
-        c = re.sub(r'[ÍÌÎÏ]', 'I', regex=True)
-        c = re.sub(r'[ÓÒÔÕÖ]', 'O', regex=True)
-        c = re.sub(r'[ÚÙÛÜ]', 'U', regex=True)
-        c = re.sub(r'Ç', 'C', regex=True)
+        # Sintaxe corrigida do re.sub (pattern, replacement, string_alvo)
+        c = re.sub(r'[ÁÀÂÃÄ]', 'A', c)
+        c = re.sub(r'[ÉÈÊË]', 'E', c)
+        c = re.sub(r'[ÍÌÎÏ]', 'I', c)
+        c = re.sub(r'[ÓÒÔÕÖ]', 'O', c)
+        c = re.sub(r'[ÚÙÛÜ]', 'U', c)
+        c = re.sub(r'Ç', 'C', c)
         new_cols.append(c)
     return new_cols
 
