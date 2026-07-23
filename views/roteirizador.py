@@ -33,6 +33,7 @@ def limpar_roteirizador():
     st.session_state.tipo_periodo = "Dia"
     st.session_state.colunas_exibir = []
     st.session_state.col_prioridade = "Nenhuma"
+    st.session_state.colunas_originais = []
     st.rerun()
 
 def normalize_cols(cols):
@@ -72,14 +73,9 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
 @st.cache_data(show_spinner=False)
 def obter_coordenadas_municipio_cached(municipio):
-    """
-    Geocodificação Dinâmica: Transforma o nome do município escolhido na aba 
-    Levantadores em Latitude e Longitude via satélite (OpenStreetMap/Nominatim).
-    """
     if not municipio or pd.isna(municipio) or str(municipio).strip() == "":
         return np.nan, np.nan
     try:
-        # Pausa para respeitar limite da API gratuita e não sofrer bloqueio
         time.sleep(1.2)
         mun_str = str(municipio).strip()
         url = f"https://nominatim.openstreetmap.org/search?q={mun_str},+Maranhão,+Brasil&format=json&limit=1"
@@ -91,7 +87,6 @@ def obter_coordenadas_municipio_cached(municipio):
                 return float(data[0]['lat']), float(data[0]['lon'])
     except Exception:
         pass
-    
     return np.nan, np.nan
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
@@ -113,8 +108,10 @@ def identificar_icone_folium(row, colunas):
         tipo_str = str(row.get('TIPO LIGACAO', '')).upper()
     elif 'SERVICO' in colunas:
         tipo_str = str(row.get('SERVICO', '')).upper()
+    elif 'TIPO NOTA' in colunas:
+        tipo_str = str(row.get('TIPO NOTA', '')).upper()
         
-    if 'NOVA' in tipo_str or 'LIGACAO' in tipo_str: return 'bolt'
+    if 'NOVA' in tipo_str or 'LIGACAO' in tipo_str or 'UNI' in tipo_str or 'UNR' in tipo_str: return 'bolt'
     if 'MANUT' in tipo_str or 'REPARO' in tipo_str: return 'wrench'
     if 'INSP' in tipo_str or 'VISTORIA' in tipo_str: return 'eye-open'
     if row.get('PROTOCOLO') == 'RETORNO_BASE': return 'home'
@@ -123,19 +120,32 @@ def identificar_icone_folium(row, colunas):
 # ==========================================
 # GERAÇÃO DE ARQUIVOS (EXCEL E KML ESTRUTURADO)
 # ==========================================
-def gerar_excel_bytes(df, col_prioridade):
+def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
+    df_export = df.copy()
+    
+    # Remove as coordenadas brutas da rota geométrica do Excel
+    if 'ROTA_GEOMETRIA' in df_export.columns:
+        df_export = df_export.drop(columns=['ROTA_GEOMETRIA'])
+        
+    # Organiza o layout final garantindo as colunas originais à esquerda
+    if colunas_originais:
+        cols_atuais = df_export.columns.tolist()
+        cols_novas_geradas = [c for c in cols_atuais if c not in colunas_originais]
+        cols_finais_ordenadas = [c for c in colunas_originais if c in cols_atuais] + cols_novas_geradas
+        df_export = df_export[cols_finais_ordenadas]
+
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Roteiro')
+        df_export.to_excel(writer, index=False, sheet_name='Roteiro')
         ws = writer.sheets['Roteiro']
         red_font = Font(color="FF0000", bold=True)
-        if 'PRIORIDADE' in df.columns:
-            prio_flag_idx = df.columns.get_loc('PRIORIDADE') + 1 
-            for row_idx in range(2, len(df) + 2):
+        if 'PRIORIDADE' in df_export.columns:
+            prio_flag_idx = df_export.columns.get_loc('PRIORIDADE') + 1 
+            for row_idx in range(2, len(df_export) + 2):
                 if ws.cell(row=row_idx, column=prio_flag_idx).value == "Sim":
                     ws.cell(row=row_idx, column=prio_flag_idx).font = red_font
-                    if col_prioridade != "Nenhuma" and col_prioridade in df.columns:
-                        prio_col_idx = df.columns.get_loc(col_prioridade) + 1
+                    if col_prioridade != "Nenhuma" and col_prioridade in df_export.columns:
+                        prio_col_idx = df_export.columns.get_loc(col_prioridade) + 1
                         ws.cell(row=row_idx, column=prio_col_idx).font = red_font
     return buf_xl.getvalue()
 
@@ -164,7 +174,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
         base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base_nome), None)
         b_lat, b_lon = float(str(base_ref['LATITUDE']).replace(',','.')), float(str(base_ref['LONGITUDE']).replace(',','.'))
 
-        # Puxando o nome da Residência para o Label do Base
         res_nome = str(base_ref.get('RESIDENCIA', base_nome))
 
         kml += f'  <Folder>\n    <name>Levantador: {html.escape(str(base_nome))}</name>\n'
@@ -257,6 +266,8 @@ def view_roteirizador():
         st.session_state.colunas_exibir = []
     if "col_prioridade" not in st.session_state:
         st.session_state.col_prioridade = "Nenhuma"
+    if "colunas_originais" not in st.session_state:
+        st.session_state.colunas_originais = []
 
     # -------------------------------------------------------------
     # TELA DE RESULTADOS
@@ -269,6 +280,7 @@ def view_roteirizador():
         tipo_periodo = st.session_state.tipo_periodo
         colunas_exibir = st.session_state.colunas_exibir
         col_prioridade = st.session_state.col_prioridade
+        colunas_originais = st.session_state.colunas_originais
         
         df_real_tasks = df_routed[df_routed['PROTOCOLO'] != 'RETORNO_BASE']
         
@@ -333,35 +345,27 @@ def view_roteirizador():
         with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl:
             # 1. Roteiro Geral
             nome_roteiro_geral = f"Roteiro_Geral_{data_atual}.xlsx"
-            zip_xl.writestr(nome_roteiro_geral, gerar_excel_bytes(df_routed, col_prioridade))
+            zip_xl.writestr(nome_roteiro_geral, gerar_excel_bytes(df_routed, col_prioridade, colunas_originais))
             planilhas_geradas = [nome_roteiro_geral]
             
             # 2. Base Power BI
             nome_pbi = f"Base_Dashboards_PowerBI_{data_atual}.csv"
-            csv_pbi = df_routed.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            # Ordenar colunas do BI também
+            cols_atuais_bi = df_routed.columns.tolist()
+            cols_novas_bi = [c for c in cols_atuais_bi if c not in colunas_originais]
+            cols_finais_bi = [c for c in colunas_originais if c in cols_atuais_bi] + cols_novas_bi
+            csv_pbi = df_routed[cols_finais_bi].to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
             zip_xl.writestr(nome_pbi, csv_pbi)
             planilhas_geradas.append(nome_pbi)
-            
-            # 3. Layout SAP
-            sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
-            if sap_cols:
-                nome_sap = f"Layout_Importacao_SAP_{data_atual}.xlsx"
-                df_sap = df_real_tasks[sap_cols].copy()
-                df_sap['NOVO_STATUS_ATUALIZACAO'] = ''
-                zip_xl.writestr(nome_sap, gerar_excel_bytes(df_sap, "Nenhuma"))
-                planilhas_geradas.append(nome_sap)
 
-            # 4. Relatório de Expectativa
+            # 3. Relatório de Expectativa
             nome_resumo = f"Expectativa_{'Semanal' if tipo_periodo == 'Semana' else 'Diaria'}_{data_atual}.xlsx"
             resumo_data = []
-            
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
-                
                 for periodo in df_base['PERIODO'].unique():
                     df_periodo = df_base[df_base['PERIODO'] == periodo]
                     df_periodo_real = df_periodo[df_periodo['PROTOCOLO'] != 'RETORNO_BASE']
-                    
                     qtd_obras = len(df_periodo_real)
                     qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
                     km_total = round(df_periodo['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
@@ -373,7 +377,6 @@ def view_roteirizador():
                         'OBRAS PRIORITARIAS': qtd_prio,
                         'KM TOTAL PROJETADO': km_total
                     })
-            
             df_resumo = pd.DataFrame(resumo_data)
             buf_resumo = io.BytesIO()
             with pd.ExcelWriter(buf_resumo, engine='openpyxl') as writer:
@@ -381,13 +384,13 @@ def view_roteirizador():
             zip_xl.writestr(nome_resumo, buf_resumo.getvalue())
             planilhas_geradas.append(nome_resumo)
 
-            # 5. Planilhas Individuais (por Levantador)
+            # 4. Planilhas Individuais (por Levantador)
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
                 if not df_lev.empty:
                     nome_arquivo = f"Roteiro_{nome_seguro}_{data_atual}.xlsx"
-                    zip_xl.writestr(nome_arquivo, gerar_excel_bytes(df_lev, col_prioridade))
+                    zip_xl.writestr(nome_arquivo, gerar_excel_bytes(df_lev, col_prioridade, colunas_originais))
                     planilhas_geradas.append(nome_arquivo)
                     
         zip_xl_bytes = buf_zip_xl.getvalue()
@@ -414,7 +417,7 @@ def view_roteirizador():
             st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
 
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
-        col_b1.download_button("🌐 1. Planilhas, BI e SAP (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
+        col_b1.download_button("🌐 1. Planilhas Finais (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
         col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name=f"Mapas_KML_{data_atual}.zip", mime="application/zip", use_container_width=True)
         if col_b3.button("🧹 Zerar Roteirizador", type="primary", use_container_width=True):
             limpar_roteirizador()
@@ -454,7 +457,6 @@ def view_roteirizador():
             if not df_equipes_db.empty:
                 df_equipes_db.columns = normalize_cols(df_equipes_db.columns)
                 
-                # --- BUSCAR LAT/LON BASEADO NA COLUNA RESIDENCIA DINAMICAMENTE ---
                 if 'RESIDENCIA' in df_equipes_db.columns:
                     muns_unicos = df_equipes_db['RESIDENCIA'].dropna().unique()
                     mapa_coords = {}
@@ -470,7 +472,6 @@ def view_roteirizador():
                 else:
                     df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
                     df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
-                # ------------------------------------------------------------------
 
                 lista_lev = sorted([str(x) for x in df_equipes_db['LEVANTADOR'].dropna().unique().tolist()])
                 
@@ -498,7 +499,6 @@ def view_roteirizador():
                         if levs_selecionados:
                             df_bases = df_bases_temp[df_bases_temp['LEVANTADOR'].isin(levs_selecionados)].copy()
                             
-                            # Transforma Residência em LAT/LON mesmo em planilha manual
                             if 'RESIDENCIA' in df_bases.columns:
                                 muns_unicos = df_bases['RESIDENCIA'].dropna().unique()
                                 mapa_coords = {}
@@ -521,7 +521,7 @@ def view_roteirizador():
         st.markdown("##### Regra de Atribuição Territorial")
         tipo_atribuicao = st.radio(
             "Regra", 
-            ["Por Municípios Atendidos", "Por Distância da Residência", "Balancear Geograficamente (Mesma Região)"],
+            ["Por Proximidade Geográfica das Coordenadas (Ignora texto)", "Por Municípios Atendidos (Lê texto da planilha)", "Balancear Geograficamente (Mesma Região)"],
             label_visibility="collapsed"
         )
 
@@ -537,6 +537,11 @@ def view_roteirizador():
             dfs = []
             for f in task_files:
                 df_temp = pd.read_excel(f)
+                
+                # Salvando as colunas exatas do modelo (template) antes da limpeza
+                if len(dfs) == 0:
+                    st.session_state.colunas_originais = df_temp.columns.tolist()
+                    
                 df_temp.columns = normalize_cols(df_temp.columns)
                 dfs.append(df_temp)
             df_tasks = pd.concat(dfs, ignore_index=True)
@@ -563,8 +568,17 @@ def view_roteirizador():
     if 'STATUS SAP' in df_tasks.columns:
         df_tasks = df_tasks[~df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])]
 
+    if 'STATUS LIST' in df_tasks.columns:
+        status_validos = [
+            'EM LEVANTAMENTO', '0', 
+            'SEM INFORMAÇÕES', 'SEM INFORMACOES', 
+            'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 
+            'PRÉ ANÁLISE', 'PRE ANALISE'
+        ]
+        df_tasks = df_tasks[df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(status_validos)]
+
     if total_orig - len(df_tasks) > 0:
-        st.warning(f"⚠️ {total_orig - len(df_tasks)} obras com erros sistêmicos (GPS Vazio, Status Morto) foram ignoradas. Restam **{len(df_tasks)} válidas.**")
+        st.warning(f"⚠️ {total_orig - len(df_tasks)} obras com erros sistêmicos (GPS Vazio, Status Morto ou Status List inválido) foram ignoradas. Restam **{len(df_tasks)} válidas.**")
 
     if df_tasks.empty: return
 
@@ -576,7 +590,7 @@ def view_roteirizador():
         bases_records = df_bases.to_dict('records')
         df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
         
-        if tipo_atribuicao == "Por Distância da Residência":
+        if tipo_atribuicao == "Por Proximidade Geográfica das Coordenadas (Ignora texto)":
             def get_nearest_base(lat, lon):
                 min_dist = float('inf')
                 best_base = None
@@ -587,7 +601,7 @@ def view_roteirizador():
                 return best_base
             df_tasks['BASE_ATRIBUIDA'] = df_tasks.apply(lambda r: get_nearest_base(r['LATITUDE'], r['LONGITUDE']), axis=1)
 
-        elif tipo_atribuicao == "Por Municípios Atendidos":
+        elif tipo_atribuicao == "Por Municípios Atendidos (Lê texto da planilha)":
             mun_to_lev = {}
             for b in bases_records:
                 for m in str(b.get('MUNICIPIO', '')).split(','):
@@ -612,21 +626,32 @@ def view_roteirizador():
             return
 
         if not df_unallocated.empty:
-            st.warning(f"⚠️ {len(df_unallocated)} obras carregadas ficaram sem Levantador pois não pertencem à área das equipes selecionadas. Elas não serão roteirizadas.")
+            st.warning(f"⚠️ {len(df_unallocated)} obras carregadas ficaram sem Levantador pois não pertencem à área das equipes selecionadas.")
 
     # === CONFIGURAÇÃO DE EXIBIÇÃO E PRIORIDADES ===
     if not df_tasks_alocadas.empty:
-        with st.expander("🛠️ 3. Configuração de Exibição e Prioridade", expanded=True):
+        with st.expander("🛠️ 3. Configuração de Roteirização (Filtros e Prioridades)", expanded=True):
             c_ex1, c_ex2 = st.columns(2)
+            
+            # NOVO: FILTRO TIPO DE NOTA
+            if 'TIPO NOTA' in df_tasks_alocadas.columns:
+                tipos_nota_unicos = sorted(df_tasks_alocadas['TIPO NOTA'].astype(str).dropna().unique().tolist())
+                tipos_selecionados = c_ex1.multiselect("🏷️ Filtrar TIPO DE NOTA (Opcional):", tipos_nota_unicos, default=tipos_nota_unicos)
+                
+                if not tipos_selecionados:
+                    st.warning("Selecione pelo menos um Tipo de Nota para prosseguir.")
+                    return
+                df_tasks_alocadas = df_tasks_alocadas[df_tasks_alocadas['TIPO NOTA'].astype(str).isin(tipos_selecionados)]
+
             todas_cols = df_tasks_alocadas.columns.tolist()
-            cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP'] if c in todas_cols]
+            cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
             col_prioridade = c_ex2.selectbox("Coluna que define a URGÊNCIA (Sinal Vermelho)", ["Nenhuma"] + todas_cols)
             valores_prioridade = []
             
             if col_prioridade != "Nenhuma":
-                opcoes_validas_prioridade = sorted(df_tasks_alocadas[col_prioridade].dropna().unique().tolist())
+                opcoes_validas_prioridade = sorted(df_tasks_alocadas[col_prioridade].astype(str).dropna().unique().tolist())
                 valores_prioridade = c_ex2.multiselect("Quais valores indicam Urgência? (Filtrado por Equipe)", opcoes_validas_prioridade)
 
     # === INÍCIO DO PROCESSAMENTO ===
@@ -635,9 +660,8 @@ def view_roteirizador():
             st.error("Selecione equipes e regras compatíveis com a planilha primeiro.")
             return
 
-        # Marcar prioridades ANTES do loop principal
         if col_prioridade != "Nenhuma" and len(valores_prioridade) > 0:
-            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas[col_prioridade].apply(lambda x: 'Sim' if x in valores_prioridade else 'Não')
+            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas[col_prioridade].apply(lambda x: 'Sim' if str(x) in valores_prioridade else 'Não')
         else:
             df_tasks_alocadas['PRIORIDADE'] = 'Não'
 
@@ -654,7 +678,6 @@ def view_roteirizador():
         routed_data = []
         levantadores_unicos = list(set([b['LEVANTADOR'] for b in bases_records]))
 
-        # LOOP DE ROTEIRIZAÇÃO POR LEVANTADOR
         for b_name in levantadores_unicos:
             base_ref = df_bases[df_bases['LEVANTADOR'] == b_name].iloc[0]
             if pd.isna(base_ref.get('LATITUDE')): continue
@@ -669,7 +692,6 @@ def view_roteirizador():
             tempo_acumulado_periodo = 0.0
             
             while not unvisited.empty:
-                # ====== LÓGICA DE FURAR A FILA (PRIORIDADE) ======
                 unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
                 
                 if not unvisited_prio.empty:
@@ -678,14 +700,12 @@ def view_roteirizador():
                 else:
                     dists = haversine_vectorized(curr_lat, curr_lon, unvisited['LATITUDE'].values, unvisited['LONGITUDE'].values)
                     nearest_idx = unvisited.index[dists.argmin()]
-                # =================================================
                 
                 nearest_row = unvisited.loc[nearest_idx]
                 dist_km = round(dists.min(), 2)
                 
                 quebrar_periodo = False
                 
-                # Validação de Limites
                 if modo_limite == "Quantidade Fixa de Obras":
                     if obras_no_periodo_atual >= obras_por_periodo:
                         quebrar_periodo = True
@@ -695,7 +715,6 @@ def view_roteirizador():
                     if tempo_acumulado_periodo + tempo_necessario > horas_por_dia and obras_no_periodo_atual > 0:
                         quebrar_periodo = True
 
-                # Retorno à base
                 if quebrar_periodo:
                     progresso_texto.text(f"🏠 Desenhando rota de Retorno à Base para {b_name} (Período {periodo_atual})...")
                     rota_retorno = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon)
