@@ -71,7 +71,7 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
     try:
-        headers = {"User-Agent": "GeradorRotasOperacional/3.1"}
+        headers = {"User-Agent": "GeradorRotasOperacional/3.2"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -106,12 +106,12 @@ def gerar_excel_bytes(df, col_prioridade):
         red_font = Font(color="FF0000", bold=True)
         if 'PRIORIDADE' in df.columns:
             prio_flag_idx = df.columns.get_loc('PRIORIDADE') + 1 
-            if col_prioridade != "Nenhuma" and col_prioridade in df.columns:
-                prio_col_idx = df.columns.get_loc(col_prioridade) + 1
-                for row_idx in range(2, len(df) + 2):
-                    if ws.cell(row=row_idx, column=prio_flag_idx).value == "Sim":
+            for row_idx in range(2, len(df) + 2):
+                if ws.cell(row=row_idx, column=prio_flag_idx).value == "Sim":
+                    ws.cell(row=row_idx, column=prio_flag_idx).font = red_font
+                    if col_prioridade != "Nenhuma" and col_prioridade in df.columns:
+                        prio_col_idx = df.columns.get_loc(col_prioridade) + 1
                         ws.cell(row=row_idx, column=prio_col_idx).font = red_font
-                        ws.cell(row=row_idx, column=prio_flag_idx).font = red_font
     return buf_xl.getvalue()
 
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
@@ -126,8 +126,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
     <LabelStyle><scale>0.9</scale></LabelStyle>
   </Style>
   <Style id="icon-red">
-    <IconStyle><color>ff0000ff</color><scale>1.2</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>0.9</scale></LabelStyle>
+    <IconStyle><color>ff0000ff</color><scale>1.3</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>1.0</scale></LabelStyle>
   </Style>
   <Style id="icon-green">
     <IconStyle><color>ff00ff00</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
@@ -178,7 +178,10 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                         desc_cdata = "<br>".join(desc_parts)
                         ext_data_str = "\n            ".join(ext_data_parts)
                         protocolo_str = html.escape(str(row.get('PROTOCOLO', 'Sem Protocolo')))
-                        nome_ponto = f"[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
+                        
+                        # Adiciona tag [PRIORIDADE] no nome para destaque extra no Google Earth
+                        tag_prio = "[PRIORIDADE] " if row.get('PRIORIDADE') == "Sim" else ""
+                        nome_ponto = f"{tag_prio}[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
                         style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
 
                     kml += f'''        <Placemark>
@@ -451,8 +454,7 @@ def view_roteirizador():
 
     if df_tasks.empty: return
 
-    # === PRÉ-ALOCAÇÃO TERRITORIAL (Filtra a base antes do botão Iniciar) ===
-    # Isso garante que a caixa de prioridades exiba APENAS protocolos que pertencem aos Levantadores selecionados
+    # === PRÉ-ALOCAÇÃO TERRITORIAL ===
     df_tasks_alocadas = pd.DataFrame()
     bases_records = []
     
@@ -510,7 +512,6 @@ def view_roteirizador():
             valores_prioridade = []
             
             if col_prioridade != "Nenhuma":
-                # O dropdown de seleção agora SÓ MOSTRA valores das obras que caíram na responsabilidade dos levantadores
                 opcoes_validas_prioridade = sorted(df_tasks_alocadas[col_prioridade].dropna().unique().tolist())
                 valores_prioridade = c_ex2.multiselect("Quais valores indicam Urgência? (Filtrado por Equipe)", opcoes_validas_prioridade)
 
@@ -519,6 +520,12 @@ def view_roteirizador():
         if df_tasks_alocadas.empty:
             st.error("Selecione equipes e regras compatíveis com a planilha primeiro.")
             return
+
+        # Marcar prioridades ANTES do loop principal
+        if col_prioridade != "Nenhuma" and len(valores_prioridade) > 0:
+            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas[col_prioridade].apply(lambda x: 'Sim' if x in valores_prioridade else 'Não')
+        else:
+            df_tasks_alocadas['PRIORIDADE'] = 'Não'
 
         progresso_texto = st.empty()
         barra_progresso = st.progress(0)
@@ -548,8 +555,19 @@ def view_roteirizador():
             tempo_acumulado_periodo = 0.0
             
             while not unvisited.empty:
-                dists = haversine_vectorized(curr_lat, curr_lon, unvisited['LATITUDE'].values, unvisited['LONGITUDE'].values)
-                nearest_idx = unvisited.index[dists.argmin()]
+                # ====== LÓGICA DE FURAR A FILA (PRIORIDADE) ======
+                unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
+                
+                if not unvisited_prio.empty:
+                    # Se tiver prioridade, procura a mais próxima DENTRE AS PRIORIDADES
+                    dists = haversine_vectorized(curr_lat, curr_lon, unvisited_prio['LATITUDE'].values, unvisited_prio['LONGITUDE'].values)
+                    nearest_idx = unvisited_prio.index[dists.argmin()]
+                else:
+                    # Se não tiver mais prioridades, segue a vida normal buscando as mais próximas
+                    dists = haversine_vectorized(curr_lat, curr_lon, unvisited['LATITUDE'].values, unvisited['LONGITUDE'].values)
+                    nearest_idx = unvisited.index[dists.argmin()]
+                # =================================================
+                
                 nearest_row = unvisited.loc[nearest_idx]
                 dist_km = round(dists.min(), 2)
                 
@@ -569,7 +587,7 @@ def view_roteirizador():
                 if quebrar_periodo:
                     progresso_texto.text(f"🏠 Desenhando rota de Retorno à Base para {b_name} (Período {periodo_atual})...")
                     rota_retorno = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon)
-                    api_calls += 1 # Conta para o relógio
+                    api_calls += 1
                     
                     dist_retorno = haversine_vectorized(curr_lat, curr_lon, base_lat, base_lon)
                     routed_data.append({
@@ -597,7 +615,7 @@ def view_roteirizador():
                     
                     if periodo_atual > limite_periodos:
                         obras_sobra_total += len(unvisited)
-                        obras_processadas += len(unvisited) # Considera processada (ignorada) para o relógio fechar em 100%
+                        obras_processadas += len(unvisited) 
                         break
                     
                     continue 
@@ -614,9 +632,6 @@ def view_roteirizador():
                 row_dict['DISTANCIA_PONTO_ANTERIOR_KM'] = dist_km
                 row_dict['ROTA_GEOMETRIA'] = rota_geom
                 
-                is_prio = "Sim" if col_prioridade != "Nenhuma" and row_dict.get(col_prioridade) in valores_prioridade else "Não"
-                row_dict['PRIORIDADE'] = is_prio
-                
                 routed_data.append(row_dict)
                 
                 curr_lat, curr_lon = nearest_row['LATITUDE'], nearest_row['LONGITUDE']
@@ -629,7 +644,6 @@ def view_roteirizador():
                 if modo_limite != "Quantidade Fixa de Obras":
                     tempo_acumulado_periodo += (dist_km / velocidade_media_kmh) + tempo_medio_obra
                 
-                # ==== CÁLCULO DO RELÓGIO (TEMPO RESTANTE) ====
                 elapsed = time.time() - start_time
                 avg_time = elapsed / api_calls
                 obras_restantes = total_obras_rotear - obras_processadas
@@ -648,7 +662,6 @@ def view_roteirizador():
                 barra_progresso.progress(min(obras_processadas / total_obras_rotear, 1.0))
                 time.sleep(1.2)
                 
-            # Força o retorno à base no final do último dia de trabalho do Levantador
             if obras_no_periodo_atual > 0 and periodo_atual <= limite_periodos:
                 progresso_texto.text(f"🏠 Encerrando pacote de {b_name}, traçando retorno final...")
                 rota_retorno = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon)
