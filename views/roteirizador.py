@@ -10,6 +10,7 @@ import html
 import re
 import requests
 import time
+from datetime import datetime
 from openpyxl.styles import Font
 
 from database import load_core_data
@@ -179,7 +180,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                         ext_data_str = "\n            ".join(ext_data_parts)
                         protocolo_str = html.escape(str(row.get('PROTOCOLO', 'Sem Protocolo')))
                         
-                        # Adiciona tag [PRIORIDADE] no nome para destaque extra no Google Earth
                         tag_prio = "[PRIORIDADE] " if row.get('PRIORIDADE') == "Sim" else ""
                         nome_ponto = f"{tag_prio}[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
                         style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
@@ -299,47 +299,96 @@ def view_roteirizador():
 
         st.markdown("#### 📥 Baixar Resultados e Integrações")
         
+        # Variável com a data atual formatada
+        data_atual = datetime.now().strftime("%d_%m_%Y")
+        
         buf_zip_xl = io.BytesIO()
         with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl:
-            zip_xl.writestr("Roteiro_Geral.xlsx", gerar_excel_bytes(df_routed, col_prioridade))
+            # 1. Roteiro Geral
+            nome_roteiro_geral = f"Roteiro_Geral_{data_atual}.xlsx"
+            zip_xl.writestr(nome_roteiro_geral, gerar_excel_bytes(df_routed, col_prioridade))
+            planilhas_geradas = [nome_roteiro_geral]
             
+            # 2. Base Power BI
+            nome_pbi = f"Base_Dashboards_PowerBI_{data_atual}.csv"
             csv_pbi = df_routed.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
-            zip_xl.writestr("Base_Dashboards_PowerBI.csv", csv_pbi)
+            zip_xl.writestr(nome_pbi, csv_pbi)
+            planilhas_geradas.append(nome_pbi)
             
+            # 3. Layout SAP
             sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
             if sap_cols:
+                nome_sap = f"Layout_Importacao_SAP_{data_atual}.xlsx"
                 df_sap = df_real_tasks[sap_cols].copy()
                 df_sap['NOVO_STATUS_ATUALIZACAO'] = ''
-                zip_xl.writestr("Layout_Importacao_SAP.xlsx", gerar_excel_bytes(df_sap, "Nenhuma"))
+                zip_xl.writestr(nome_sap, gerar_excel_bytes(df_sap, "Nenhuma"))
+                planilhas_geradas.append(nome_sap)
 
-            planilhas_geradas = ["Roteiro_Geral.xlsx", "Base_Dashboards_PowerBI.csv", "Layout_Importacao_SAP.xlsx"]
+            # 4. Relatório de Expectativa
+            nome_resumo = f"Expectativa_{'Semanal' if tipo_periodo == 'Semana' else 'Diaria'}_{data_atual}.xlsx"
+            resumo_data = []
+            
+            for base in df_routed['BASE_ATRIBUIDA'].unique():
+                df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
+                
+                for periodo in df_base['PERIODO'].unique():
+                    df_periodo = df_base[df_base['PERIODO'] == periodo]
+                    df_periodo_real = df_periodo[df_periodo['PROTOCOLO'] != 'RETORNO_BASE']
+                    
+                    qtd_obras = len(df_periodo_real)
+                    qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
+                    km_total = round(df_periodo['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2)
+                    
+                    resumo_data.append({
+                        'LEVANTADOR': base,
+                        f'{tipo_periodo.upper()}': periodo,
+                        'OBRAS ROTEIRIZADAS': qtd_obras,
+                        'OBRAS PRIORITARIAS': qtd_prio,
+                        'KM TOTAL PROJETADO': km_total
+                    })
+            
+            df_resumo = pd.DataFrame(resumo_data)
+            buf_resumo = io.BytesIO()
+            with pd.ExcelWriter(buf_resumo, engine='openpyxl') as writer:
+                df_resumo.to_excel(writer, index=False, sheet_name='Resumo')
+            zip_xl.writestr(nome_resumo, buf_resumo.getvalue())
+            planilhas_geradas.append(nome_resumo)
+
+            # 5. Planilhas Individuais (por Levantador)
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
                 if not df_lev.empty:
-                    nome_arquivo = f"Roteiro_{nome_seguro}.xlsx"
+                    nome_arquivo = f"Roteiro_{nome_seguro}_{data_atual}.xlsx"
                     zip_xl.writestr(nome_arquivo, gerar_excel_bytes(df_lev, col_prioridade))
                     planilhas_geradas.append(nome_arquivo)
+                    
         zip_xl_bytes = buf_zip_xl.getvalue()
 
         buf_zip_kml = io.BytesIO()
         with zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml:
-            kml_geral = gerar_kml_agrupado(df_routed, bases_records, "Rota_Geral_Completa", colunas_exibir)
-            zip_kml.writestr("Rota_Geral.kml", kml_geral.encode('utf-8'))
-            mapas_gerados = ["Rota_Geral.kml"]
+            nome_kml_geral = f"Rota_Geral_{data_atual}.kml"
+            kml_geral = gerar_kml_agrupado(df_routed, bases_records, f"Rota_Geral_{data_atual}", colunas_exibir)
+            zip_kml.writestr(nome_kml_geral, kml_geral.encode('utf-8'))
+            mapas_gerados = [nome_kml_geral]
+            
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
                 if not df_lev.empty:
-                    nome_arquivo = f"Rota_{nome_seguro}.kml"
+                    nome_arquivo = f"Rota_{nome_seguro}_{data_atual}.kml"
                     kml_lev = gerar_kml_agrupado(df_lev, bases_records, f"Rota_{nome_seguro}", colunas_exibir)
                     zip_kml.writestr(nome_arquivo, kml_lev.encode('utf-8'))
                     mapas_gerados.append(nome_arquivo)
         zip_kml_bytes = buf_zip_kml.getvalue()
 
+        with st.expander("📄 Ver lista de arquivos gerados (Conteúdo dos ZIPs)"):
+            st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
+            st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
+
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
-        col_b1.download_button("🌐 1. Planilhas, BI e SAP (ZIP)", data=zip_xl_bytes, file_name="Dados_Estruturados_Roteiro.zip", mime="application/zip", use_container_width=True)
-        col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name="Mapas_KML.zip", mime="application/zip", use_container_width=True)
+        col_b1.download_button("🌐 1. Planilhas, BI e SAP (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
+        col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name=f"Mapas_KML_{data_atual}.zip", mime="application/zip", use_container_width=True)
         if col_b3.button("🧹 Zerar Roteirizador", type="primary", use_container_width=True):
             limpar_roteirizador()
         
@@ -559,11 +608,9 @@ def view_roteirizador():
                 unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
                 
                 if not unvisited_prio.empty:
-                    # Se tiver prioridade, procura a mais próxima DENTRE AS PRIORIDADES
                     dists = haversine_vectorized(curr_lat, curr_lon, unvisited_prio['LATITUDE'].values, unvisited_prio['LONGITUDE'].values)
                     nearest_idx = unvisited_prio.index[dists.argmin()]
                 else:
-                    # Se não tiver mais prioridades, segue a vida normal buscando as mais próximas
                     dists = haversine_vectorized(curr_lat, curr_lon, unvisited['LATITUDE'].values, unvisited['LONGITUDE'].values)
                     nearest_idx = unvisited.index[dists.argmin()]
                 # =================================================
