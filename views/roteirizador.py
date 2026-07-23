@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
+from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
 import io
 import zipfile
@@ -69,9 +70,8 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
     return R * c
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
-    """Busca a rota geométrica seguindo o arruamento. Se não tiver rua, traça reta."""
     try:
-        headers = {"User-Agent": "GeradorRotasOperacional/2.0"}
+        headers = {"User-Agent": "GeradorRotasOperacional/3.0"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -80,8 +80,21 @@ def obter_rota_ruas(lat1, lon1, lat2, lon2):
                 return data['routes'][0]['geometry']['coordinates'] 
     except Exception:
         pass
-    # Fallback: Se não achar rua ou a API falhar, liga os dois pontos em linha reta.
     return [[lon1, lat1], [lon2, lat2]] 
+
+def identificar_icone_folium(row, colunas):
+    """Define o ícone do mapa baseado no Tipo de Ligação/Serviço."""
+    tipo_str = ""
+    if 'TIPO LIGACAO' in colunas:
+        tipo_str = str(row.get('TIPO LIGACAO', '')).upper()
+    elif 'SERVICO' in colunas:
+        tipo_str = str(row.get('SERVICO', '')).upper()
+        
+    if 'NOVA' in tipo_str or 'LIGACAO' in tipo_str: return 'bolt'
+    if 'MANUT' in tipo_str or 'REPARO' in tipo_str: return 'wrench'
+    if 'INSP' in tipo_str or 'VISTORIA' in tipo_str: return 'eye-open'
+    if row.get('PROTOCOLO') == 'RETORNO_BASE': return 'home'
+    return 'info-sign'
 
 # ==========================================
 # GERAÇÃO DE ARQUIVOS (EXCEL E KML ESTRUTURADO)
@@ -109,25 +122,17 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
   <name>{doc_name}</name>
   <Style id="linha-rota"><LineStyle><color>ffcf2802</color><width>4</width></LineStyle></Style>
   
-  <Style id="icon-blue-normal">
-    <IconStyle><color>ffd18802</color><scale>1</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>0.8</scale></LabelStyle>
+  <Style id="icon-blue">
+    <IconStyle><color>ffd18802</color><scale>1.1</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>0.9</scale></LabelStyle>
   </Style>
-  <Style id="icon-blue-highlight">
-    <IconStyle><color>ffd18802</color><scale>1.2</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>1.0</scale></LabelStyle>
+  <Style id="icon-red">
+    <IconStyle><color>ff0000ff</color><scale>1.2</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>0.9</scale></LabelStyle>
   </Style>
-  <StyleMap id="icon-blue"><Pair><key>normal</key><styleUrl>#icon-blue-normal</styleUrl></Pair><Pair><key>highlight</key><styleUrl>#icon-blue-highlight</styleUrl></Pair></StyleMap>
-  
-  <Style id="icon-red-normal">
-    <IconStyle><color>ff0000ff</color><scale>1</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>0.8</scale></LabelStyle>
+  <Style id="icon-green">
+    <IconStyle><color>ff00ff00</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
   </Style>
-  <Style id="icon-red-highlight">
-    <IconStyle><color>ff0000ff</color><scale>1.3</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>1.0</scale></LabelStyle>
-  </Style>
-  <StyleMap id="icon-red"><Pair><key>normal</key><styleUrl>#icon-red-normal</styleUrl></Pair><Pair><key>highlight</key><styleUrl>#icon-red-highlight</styleUrl></Pair></StyleMap>
 '''
 
     for base_nome in df_rota['BASE_ATRIBUIDA'].unique():
@@ -138,7 +143,7 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
         kml += f'  <Folder>\n    <name>Levantador: {html.escape(str(base_nome))}</name>\n'
         kml += f'''    <Placemark>
       <name>BASE: {html.escape(str(base_nome))}</name>
-      <styleUrl>#icon-blue</styleUrl>
+      <styleUrl>#icon-green</styleUrl>
       <Point><coordinates>{b_lon},{b_lat},0</coordinates></Point>
     </Placemark>\n'''
 
@@ -148,8 +153,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 
             for dia in df_semana['DIA'].unique():
                 df_dia = df_semana[df_semana['DIA'] == dia].copy()
-                
-                # GARANTIA: Força a ordenação do dataframe pelo campo ORDEM
                 df_dia = df_dia.sort_values(by='ORDEM')
                 
                 kml += f'      <Folder>\n        <name>Dia {dia}</name>\n'
@@ -161,19 +164,23 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                     desc_parts = [f"<b>Ordem na Rota:</b> {row.get('ORDEM', 0)}"]
                     desc_parts.append(f"<b>Distância do Ponto Anterior:</b> {row.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM")
                     ext_data_parts = []
-                    for col in cols_exibir:
-                        if col in row:
-                            val = html.escape(str(row[col]))
-                            desc_parts.append(f"<b>{col}:</b> {val}")
-                            ext_data_parts.append(f'<Data name="{col}"><value>{val}</value></Data>')
-
-                    desc_cdata = "<br>".join(desc_parts)
-                    ext_data_str = "\n            ".join(ext_data_parts)
                     
-                    protocolo_str = html.escape(str(row.get('PROTOCOLO', 'Sem Protocolo')))
-                    nome_ponto = f"[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
-                    
-                    style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
+                    if row.get('PROTOCOLO') == 'RETORNO_BASE':
+                        desc_cdata = "<b>RETORNO À BASE DE ORIGEM</b>"
+                        ext_data_str = ""
+                        nome_ponto = "🏠 FIM DO DIA - RETORNO"
+                        style_url = "#icon-green"
+                    else:
+                        for col in cols_exibir:
+                            if col in row:
+                                val = html.escape(str(row[col]))
+                                desc_parts.append(f"<b>{col}:</b> {val}")
+                                ext_data_parts.append(f'<Data name="{col}"><value>{val}</value></Data>')
+                        desc_cdata = "<br>".join(desc_parts)
+                        ext_data_str = "\n            ".join(ext_data_parts)
+                        protocolo_str = html.escape(str(row.get('PROTOCOLO', 'Sem Protocolo')))
+                        nome_ponto = f"[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
+                        style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
 
                     kml += f'''        <Placemark>
           <name>{nome_ponto}</name>
@@ -209,7 +216,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 # VIEW PRINCIPAL DA PÁGINA
 # ==========================================
 def view_roteirizador():
-    # 🔴 INICIALIZAÇÃO DE ESTADO MOVIDA PARA DENTRO DA FUNÇÃO (Resolve o AttributeError)
     if "roteamento_concluido" not in st.session_state:
         st.session_state.roteamento_concluido = False
     if "df_routed" not in st.session_state:
@@ -223,9 +229,11 @@ def view_roteirizador():
     if "col_prioridade" not in st.session_state:
         st.session_state.col_prioridade = "Nenhuma"
 
-    # --- RESULTADOS ---
+    # -------------------------------------------------------------
+    # TELA DE RESULTADOS
+    # -------------------------------------------------------------
     if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
-        st.markdown("## 🎯 Resultados da Roteirização")
+        st.markdown("## 🎯 Resultados da Roteirização Corporativa")
         
         df_routed = st.session_state.df_routed
         bases_records = st.session_state.bases_records
@@ -233,15 +241,20 @@ def view_roteirizador():
         colunas_exibir = st.session_state.colunas_exibir
         col_prioridade = st.session_state.col_prioridade
         
+        df_real_tasks = df_routed[df_routed['PROTOCOLO'] != 'RETORNO_BASE']
+        
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("📌 Obras Roteirizadas", len(df_routed))
+        k1.metric("📌 Obras Roteirizadas", len(df_real_tasks))
         k2.metric("👥 Equipes em Campo", df_routed['BASE_ATRIBUIDA'].nunique())
-        k3.metric(f"📅 Total de {tipo_periodo}s Utilizados", df_routed.groupby('BASE_ATRIBUIDA')['PERIODO'].max().sum() if not df_routed.empty else 0)
-        k4.metric("🚨 Obras Prioritárias", len(df_routed[df_routed['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_routed else 0)
+        k3.metric("🛣️ KM Total Projetado", f"{df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km")
+        k4.metric("🚨 Prioridades", len(df_real_tasks[df_real_tasks['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_real_tasks else 0)
 
+        # --- MAPA FOLIUM COM CLUSTERIZAÇÃO ---
         st.markdown("#### 🗺️ Visualização Geográfica do Plano")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
         cores = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
+        
+        marker_cluster = MarkerCluster(name="Obras (Agrupadas)").add_to(mapa)
         
         for idx, base_nome in enumerate(df_routed['BASE_ATRIBUIDA'].unique()):
             cor_rota = cores[idx % len(cores)]
@@ -253,7 +266,7 @@ def view_roteirizador():
             
             for periodo_val in df_base_rota['PERIODO'].unique():
                 df_periodo = df_base_rota[df_base_rota['PERIODO'] == periodo_val]
-                fg = folium.FeatureGroup(name=f"{base_nome} | {tipo_periodo} {periodo_val}")
+                fg_linhas = folium.FeatureGroup(name=f"Linhas {base_nome} | P: {periodo_val}", show=False)
                 
                 pontos_linha_folium = []
                 for _, r in df_periodo.iterrows():
@@ -261,11 +274,14 @@ def view_roteirizador():
                         for lon, lat in r['ROTA_GEOMETRIA']:
                             pontos_linha_folium.append([lat, lon]) 
                             
-                folium.PolyLine(pontos_linha_folium, color=cor_rota, weight=3, opacity=0.8).add_to(fg)
+                folium.PolyLine(pontos_linha_folium, color=cor_rota, weight=3, opacity=0.8).add_to(fg_linhas)
+                fg_linhas.add_to(mapa)
                 
                 for _, r in df_periodo.iterrows():
-                    icone = 'star' if r['PRIORIDADE'] == "Sim" else 'info-sign'
-                    cor_icone = 'red' if r['PRIORIDADE'] == "Sim" else cor_rota
+                    if r['PROTOCOLO'] == 'RETORNO_BASE': continue
+                    
+                    icone = identificar_icone_folium(r, df_routed.columns)
+                    cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else cor_rota
                     
                     info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Ponto Anterior:</b> {r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM<br>"
                     for c in colunas_exibir:
@@ -275,18 +291,31 @@ def view_roteirizador():
                         [r['LATITUDE'], r['LONGITUDE']], 
                         icon=folium.Icon(color=cor_icone, icon=icone),
                         popup=folium.Popup(info_html, max_width=300)
-                    ).add_to(fg)
-                fg.add_to(mapa)
+                    ).add_to(marker_cluster)
         
         folium.LayerControl().add_to(mapa)
         st_folium(mapa, use_container_width=True, height=550, returned_objects=[])
 
-        st.markdown("#### 📥 Baixar Resultados")
+        # --- EXPORTAÇÕES DE ALTO NÍVEL ---
+        st.markdown("#### 📥 Baixar Resultados e Integrações")
         
         buf_zip_xl = io.BytesIO()
         with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl:
+            # Planilha Completa
             zip_xl.writestr("Roteiro_Geral.xlsx", gerar_excel_bytes(df_routed, col_prioridade))
-            planilhas_geradas = ["Roteiro_Geral.xlsx"]
+            
+            # Geração Base Power BI (CSV Plano)
+            csv_pbi = df_routed.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
+            zip_xl.writestr("Base_Dashboards_PowerBI.csv", csv_pbi)
+            
+            # Geração Layout SAP (Apenas obras reais e colunas de controle)
+            sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
+            if sap_cols:
+                df_sap = df_real_tasks[sap_cols].copy()
+                df_sap['NOVO_STATUS_ATUALIZACAO'] = ''
+                zip_xl.writestr("Layout_Importacao_SAP.xlsx", gerar_excel_bytes(df_sap, "Nenhuma"))
+
+            planilhas_geradas = ["Roteiro_Geral.xlsx", "Base_Dashboards_PowerBI.csv", "Layout_Importacao_SAP.xlsx"]
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
@@ -311,34 +340,34 @@ def view_roteirizador():
                     mapas_gerados.append(nome_arquivo)
         zip_kml_bytes = buf_zip_kml.getvalue()
 
-        with st.expander("📄 Ver lista de arquivos gerados (Conteúdo dos ZIPs)"):
-            st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
-            st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
-
-        st.info("💡 **Dica:** Ao clicar nos botões abaixo, o seu navegador perguntará em qual pasta deseja salvar os pacotes.")
-        
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
-        col_b1.download_button("🌐 1. Baixar Planilhas (ZIP Excel)", data=zip_xl_bytes, file_name="Planilhas_Roteiro.zip", mime="application/zip", use_container_width=True)
+        col_b1.download_button("🌐 1. Planilhas, BI e SAP (ZIP)", data=zip_xl_bytes, file_name="Dados_Estruturados_Roteiro.zip", mime="application/zip", use_container_width=True)
         col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name="Mapas_KML.zip", mime="application/zip", use_container_width=True)
         if col_b3.button("🧹 Zerar Roteirizador", type="primary", use_container_width=True):
             limpar_roteirizador()
         
         return 
 
-    # --- TELA DE CONFIGURAÇÃO ---
+    # -------------------------------------------------------------
+    # TELA DE CONFIGURAÇÃO INICIAL
+    # -------------------------------------------------------------
     st.markdown("## 🚙 Roteirizador Operacional Avançado")
-    st.markdown("Planeje rotas inteligentes seguindo o traçado das ruas e limite o volume de trabalho por período.")
+    st.markdown("Planeje rotas inteligentes integradas a controles de esforço e retorno à base.")
 
     with st.sidebar:
-        st.markdown("### ⚙️ Período de Roteirização")
-        tipo_periodo = st.radio("Como você quer agrupar o roteiro?", ["Dia", "Semana"], help="Selecione apenas uma opção.")
+        st.markdown("### ⚙️ Gestão de Esforço Diário")
+        tipo_periodo = st.radio("Como agrupar o roteiro?", ["Dia", "Semana"], horizontal=True)
         
-        if tipo_periodo == "Dia":
-            obras_por_periodo = st.number_input("Obras por Dia (Mín. 5)", min_value=5, value=10, step=1)
-            limite_periodos = st.number_input("Quantos dias de roteirização?", min_value=1, value=5, step=1, help="Limite máximo de dias.")
+        modo_limite = st.radio("Critério limitador da equipe:", ["Quantidade Fixa de Obras", "Carga Horária (Tempo Estimado)"])
+        
+        if modo_limite == "Quantidade Fixa de Obras":
+            obras_por_periodo = st.number_input(f"Máximo de Obras por {tipo_periodo}", min_value=1, value=10, step=1)
+            limite_periodos = st.number_input(f"Limite total de {tipo_periodo}s a roteirizar", min_value=1, value=5, step=1)
         else:
-            obras_por_periodo = st.number_input("Obras por Semana (Mín. 50)", min_value=50, value=50, step=5)
-            limite_periodos = st.number_input("Quantas semanas de roteirização?", min_value=1, value=4, step=1, help="Limite máximo de semanas.")
+            horas_por_dia = st.number_input(f"Horas de trabalho disponíveis por {tipo_periodo}", min_value=1.0, value=8.0, step=0.5)
+            tempo_medio_obra = st.number_input("Tempo médio de execução por obra (Horas)", min_value=0.1, value=1.5, step=0.1)
+            velocidade_media_kmh = st.number_input("Velocidade média do veículo (km/h)", min_value=10.0, value=30.0, step=5.0)
+            limite_periodos = st.number_input(f"Limite total de {tipo_periodo}s a roteirizar", min_value=1, value=5, step=1)
 
     col_up_1, col_up_2 = st.columns(2)
 
@@ -378,7 +407,7 @@ def view_roteirizador():
                 except Exception as e:
                     st.error(f"Erro ao ler a planilha: {e}")
 
-        st.markdown("##### Regra de Atribuição (Divisão de Obras)")
+        st.markdown("##### Regra de Atribuição Territorial")
         tipo_atribuicao = st.radio(
             "Regra", 
             ["Por Distância da Residência", "Por Municípios Atendidos", "Balancear Geograficamente (Mesma Região)"],
@@ -409,7 +438,7 @@ def view_roteirizador():
         return
 
     st.markdown("---")
-    st.markdown("### 🧹 Limpeza Automática do Sistema")
+    st.markdown("### 🧹 Auditoria e Limpeza de Dados")
     total_orig = len(df_tasks)
     
     df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -431,15 +460,15 @@ def view_roteirizador():
     with st.expander("🛠️ 3. Configuração de Exibição e Prioridade no KML", expanded=True):
         c_ex1, c_ex2 = st.columns(2)
         todas_cols = df_tasks.columns.tolist()
-        cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO'] if c in todas_cols]
+        cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP'] if c in todas_cols]
         colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
         
-        col_prioridade = c_ex2.selectbox("Coluna que define a URGÊNCIA (Vai ficar Vermelho)", ["Nenhuma"] + todas_cols)
+        col_prioridade = c_ex2.selectbox("Coluna que define a URGÊNCIA (Sinal Vermelho)", ["Nenhuma"] + todas_cols)
         valores_prioridade = []
         if col_prioridade != "Nenhuma":
             valores_prioridade = c_ex2.multiselect("Quais valores indicam Urgência?", df_tasks[col_prioridade].dropna().unique().tolist())
 
-    if st.button("🚀 Iniciar Motor de Roteirização (Pode levar alguns minutos)", type="primary", use_container_width=True):
+    if st.button("🚀 Iniciar Motor de Roteirização (Processo em Nuvem)", type="primary", use_container_width=True):
         if df_bases.empty:
             st.error("Selecione ao menos 1 Levantador válido.")
             return
@@ -449,12 +478,11 @@ def view_roteirizador():
         tempo_restante_texto = st.empty()
         
         start_time = time.time()
-        api_calls = 0
         
         bases_records = df_bases.to_dict('records')
         df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
         
-        progresso_texto.text("📍 Calculando matriz de atribuição territorial...")
+        progresso_texto.text("📍 Processando Matriz de Atribuição Geográfica...")
         if tipo_atribuicao == "Por Distância da Residência":
             def get_nearest_base(lat, lon):
                 min_dist = float('inf')
@@ -491,7 +519,7 @@ def view_roteirizador():
             return
 
         if not df_unallocated.empty:
-            st.warning(f"⚠️ {len(df_unallocated)} obras ficaram sem rota pois não correspondem à matriz de municípios ou proximidade escolhida.")
+            st.warning(f"⚠️ {len(df_unallocated)} obras sem alocação geográfica foram ignoradas.")
 
         routed_data = []
         levantadores_unicos = list(set([b['LEVANTADOR'] for b in bases_records]))
@@ -499,13 +527,19 @@ def view_roteirizador():
         obras_processadas = 0
         obras_sobra_total = 0
 
+        # LOOP DE ROTEIRIZAÇÃO POR LEVANTADOR
         for b_name in levantadores_unicos:
             base_ref = df_bases[df_bases['LEVANTADOR'] == b_name].iloc[0]
             if pd.isna(base_ref.get('LATITUDE')): continue
             
-            curr_lat, curr_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
+            base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
+            curr_lat, curr_lon = base_lat, base_lon
+            
             unvisited = df_tasks[df_tasks['BASE_ATRIBUIDA'] == b_name].copy()
             ordem_absoluta = 1
+            periodo_atual = 1
+            obras_no_periodo_atual = 0
+            tempo_acumulado_periodo = 0.0
             
             while not unvisited.empty:
                 dists = haversine_vectorized(curr_lat, curr_lon, unvisited['LATITUDE'].values, unvisited['LONGITUDE'].values)
@@ -513,23 +547,62 @@ def view_roteirizador():
                 nearest_row = unvisited.loc[nearest_idx]
                 dist_km = round(dists.min(), 2)
                 
-                idx_global = ordem_absoluta - 1
-                periodo_atual = (idx_global // obras_por_periodo) + 1
+                quebrar_periodo = False
                 
-                if periodo_atual > limite_periodos:
-                    obras_sobra_total += len(unvisited)
-                    obras_processadas += len(unvisited)
-                    barra_progresso.progress(min(obras_processadas / total_obras_alocadas, 1.0))
-                    break
-                
-                progresso_texto.text(f"🗺️ Desenhando rota para {b_name} (Obra {ordem_absoluta})... Consultando Satélite.")
+                # Validação de Limites (Tempo ou Quantidade)
+                if modo_limite == "Quantidade Fixa de Obras":
+                    if obras_no_periodo_atual >= obras_por_periodo:
+                        quebrar_periodo = True
+                else:
+                    tempo_viagem_h = dist_km / velocidade_media_kmh
+                    tempo_necessario = tempo_viagem_h + tempo_medio_obra
+                    if tempo_acumulado_periodo + tempo_necessario > horas_por_dia and obras_no_periodo_atual > 0:
+                        quebrar_periodo = True
+
+                # Ação: Encerrar período e Retornar à base
+                if quebrar_periodo:
+                    progresso_texto.text(f"🏠 Desenhando rota de Retorno à Base para {b_name} (Período {periodo_atual})...")
+                    rota_retorno = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon)
+                    dist_retorno = haversine_vectorized(curr_lat, curr_lon, base_lat, base_lon)
+                    routed_data.append({
+                        'PROTOCOLO': 'RETORNO_BASE',
+                        'NOME DO SOLICITANTE': 'BASE_RETORNO',
+                        'LATITUDE': base_lat,
+                        'LONGITUDE': base_lon,
+                        'BASE_ATRIBUIDA': b_name,
+                        'ORDEM': ordem_absoluta,
+                        'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
+                        'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
+                        'PERIODO': periodo_atual,
+                        'DISTANCIA_PONTO_ANTERIOR_KM': round(dist_retorno, 2),
+                        'ROTA_GEOMETRIA': rota_retorno,
+                        'PRIORIDADE': 'Não'
+                    })
+                    
+                    time.sleep(1.2)
+                    
+                    periodo_atual += 1
+                    ordem_absoluta = 1
+                    obras_no_periodo_atual = 0
+                    tempo_acumulado_periodo = 0.0
+                    curr_lat, curr_lon = base_lat, base_lon 
+                    
+                    if periodo_atual > limite_periodos:
+                        obras_sobra_total += len(unvisited)
+                        obras_processadas += len(unvisited)
+                        break
+                    
+                    # Refaz o cálculo de distância partindo da base para o próximo período
+                    continue 
+
+                progresso_texto.text(f"🗺️ Roteirizando {b_name} | {tipo_periodo} {periodo_atual} | Obra {ordem_absoluta}...")
                 rota_geom = obter_rota_ruas(curr_lat, curr_lon, nearest_row['LATITUDE'], nearest_row['LONGITUDE'])
                 
                 row_dict = nearest_row.to_dict()
                 row_dict['ORDEM'] = ordem_absoluta
                 row_dict['SEMANA'] = periodo_atual if tipo_periodo == "Semana" else 1
-                row_dict['DIA'] = (idx_global % obras_por_periodo) + 1 if tipo_periodo == "Dia" else 1
-                row_dict['PERIODO'] = row_dict['DIA'] if tipo_periodo == "Dia" else row_dict['SEMANA']
+                row_dict['DIA'] = periodo_atual if tipo_periodo == "Dia" else 1
+                row_dict['PERIODO'] = periodo_atual
                 row_dict['DISTANCIA_PONTO_ANTERIOR_KM'] = dist_km
                 row_dict['ROTA_GEOMETRIA'] = rota_geom
                 
@@ -537,33 +610,44 @@ def view_roteirizador():
                 row_dict['PRIORIDADE'] = is_prio
                 
                 routed_data.append(row_dict)
+                
                 curr_lat, curr_lon = nearest_row['LATITUDE'], nearest_row['LONGITUDE']
                 unvisited = unvisited.drop(nearest_idx)
+                
                 ordem_absoluta += 1
+                obras_no_periodo_atual += 1
+                
+                if modo_limite != "Quantidade Fixa de Obras":
+                    tempo_acumulado_periodo += (dist_km / velocidade_media_kmh) + tempo_medio_obra
                 
                 obras_processadas += 1
-                api_calls += 1
                 barra_progresso.progress(min(obras_processadas / total_obras_alocadas, 1.0))
                 
-                elapsed = time.time() - start_time
-                avg_time = elapsed / api_calls
-                obras_restantes = total_obras_alocadas - obras_processadas
+                time.sleep(1.2)
                 
-                if obras_restantes > 0:
-                    est_rem = avg_time * obras_restantes
-                    m, s = divmod(int(est_rem), 60)
-                    h, m = divmod(m, 60)
-                    if h > 0:
-                        tempo_restante_texto.markdown(f"⏳ **Tempo estimado restante:** {h:02d}h {m:02d}m {s:02d}s")
-                    else:
-                        tempo_restante_texto.markdown(f"⏳ **Tempo estimado restante:** {m:02d}m {s:02d}s")
-                else:
-                    tempo_restante_texto.markdown("✅ **Processamento Concluído! Montando arquivos...**")
-                
-                time.sleep(1.2) 
+            # Força o retorno à base no final do último dia de trabalho do Levantador
+            if obras_no_periodo_atual > 0 and periodo_atual <= limite_periodos:
+                progresso_texto.text(f"🏠 Encerrando pacote de {b_name}, traçando retorno final...")
+                rota_retorno = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon)
+                dist_retorno = haversine_vectorized(curr_lat, curr_lon, base_lat, base_lon)
+                routed_data.append({
+                    'PROTOCOLO': 'RETORNO_BASE',
+                    'NOME DO SOLICITANTE': 'BASE_RETORNO',
+                    'LATITUDE': base_lat,
+                    'LONGITUDE': base_lon,
+                    'BASE_ATRIBUIDA': b_name,
+                    'ORDEM': ordem_absoluta,
+                    'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
+                    'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
+                    'PERIODO': periodo_atual,
+                    'DISTANCIA_PONTO_ANTERIOR_KM': round(dist_retorno, 2),
+                    'ROTA_GEOMETRIA': rota_retorno,
+                    'PRIORIDADE': 'Não'
+                })
+                time.sleep(1.2)
 
         if obras_sobra_total > 0:
-            st.warning(f"⏳ {obras_sobra_total} obras ficaram de fora do roteiro porque excederam o limite de {limite_periodos} {tipo_periodo.lower()}(s) definido.")
+            st.warning(f"⏳ {obras_sobra_total} obras ficaram de fora do roteiro porque a carga horária/limite estourou.")
 
         st.session_state.df_routed = pd.DataFrame(routed_data)
         st.session_state.bases_records = bases_records
