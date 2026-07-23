@@ -22,21 +22,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# FUNÇÕES DE ESTADO E LIMPEZA
+# FUNÇÕES DE LIMPEZA E FORMATAÇÃO
 # ==========================================
-if "roteamento_concluido" not in st.session_state:
-    st.session_state.roteamento_concluido = False
-if "df_routed" not in st.session_state:
-    st.session_state.df_routed = pd.DataFrame()
-if "bases_records" not in st.session_state:
-    st.session_state.bases_records = []
-if "tipo_periodo" not in st.session_state:
-    st.session_state.tipo_periodo = "Dia"
-if "colunas_exibir" not in st.session_state:
-    st.session_state.colunas_exibir = []
-if "col_prioridade" not in st.session_state:
-    st.session_state.col_prioridade = "Nenhuma"
-
 def limpar_roteirizador():
     st.session_state.roteamento_concluido = False
     st.session_state.df_routed = pd.DataFrame()
@@ -82,9 +69,8 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
     return R * c
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
-    """Busca a rota geométrica seguindo o arruamento (via API OSRM). Se falhar, retorna reta."""
+    """Busca a rota geométrica seguindo o arruamento. Se não tiver rua, traça reta."""
     try:
-        # CORREÇÃO 1: Adicionado User-Agent e Timeout de 5s para não ser bloqueado pelo servidor OSRM
         headers = {"User-Agent": "GeradorRotasOperacional/2.0"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
         r = requests.get(url, headers=headers, timeout=5)
@@ -94,6 +80,7 @@ def obter_rota_ruas(lat1, lon1, lat2, lon2):
                 return data['routes'][0]['geometry']['coordinates'] 
     except Exception:
         pass
+    # Fallback: Se não achar rua ou a API falhar, liga os dois pontos em linha reta.
     return [[lon1, lat1], [lon2, lat2]] 
 
 # ==========================================
@@ -162,7 +149,7 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
             for dia in df_semana['DIA'].unique():
                 df_dia = df_semana[df_semana['DIA'] == dia].copy()
                 
-                # CORREÇÃO 2: Força a ordenação do dataframe pelo campo ORDEM, garantindo o sequenciamento da linha
+                # GARANTIA: Força a ordenação do dataframe pelo campo ORDEM
                 df_dia = df_dia.sort_values(by='ORDEM')
                 
                 kml += f'      <Folder>\n        <name>Dia {dia}</name>\n'
@@ -222,6 +209,21 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 # VIEW PRINCIPAL DA PÁGINA
 # ==========================================
 def view_roteirizador():
+    # 🔴 INICIALIZAÇÃO DE ESTADO MOVIDA PARA DENTRO DA FUNÇÃO (Resolve o AttributeError)
+    if "roteamento_concluido" not in st.session_state:
+        st.session_state.roteamento_concluido = False
+    if "df_routed" not in st.session_state:
+        st.session_state.df_routed = pd.DataFrame()
+    if "bases_records" not in st.session_state:
+        st.session_state.bases_records = []
+    if "tipo_periodo" not in st.session_state:
+        st.session_state.tipo_periodo = "Dia"
+    if "colunas_exibir" not in st.session_state:
+        st.session_state.colunas_exibir = []
+    if "col_prioridade" not in st.session_state:
+        st.session_state.col_prioridade = "Nenhuma"
+
+    # --- RESULTADOS ---
     if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Roteirização")
         
@@ -323,6 +325,7 @@ def view_roteirizador():
         
         return 
 
+    # --- TELA DE CONFIGURAÇÃO ---
     st.markdown("## 🚙 Roteirizador Operacional Avançado")
     st.markdown("Planeje rotas inteligentes seguindo o traçado das ruas e limite o volume de trabalho por período.")
 
@@ -557,7 +560,6 @@ def view_roteirizador():
                 else:
                     tempo_restante_texto.markdown("✅ **Processamento Concluído! Montando arquivos...**")
                 
-                # CORREÇÃO 3: Aumento do tempo de espera para evitar bloqueio 429 do servidor do OSRM.
                 time.sleep(1.2) 
 
         if obras_sobra_total > 0:
