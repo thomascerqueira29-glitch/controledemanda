@@ -7,7 +7,6 @@ import io
 import zipfile
 import html
 import re
-import os
 import requests
 import time
 from openpyxl.styles import Font
@@ -25,14 +24,27 @@ st.markdown("""
 # ==========================================
 # FUNÇÕES DE ESTADO E LIMPEZA
 # ==========================================
+# Inicialização obrigatória de todas as variáveis para evitar AttributeError
 if "roteamento_concluido" not in st.session_state:
     st.session_state.roteamento_concluido = False
+if "df_routed" not in st.session_state:
+    st.session_state.df_routed = pd.DataFrame()
+if "bases_records" not in st.session_state:
+    st.session_state.bases_records = []
+if "tipo_periodo" not in st.session_state:
+    st.session_state.tipo_periodo = "Dia"
+if "colunas_exibir" not in st.session_state:
+    st.session_state.colunas_exibir = []
+if "col_prioridade" not in st.session_state:
+    st.session_state.col_prioridade = "Nenhuma"
 
 def limpar_roteirizador():
-    chaves_para_limpar = ['roteamento_concluido', 'df_routed', 'bases_records', 'tipo_periodo', 'colunas_exibir', 'col_prioridade']
-    for key in chaves_para_limpar:
-        if key in st.session_state:
-            del st.session_state[key]
+    st.session_state.roteamento_concluido = False
+    st.session_state.df_routed = pd.DataFrame()
+    st.session_state.bases_records = []
+    st.session_state.tipo_periodo = "Dia"
+    st.session_state.colunas_exibir = []
+    st.session_state.col_prioridade = "Nenhuma"
     st.rerun()
 
 def normalize_cols(cols):
@@ -106,7 +118,6 @@ def gerar_excel_bytes(df, col_prioridade):
 
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
     """Gera um arquivo KML com a estrutura de Pastas (Folders) e RÓTULOS (Labels) ativados."""
-    # LabelStyle scale=0.8 deixa o texto (Nome/Protocolo) sempre visível em cima do pino
     kml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
@@ -158,8 +169,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                 for _, row in df_dia.iterrows():
                     lon, lat = str(row['LONGITUDE']).replace(',','.'), str(row['LATITUDE']).replace(',','.')
 
-                    desc_parts = [f"<b>Ordem na Rota:</b> {row['ORDEM']}"]
-                    desc_parts.append(f"<b>Distância do Ponto Anterior:</b> {row['DISTANCIA_PONTO_ANTERIOR_KM']} KM")
+                    desc_parts = [f"<b>Ordem na Rota:</b> {row.get('ORDEM', 0)}"]
+                    desc_parts.append(f"<b>Distância do Ponto Anterior:</b> {row.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM")
                     ext_data_parts = []
                     for col in cols_exibir:
                         if col in row:
@@ -170,9 +181,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                     desc_cdata = "<br>".join(desc_parts)
                     ext_data_str = "\n            ".join(ext_data_parts)
                     
-                    # NOME DO PONTO AGORA INCLUI A ORDEM E O PROTOCOLO
                     protocolo_str = html.escape(str(row.get('PROTOCOLO', 'Sem Protocolo')))
-                    nome_ponto = f"[{row['ORDEM']}] Prot: {protocolo_str}"
+                    nome_ponto = f"[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
                     
                     style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
 
@@ -214,7 +224,7 @@ def view_roteirizador():
     # -------------------------------------------------------------
     # TELA DE RESULTADOS (Mostrada apenas quando o cálculo termina)
     # -------------------------------------------------------------
-    if st.session_state.roteamento_concluido:
+    if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Roteirização")
         
         df_routed = st.session_state.df_routed
@@ -258,7 +268,7 @@ def view_roteirizador():
                     icone = 'star' if r['PRIORIDADE'] == "Sim" else 'info-sign'
                     cor_icone = 'red' if r['PRIORIDADE'] == "Sim" else cor_rota
                     
-                    info_html = f"<b>Ordem:</b> {r['ORDEM']} | <b>{tipo_periodo}:</b> {r['PERIODO']}<br><b>Distância Ponto Anterior:</b> {r['DISTANCIA_PONTO_ANTERIOR_KM']} KM<br>"
+                    info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Ponto Anterior:</b> {r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM<br>"
                     for c in colunas_exibir:
                         if c in r: info_html += f"<b>{c}:</b> {r[c]}<br>"
                         
@@ -305,37 +315,18 @@ def view_roteirizador():
                     mapas_gerados.append(nome_arquivo)
         zip_kml_bytes = buf_zip_kml.getvalue()
 
-        # Mostra pro usuário o que tem dentro do ZIP para dar segurança
         with st.expander("📄 Ver lista de arquivos gerados (Conteúdo dos ZIPs)"):
             st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
             st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
 
-        # Botões de Download Nativos (Navegador)
+        # Botões de Download Nativos
+        st.info("💡 **Dica:** Ao clicar nos botões abaixo, o seu navegador (Chrome/Edge) perguntará em qual pasta do seu computador você deseja salvar os pacotes.")
+        
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         col_b1.download_button("🌐 1. Baixar Planilhas (ZIP Excel)", data=zip_xl_bytes, file_name="Planilhas_Roteiro.zip", mime="application/zip", use_container_width=True)
         col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name="Mapas_KML.zip", mime="application/zip", use_container_width=True)
         if col_b3.button("🧹 Zerar Roteirizador", type="primary", use_container_width=True):
             limpar_roteirizador()
-
-        # Botões de Salvamento Direto no PC
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("#### 💻 Salvar Diretamente em uma Pasta do seu PC")
-        caminho_padrao = os.path.join(os.path.expanduser("~"), "Downloads")
-        caminho_exportacao = st.text_input("Digite o caminho da pasta onde deseja salvar:", value=caminho_padrao)
-        
-        if st.button("💾 Salvar Arquivos na Pasta Indicada"):
-            try:
-                if not os.path.exists(caminho_exportacao):
-                    os.makedirs(caminho_exportacao)
-                
-                with open(os.path.join(caminho_exportacao, "Planilhas_Roteiro.zip"), "wb") as f:
-                    f.write(zip_xl_bytes)
-                with open(os.path.join(caminho_exportacao, "Mapas_KML.zip"), "wb") as f:
-                    f.write(zip_kml_bytes)
-                    
-                st.success(f"✅ Sucesso! Os pacotes de planilhas e mapas foram salvos em: `{caminho_exportacao}`")
-            except Exception as e:
-                st.error(f"Erro ao tentar salvar no computador: {e} (Verifique se o sistema tem permissão de escrita nessa pasta).")
         
         return 
 
