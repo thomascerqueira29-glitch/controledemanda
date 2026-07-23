@@ -7,7 +7,6 @@ import io
 import zipfile
 import html
 import re
-import os
 import requests
 import time
 from openpyxl.styles import Font
@@ -25,7 +24,6 @@ st.markdown("""
 # ==========================================
 # FUNÇÕES DE ESTADO E LIMPEZA
 # ==========================================
-# Inicialização obrigatória de todas as variáveis para evitar AttributeError
 if "roteamento_concluido" not in st.session_state:
     st.session_state.roteamento_concluido = False
 if "df_routed" not in st.session_state:
@@ -49,11 +47,9 @@ def limpar_roteirizador():
     st.rerun()
 
 def normalize_cols(cols):
-    """Padroniza as colunas em maiúsculas e remove acentos."""
     new_cols = []
     for c in cols:
         c = str(c).strip().upper()
-        # Sintaxe corrigida do re.sub (pattern, replacement, string_alvo)
         c = re.sub(r'[ÁÀÂÃÄ]', 'A', c)
         c = re.sub(r'[ÉÈÊË]', 'E', c)
         c = re.sub(r'[ÍÌÎÏ]', 'I', c)
@@ -88,8 +84,10 @@ def haversine_vectorized(lat1, lon1, lat2, lon2):
 def obter_rota_ruas(lat1, lon1, lat2, lon2):
     """Busca a rota geométrica seguindo o arruamento (via API OSRM). Se falhar, retorna reta."""
     try:
+        # CORREÇÃO 1: Adicionado User-Agent e Timeout de 5s para não ser bloqueado pelo servidor OSRM
+        headers = {"User-Agent": "GeradorRotasOperacional/2.0"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
-        r = requests.get(url, timeout=2)
+        r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
             if data['code'] == 'Ok':
@@ -102,7 +100,6 @@ def obter_rota_ruas(lat1, lon1, lat2, lon2):
 # GERAÇÃO DE ARQUIVOS (EXCEL E KML ESTRUTURADO)
 # ==========================================
 def gerar_excel_bytes(df, col_prioridade):
-    """Gera o arquivo Excel em bytes pintando os dados de prioridade."""
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Roteiro')
@@ -119,7 +116,6 @@ def gerar_excel_bytes(df, col_prioridade):
     return buf_xl.getvalue()
 
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
-    """Gera um arquivo KML com a estrutura de Pastas (Folders) e RÓTULOS (Labels) ativados."""
     kml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
@@ -164,7 +160,11 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
             kml += f'    <Folder>\n      <name>Semana {semana}</name>\n'
 
             for dia in df_semana['DIA'].unique():
-                df_dia = df_semana[df_semana['DIA'] == dia]
+                df_dia = df_semana[df_semana['DIA'] == dia].copy()
+                
+                # CORREÇÃO 2: Força a ordenação do dataframe pelo campo ORDEM, garantindo o sequenciamento da linha
+                df_dia = df_dia.sort_values(by='ORDEM')
+                
                 kml += f'      <Folder>\n        <name>Dia {dia}</name>\n'
 
                 coords_linha_kml = ""
@@ -222,10 +222,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 # VIEW PRINCIPAL DA PÁGINA
 # ==========================================
 def view_roteirizador():
-    
-    # -------------------------------------------------------------
-    # TELA DE RESULTADOS (Mostrada apenas quando o cálculo termina)
-    # -------------------------------------------------------------
     if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Roteirização")
         
@@ -241,7 +237,6 @@ def view_roteirizador():
         k3.metric(f"📅 Total de {tipo_periodo}s Utilizados", df_routed.groupby('BASE_ATRIBUIDA')['PERIODO'].max().sum() if not df_routed.empty else 0)
         k4.metric("🚨 Obras Prioritárias", len(df_routed[df_routed['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_routed else 0)
 
-        # --- MAPA FOLIUM (Reconstruído a partir do State) ---
         st.markdown("#### 🗺️ Visualização Geográfica do Plano")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
         cores = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
@@ -284,10 +279,8 @@ def view_roteirizador():
         folium.LayerControl().add_to(mapa)
         st_folium(mapa, use_container_width=True, height=550, returned_objects=[])
 
-        # --- EXPORTAÇÕES (Geração Blindada) ---
         st.markdown("#### 📥 Baixar Resultados")
         
-        # 1. Empacota todas as planilhas Excel
         buf_zip_xl = io.BytesIO()
         with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl:
             zip_xl.writestr("Roteiro_Geral.xlsx", gerar_excel_bytes(df_routed, col_prioridade))
@@ -301,7 +294,6 @@ def view_roteirizador():
                     planilhas_geradas.append(nome_arquivo)
         zip_xl_bytes = buf_zip_xl.getvalue()
 
-        # 2. Empacota todos os Mapas KML
         buf_zip_kml = io.BytesIO()
         with zipfile.ZipFile(buf_zip_kml, 'w', zipfile.ZIP_DEFLATED) as zip_kml:
             kml_geral = gerar_kml_agrupado(df_routed, bases_records, "Rota_Geral_Completa", colunas_exibir)
@@ -321,8 +313,7 @@ def view_roteirizador():
             st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
             st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
 
-        # Botões de Download Nativos
-        st.info("💡 **Dica:** Ao clicar nos botões abaixo, o seu navegador (Chrome/Edge) perguntará em qual pasta do seu computador você deseja salvar os pacotes.")
+        st.info("💡 **Dica:** Ao clicar nos botões abaixo, o seu navegador perguntará em qual pasta deseja salvar os pacotes.")
         
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         col_b1.download_button("🌐 1. Baixar Planilhas (ZIP Excel)", data=zip_xl_bytes, file_name="Planilhas_Roteiro.zip", mime="application/zip", use_container_width=True)
@@ -332,26 +323,20 @@ def view_roteirizador():
         
         return 
 
-
-    # -------------------------------------------------------------
-    # TELA DE CONFIGURAÇÃO INICIAL (Se roteamento não concluído)
-    # -------------------------------------------------------------
     st.markdown("## 🚙 Roteirizador Operacional Avançado")
     st.markdown("Planeje rotas inteligentes seguindo o traçado das ruas e limite o volume de trabalho por período.")
 
-    # --- BARRA LATERAL (APENAS DIA/SEMANA) ---
     with st.sidebar:
         st.markdown("### ⚙️ Período de Roteirização")
         tipo_periodo = st.radio("Como você quer agrupar o roteiro?", ["Dia", "Semana"], help="Selecione apenas uma opção.")
         
         if tipo_periodo == "Dia":
             obras_por_periodo = st.number_input("Obras por Dia (Mín. 5)", min_value=5, value=10, step=1)
-            limite_periodos = st.number_input("Quantos dias de roteirização?", min_value=1, value=5, step=1, help="Limite máximo de dias que o técnico vai rodar.")
+            limite_periodos = st.number_input("Quantos dias de roteirização?", min_value=1, value=5, step=1, help="Limite máximo de dias.")
         else:
             obras_por_periodo = st.number_input("Obras por Semana (Mín. 50)", min_value=50, value=50, step=5)
-            limite_periodos = st.number_input("Quantas semanas de roteirização?", min_value=1, value=4, step=1, help="Limite máximo de semanas que o técnico vai rodar.")
+            limite_periodos = st.number_input("Quantas semanas de roteirização?", min_value=1, value=4, step=1, help="Limite máximo de semanas.")
 
-    # --- ÁREA CENTRAL (UPLOAD E EQUIPES JUNTOS) ---
     col_up_1, col_up_2 = st.columns(2)
 
     with col_up_1:
@@ -416,7 +401,6 @@ def view_roteirizador():
             st.error(f"Erro ao unificar as planilhas: {e}")
             return
 
-    # --- FILTRO ANTI-LIXO ---
     if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
         st.error("❌ A planilha de Obras precisa ter LATITUDE e LONGITUDE.")
         return
@@ -441,7 +425,6 @@ def view_roteirizador():
 
     if df_tasks.empty: return
 
-    # --- EXIBIÇÃO E PRIORIDADE ---
     with st.expander("🛠️ 3. Configuração de Exibição e Prioridade no KML", expanded=True):
         c_ex1, c_ex2 = st.columns(2)
         todas_cols = df_tasks.columns.tolist()
@@ -453,7 +436,6 @@ def view_roteirizador():
         if col_prioridade != "Nenhuma":
             valores_prioridade = c_ex2.multiselect("Quais valores indicam Urgência?", df_tasks[col_prioridade].dropna().unique().tolist())
 
-    # --- MOTOR DE EXECUÇÃO ---
     if st.button("🚀 Iniciar Motor de Roteirização (Pode levar alguns minutos)", type="primary", use_container_width=True):
         if df_bases.empty:
             st.error("Selecione ao menos 1 Levantador válido.")
@@ -575,7 +557,8 @@ def view_roteirizador():
                 else:
                     tempo_restante_texto.markdown("✅ **Processamento Concluído! Montando arquivos...**")
                 
-                time.sleep(0.1) 
+                # CORREÇÃO 3: Aumento do tempo de espera para evitar bloqueio 429 do servidor do OSRM.
+                time.sleep(1.2) 
 
         if obras_sobra_total > 0:
             st.warning(f"⏳ {obras_sobra_total} obras ficaram de fora do roteiro porque excederam o limite de {limite_periodos} {tipo_periodo.lower()}(s) definido.")
