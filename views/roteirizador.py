@@ -6,6 +6,7 @@ from streamlit_folium import st_folium
 import io
 import zipfile
 import html
+from database import load_core_data
 
 # Injeção de CSS
 st.markdown("""
@@ -89,10 +90,28 @@ def view_roteirizador():
         
         st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
         st.markdown("### 📍 Bases Operacionais")
-        origem_bases = st.radio("Origem das Bases", ["Upload Planilha", "Cadastro Manual"], label_visibility="collapsed")
+        st.caption("De onde os técnicos partem?")
+        
+        origem_bases = st.radio("Origem das Bases", ["Banco de Dados", "Cadastro Manual", "Upload Planilha"], label_visibility="collapsed")
         
         df_bases = pd.DataFrame()
-        if origem_bases == "Upload Planilha":
+        
+        if origem_bases == "Banco de Dados":
+            _, df_equipes_db, _, _, _, _, _, _ = load_core_data()
+            if not df_equipes_db.empty and 'Levantador' in df_equipes_db.columns and 'Latitude' in df_equipes_db.columns:
+                df_bases = df_equipes_db[['Levantador', 'Latitude', 'Longitude']].copy()
+                df_bases.columns = ['NOME', 'LATITUDE', 'LONGITUDE']
+                df_bases['LATITUDE'] = pd.to_numeric(df_bases['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                df_bases['LONGITUDE'] = pd.to_numeric(df_bases['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
+                df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                
+                st.success(f"✅ {len(df_bases)} bases carregadas do sistema.")
+                with st.expander("Ver Bases"):
+                    st.dataframe(df_bases, hide_index=True)
+            else:
+                st.error("Não foi possível carregar as bases do banco de dados.")
+
+        elif origem_bases == "Upload Planilha":
             base_file = st.file_uploader("Upload da Planilha de Bases", type=["xlsx", "xls"])
             if base_file:
                 try:
@@ -107,11 +126,11 @@ def view_roteirizador():
 
     # --- ÁREA PRINCIPAL ---
     st.markdown("## 🚙 Roteirizador Operacional")
-    st.markdown("### 📁 Upload dos Arquivos de Demanda")
-    task_files = st.file_uploader("Selecione um ou mais arquivos Excel com as Obras", type=["xlsx", "xls"], accept_multiple_files=True)
+    st.markdown("### 📁 Upload dos Arquivos de Demanda (Obras)")
+    task_files = st.file_uploader("Selecione os arquivos Excel com as Obras a serem roteirizadas", type=["xlsx", "xls"], accept_multiple_files=True)
     
     if not task_files:
-        st.info("👆 Por favor, envie os arquivos de tarefas na caixa acima para começar a configuração.")
+        st.info("👆 Por favor, envie os arquivos de demanda (obras) na caixa acima para começar a configuração.")
         return
 
     # Processamento dos Arquivos de Tarefas
@@ -130,14 +149,18 @@ def view_roteirizador():
         st.error("❌ Os arquivos enviados não possuem as colunas obrigatórias 'LATITUDE' e 'LONGITUDE'.")
         return
 
-    # Tratamento Numérico
+    # Tratamento Numérico Anti-Zero e Anti-Nulo
     df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
     df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
-    df_tasks = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE']).copy()
+    
+    df_tasks = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE'])
+    df_tasks = df_tasks[(df_tasks['LATITUDE'] != 0.0) & (df_tasks['LONGITUDE'] != 0.0)].copy()
 
     if df_tasks.empty:
-        st.error("❌ Nenhuma coordenada válida foi encontrada após a limpeza de dados.")
+        st.error("❌ Nenhuma coordenada válida foi encontrada após a limpeza de dados. (Obras com LATITUDE e LONGITUDE = 0.0 foram ignoradas).")
         return
+    else:
+        st.success(f"✅ {len(df_tasks)} obras válidas identificadas para roteirização.")
 
     # --- CONFIGURAÇÃO DE EXIBIÇÃO E PRIORIDADE ---
     with st.expander("🛠️ Configuração de Exibição e Prioridade", expanded=True):
@@ -155,7 +178,11 @@ def view_roteirizador():
 
     # --- EXECUÇÃO ---
     if st.button("🚀 Executar Roteirização", type="primary", use_container_width=True):
-        if df_bases.empty or 'LATITUDE' not in df_bases.columns or 'LONGITUDE' not in df_bases.columns or 'NOME' not in df_bases.columns:
+        if df_bases.empty:
+            st.error("❌ A lista de Bases Operacionais (na barra lateral) está vazia! Escolha uma origem válida.")
+            return
+            
+        if 'LATITUDE' not in df_bases.columns or 'LONGITUDE' not in df_bases.columns or 'NOME' not in df_bases.columns:
             st.error("❌ Planilha de Bases inválida. Verifique se contém as colunas NOME, LATITUDE e LONGITUDE.")
             return
 
@@ -215,9 +242,13 @@ def view_roteirizador():
             # --- RESULTADOS E KPIS ---
             st.markdown("<hr style='margin: 30px 0;'>", unsafe_allow_html=True)
             k1, k2, k3 = st.columns(3)
-            k1.metric("📌 Total de Obras", len(df_routed))
-            k2.metric("🏢 Bases Ativas", df_routed['BASE_ATRIBUIDA'].nunique())
-            k3.metric("📅 Total de Dias Planejados", df_routed.groupby('BASE_ATRIBUIDA')['DIA'].max().sum())
+            k1.metric("📌 Total de Obras Roteirizadas", len(df_routed))
+            k2.metric("🏢 Bases Ativas (Com Demanda)", df_routed['BASE_ATRIBUIDA'].nunique())
+            k3.metric("📅 Total de Dias Planejados", df_routed.groupby('BASE_ATRIBUIDA')['DIA'].max().sum() if not df_routed.empty else 0)
+
+            if df_routed.empty:
+                st.warning("Nenhuma rota pôde ser gerada. Verifique as coordenadas.")
+                return
 
             # Tabela de Resultados
             st.markdown("#### 📋 Resumo das Rotas Geradas")
@@ -229,8 +260,10 @@ def view_roteirizador():
             
             # Adiciona Bases (Vermelho)
             for b in bases_records:
-                b_lat, b_lon = float(str(b['LATITUDE']).replace(',','.')), float(str(b['LONGITUDE']).replace(',','.'))
-                folium.Marker([b_lat, b_lon], icon=folium.Icon(color='red', icon='building', prefix='fa'), tooltip=f"Base: {b['NOME']}").add_to(mapa)
+                # Só plota a base se ela teve obras atribuídas
+                if b['NOME'] in df_routed['BASE_ATRIBUIDA'].values:
+                    b_lat, b_lon = float(str(b['LATITUDE']).replace(',','.')), float(str(b['LONGITUDE']).replace(',','.'))
+                    folium.Marker([b_lat, b_lon], icon=folium.Icon(color='red', icon='building', prefix='fa'), tooltip=f"Base: {b['NOME']}").add_to(mapa)
 
             # Adiciona Rotas e Pontos
             cores = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
@@ -268,7 +301,7 @@ def view_roteirizador():
                     fg.add_to(mapa)
             
             folium.LayerControl().add_to(mapa)
-            st_folium(mapa, use_container_width=True, height=500, returned_objects=[])
+            st_folium(mapa, use_container_width=True, height=600, returned_objects=[])
 
             # --- EXPORTAÇÕES ---
             st.markdown("#### 📥 Exportar Resultados")
