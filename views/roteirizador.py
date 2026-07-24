@@ -79,7 +79,7 @@ def obter_coordenadas_municipio_cached(municipio):
         time.sleep(1.2)
         mun_str = str(municipio).strip()
         url = f"https://nominatim.openstreetmap.org/search?q={mun_str},+Maranhão,+Brasil&format=json&limit=1"
-        headers = {"User-Agent": "GeradorRotasOperacional/6.0"}
+        headers = {"User-Agent": "GeradorRotasOperacional/6.1"}
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
             data = r.json()
@@ -91,7 +91,7 @@ def obter_coordenadas_municipio_cached(municipio):
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2, vel_fallback_kmh=30):
     try:
-        headers = {"User-Agent": "GeradorRotasOperacional/6.0"}
+        headers = {"User-Agent": "GeradorRotasOperacional/6.1"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
         r = requests.get(url, headers=headers, timeout=5)
         if r.status_code == 200:
@@ -129,9 +129,6 @@ def identificar_icone_folium(row, colunas):
         
     if row.get('PROTOCOLO') == 'RETORNO_BASE': return 'home'
     if row.get('PROTOCOLO') == 'PAUSA_ALMOCO': return 'cutlery'
-    if row.get('PROTOCOLO') == 'PERNOITE': return 'bed'
-    
-    if row.get('ZONA_RISCO') == 'Sim': return 'warning-sign' 
     
     if 'NOVA' in tipo_str or 'LIGACAO' in tipo_str or 'UNI' in tipo_str or 'UNR' in tipo_str: return 'bolt'
     if 'MANUT' in tipo_str or 'REPARO' in tipo_str: return 'wrench'
@@ -191,14 +188,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
     <IconStyle><color>ff00ffff</color><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/dining.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
     <LabelStyle><scale>1.0</scale></LabelStyle>
   </Style>
-  <Style id="icon-purple">
-    <IconStyle><color>ffff00aa</color><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/lodging.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>1.0</scale></LabelStyle>
-  </Style>
-  <Style id="icon-black">
-    <IconStyle><color>ff000000</color><scale>1.2</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
-    <LabelStyle><scale>0.9</scale></LabelStyle>
-  </Style>
 '''
 
     for base_nome in df_rota['BASE_ATRIBUIDA'].unique():
@@ -231,10 +220,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 
                     desc_parts = [f"<b>Ordem na Rota:</b> {row.get('ORDEM', 0)}"]
                     desc_parts.append(f"<b>Distância do Ponto Anterior:</b> {row.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM")
+                    desc_parts.append(f"<b>Distância do Próximo Ponto:</b> {row.get('DISTANCIA_PROXIMO_PONTO_KM', 0)} KM")
                     desc_parts.append(f"<b>Tempo de Viagem Estimado:</b> {row.get('TEMPO_VIAGEM_MINUTOS', 0)} Minutos")
-                    
-                    if row.get('ZONA_RISCO') == 'Sim':
-                        desc_parts.append(f"<b>⚠️ ATENÇÃO: ZONA DE RISCO DETECTADA</b>")
                         
                     ext_data_parts = []
                     
@@ -248,11 +235,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                         ext_data_str = ""
                         nome_ponto = "🍔 ALMOÇO DA EQUIPE"
                         style_url = "#icon-yellow"
-                    elif row.get('PROTOCOLO') == 'PERNOITE':
-                        desc_cdata = "<b>PONTO DE APOIO/PERNOITE</b>"
-                        ext_data_str = ""
-                        nome_ponto = "🏨 HOTEL / PERNOITE"
-                        style_url = "#icon-purple"
                     else:
                         for col in cols_exibir:
                             if col in row:
@@ -265,13 +247,7 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                         
                         tag_prio = "[PRIORIDADE] " if row.get('PRIORIDADE') == "Sim" else ""
                         nome_ponto = f"{tag_prio}[{row.get('ORDEM', 0)}] Prot: {protocolo_str}"
-                        
-                        if row.get('ZONA_RISCO') == 'Sim':
-                            style_url = "#icon-black"
-                        elif row.get('PRIORIDADE') == "Sim":
-                            style_url = "#icon-red"
-                        else:
-                            style_url = "#icon-blue"
+                        style_url = "#icon-red" if row.get('PRIORIDADE') == "Sim" else "#icon-blue"
 
                     kml += f'''        <Placemark>
           <name>{nome_ponto}</name>
@@ -339,6 +315,7 @@ def view_roteirizador():
                 "LATITUDE": st.column_config.NumberColumn(disabled=True),
                 "LONGITUDE": st.column_config.NumberColumn(disabled=True),
                 "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.NumberColumn(disabled=True),
+                "DISTANCIA_PROXIMO_PONTO_KM": st.column_config.NumberColumn(disabled=True),
                 "TEMPO_VIAGEM_MINUTOS": st.column_config.NumberColumn(disabled=True)
             }
         )
@@ -351,7 +328,7 @@ def view_roteirizador():
         col_prioridade = st.session_state.col_prioridade
         colunas_originais = st.session_state.colunas_originais
         
-        df_real_tasks = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO', 'PERNOITE'])]
+        df_real_tasks = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
         
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("📌 Obras Roteirizadas", len(df_real_tasks))
@@ -408,11 +385,8 @@ def view_roteirizador():
                     
                     icone = identificar_icone_folium(r, df_routed.columns)
                     cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else cor_rota
-                    if r.get('ZONA_RISCO') == 'Sim': cor_icone = 'black'
-                    if r.get('PROTOCOLO') == 'PERNOITE': cor_icone = 'purple'
                     
-                    info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Ponto Anterior:</b> {r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM<br><b>Tempo Estimado:</b> {r.get('TEMPO_VIAGEM_MINUTOS', 0)} Min<br>"
-                    if r.get('ZONA_RISCO') == 'Sim': info_html += f"<b>⚠️ ZONA DE RISCO</b><br>"
+                    info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Ponto Anterior:</b> {r.get('DISTANCIA_PONTO_ANTERIOR_KM', 0)} KM<br><b>Distância Próximo Ponto:</b> {r.get('DISTANCIA_PROXIMO_PONTO_KM', 0)} KM<br><b>Tempo Estimado:</b> {r.get('TEMPO_VIAGEM_MINUTOS', 0)} Min<br>"
                     for c in colunas_exibir:
                         if c in r: info_html += f"<b>{c}:</b> {r[c]}<br>"
                         
@@ -463,7 +437,7 @@ def view_roteirizador():
                 
                 for periodo in df_base['PERIODO'].unique():
                     df_periodo = df_base[df_base['PERIODO'] == periodo]
-                    df_periodo_real = df_periodo[~df_periodo['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO', 'PERNOITE'])]
+                    df_periodo_real = df_periodo[~df_periodo['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                     
                     qtd_obras = len(df_periodo_real)
                     qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
@@ -567,7 +541,6 @@ def view_roteirizador():
         
         modo_limite = st.radio("Critério limitador da equipe:", ["Quantidade Fixa de Obras", "Carga Horária (Tempo Real via Satélite)"])
         
-        # Valores padrão de segurança (UnboundLocalError Fix)
         obras_por_periodo = 10
         horas_por_dia = 8.0
         tempo_medio_obra = 1.5
@@ -581,16 +554,6 @@ def view_roteirizador():
             tempo_medio_obra = st.number_input("Tempo médio de execução por obra (Horas)", min_value=0.1, value=1.5, step=0.1)
             velocidade_media_kmh = st.number_input("Velocidade (Plano B de Conexão) (km/h)", min_value=10.0, value=30.0, step=5.0)
             limite_periodos = st.number_input(f"Limite total de {tipo_periodo}s a roteirizar", min_value=1, value=5, step=1)
-            
-        st.markdown("### 🚨 Zonas de Risco")
-        termos_risco_input = st.text_area("Palavras-chave no Endereço (Vírgula):", "INVASAO, COMUNIDADE, PERIGOSA, ROUBO")
-            
-        st.markdown("### 🏨 Logística Distante")
-        ativar_pernoite = st.checkbox("Permitir Pernoite (Não retornar à base)")
-        if ativar_pernoite:
-            distancia_pernoite = st.number_input("Distância mínima para pernoitar (KM)", value=80.0, step=10.0)
-        else:
-            distancia_pernoite = 999999.0
 
     col_up_1, col_up_2 = st.columns(2)
 
@@ -726,20 +689,6 @@ def view_roteirizador():
 
     if df_tasks.empty: return
 
-    # === ALGORITMO GEOFENCING (ZONAS DE RISCO) ===
-    termos_risco = [t.strip().upper() for t in termos_risco_input.split(',')]
-    padrao_risco = '|'.join([t for t in termos_risco if t])
-    if padrao_risco:
-        cols_text = [c for c in ['ENDEREÇO', 'INFORMAÇÕES EXTRAS', 'DESCRIÇÃO', 'LOCALIDADE'] if c in df_tasks.columns]
-        def check_risco(row):
-            for c in cols_text:
-                if pd.notna(row[c]) and re.search(padrao_risco, str(row[c]).upper()):
-                    return "Sim"
-            return "Não"
-        df_tasks['ZONA_RISCO'] = df_tasks.apply(check_risco, axis=1)
-    else:
-        df_tasks['ZONA_RISCO'] = "Não"
-
     # === PRÉ-ALOCAÇÃO TERRITORIAL ===
     df_tasks_alocadas = pd.DataFrame()
     bases_records = []
@@ -801,7 +750,7 @@ def view_roteirizador():
                 df_tasks_alocadas = df_tasks_alocadas[df_tasks_alocadas['TIPO NOTA'].astype(str).isin(tipos_selecionados)]
 
             todas_cols = df_tasks_alocadas.columns.tolist()
-            cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA', 'ZONA_RISCO'] if c in todas_cols]
+            cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
             col_prioridade = c_ex2.selectbox("Coluna que define a URGÊNCIA (Sinal Vermelho)", ["Nenhuma"] + todas_cols)
@@ -866,8 +815,7 @@ def view_roteirizador():
                         'DISTANCIA_PONTO_ANTERIOR_KM': 0.0,
                         'TEMPO_VIAGEM_MINUTOS': 60.0,
                         'ROTA_GEOMETRIA': [[curr_lon, curr_lat], [curr_lon, curr_lat]],
-                        'PRIORIDADE': 'Não',
-                        'ZONA_RISCO': 'Não'
+                        'PRIORIDADE': 'Não'
                     })
                     tempo_acumulado_periodo += 1.0 
                     ordem_absoluta += 1
@@ -901,49 +849,27 @@ def view_roteirizador():
                         quebrar_periodo = True
 
                 if quebrar_periodo:
+                    progresso_texto.text(f"🏠 Desenhando rota de Retorno à Base para {b_name} (Período {periodo_atual})...")
+                    rota_retorno, dur_ret_seg = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon, velocidade_media_kmh)
+                    api_calls += 1
                     dist_retorno = haversine_vectorized(curr_lat, curr_lon, base_lat, base_lon)
-                    
-                    if ativar_pernoite and dist_retorno >= distancia_pernoite:
-                        progresso_texto.text(f"🏨 Distância alta ({dist_retorno:.1f}km). Inserindo Pernoite para {b_name}...")
-                        routed_data.append({
-                            'PROTOCOLO': 'PERNOITE',
-                            'NOME DO SOLICITANTE': '🏨 HOTEL / PONTO DE APOIO',
-                            'LATITUDE': curr_lat,
-                            'LONGITUDE': curr_lon,
-                            'BASE_ATRIBUIDA': b_name,
-                            'ORDEM': ordem_absoluta,
-                            'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
-                            'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
-                            'PERIODO': periodo_atual,
-                            'DISTANCIA_PONTO_ANTERIOR_KM': 0.0,
-                            'TEMPO_VIAGEM_MINUTOS': 0.0,
-                            'ROTA_GEOMETRIA': [[curr_lon, curr_lat], [curr_lon, curr_lat]],
-                            'PRIORIDADE': 'Não',
-                            'ZONA_RISCO': 'Não'
-                        })
-                        time.sleep(1.2)
-                    else:
-                        progresso_texto.text(f"🏠 Desenhando rota de Retorno à Base para {b_name} (Período {periodo_atual})...")
-                        rota_retorno, dur_ret_seg = obter_rota_ruas(curr_lat, curr_lon, base_lat, base_lon, velocidade_media_kmh)
-                        api_calls += 1
-                        routed_data.append({
-                            'PROTOCOLO': 'RETORNO_BASE',
-                            'NOME DO SOLICITANTE': 'BASE_RETORNO',
-                            'LATITUDE': base_lat,
-                            'LONGITUDE': base_lon,
-                            'BASE_ATRIBUIDA': b_name,
-                            'ORDEM': ordem_absoluta,
-                            'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
-                            'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
-                            'PERIODO': periodo_atual,
-                            'DISTANCIA_PONTO_ANTERIOR_KM': round(dist_retorno, 2),
-                            'TEMPO_VIAGEM_MINUTOS': round(dur_ret_seg / 60.0, 1),
-                            'ROTA_GEOMETRIA': rota_retorno,
-                            'PRIORIDADE': 'Não',
-                            'ZONA_RISCO': 'Não'
-                        })
-                        time.sleep(1.2)
-                        curr_lat, curr_lon = base_lat, base_lon 
+                    routed_data.append({
+                        'PROTOCOLO': 'RETORNO_BASE',
+                        'NOME DO SOLICITANTE': 'BASE_RETORNO',
+                        'LATITUDE': base_lat,
+                        'LONGITUDE': base_lon,
+                        'BASE_ATRIBUIDA': b_name,
+                        'ORDEM': ordem_absoluta,
+                        'SEMANA': periodo_atual if tipo_periodo == "Semana" else 1,
+                        'DIA': periodo_atual if tipo_periodo == "Dia" else 1,
+                        'PERIODO': periodo_atual,
+                        'DISTANCIA_PONTO_ANTERIOR_KM': round(dist_retorno, 2),
+                        'TEMPO_VIAGEM_MINUTOS': round(dur_ret_seg / 60.0, 1),
+                        'ROTA_GEOMETRIA': rota_retorno,
+                        'PRIORIDADE': 'Não'
+                    })
+                    time.sleep(1.2)
+                    curr_lat, curr_lon = base_lat, base_lon 
                     
                     periodo_atual += 1
                     ordem_absoluta = 1
@@ -1015,15 +941,20 @@ def view_roteirizador():
                     'DISTANCIA_PONTO_ANTERIOR_KM': round(dist_retorno, 2),
                     'TEMPO_VIAGEM_MINUTOS': round(dur_ret_seg / 60.0, 1),
                     'ROTA_GEOMETRIA': rota_retorno,
-                    'PRIORIDADE': 'Não',
-                    'ZONA_RISCO': 'Não'
+                    'PRIORIDADE': 'Não'
                 })
                 time.sleep(1.2)
 
         if obras_sobra_total > 0:
             st.warning(f"⏳ {obras_sobra_total} obras ficaram de fora do roteiro porque a carga horária/limite estourou.")
 
-        st.session_state.df_routed = pd.DataFrame(routed_data)
+        df_final_route = pd.DataFrame(routed_data)
+        
+        # --- CÁLCULO DA DISTÂNCIA DO PRÓXIMO PONTO ---
+        # Ele agrupa por equipe e período, e copia a "distância anterior" da linha de baixo para a linha atual.
+        df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
+        
+        st.session_state.df_routed = df_final_route
         st.session_state.bases_records = bases_records
         st.session_state.tipo_periodo = tipo_periodo
         st.session_state.colunas_exibir = colunas_exibir
