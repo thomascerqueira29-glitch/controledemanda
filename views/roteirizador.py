@@ -90,10 +90,6 @@ def obter_coordenadas_municipio_cached(municipio):
     return np.nan, np.nan
 
 def obter_rota_ruas(lat1, lon1, lat2, lon2, vel_fallback_kmh=30):
-    """
-    Busca o trajeto real e os segundos de direção via OSRM. 
-    Se falhar, utiliza reta matemática (haversine) e velocidade informada no painel.
-    """
     try:
         headers = {"User-Agent": "GeradorRotasOperacional/6.0"}
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
@@ -112,10 +108,6 @@ def obter_rota_ruas(lat1, lon1, lat2, lon2, vel_fallback_kmh=30):
     return [[lon1, lat1], [lon2, lat2]], dur_sec
 
 def calcular_materiais_necessarios(tipo_nota):
-    """
-    Matriz de Supply Chain baseada no Tipo de Nota. 
-    Pode ser adaptada aos padrões exatos do seu almoxarifado.
-    """
     tipo = str(tipo_nota).upper()
     if 'NOVA' in tipo or 'LIGACAO' in tipo or 'UNI' in tipo or 'UNR' in tipo:
         return {'Medidor Monofásico': 1, 'Cabo Multiplexado (m)': 15, 'Conector Cunha': 2, 'Armação Secundária': 1, 'Fita Isolante': 1}
@@ -496,7 +488,7 @@ def view_roteirizador():
             zip_xl.writestr(nome_resumo, buf_resumo.getvalue())
             planilhas_geradas.append(nome_resumo)
             
-            # 5. NOVO: Romaneio de Carga e Materiais (Supply Chain)
+            # 5. Romaneio de Carga e Materiais (Supply Chain)
             romaneio_data = []
             for _, row in df_real_tasks.iterrows():
                 base_eq = row['BASE_ATRIBUIDA']
@@ -574,6 +566,12 @@ def view_roteirizador():
         tipo_periodo = st.radio("Como agrupar o roteiro?", ["Dia", "Semana"], horizontal=True)
         
         modo_limite = st.radio("Critério limitador da equipe:", ["Quantidade Fixa de Obras", "Carga Horária (Tempo Real via Satélite)"])
+        
+        # Valores padrão de segurança (UnboundLocalError Fix)
+        obras_por_periodo = 10
+        horas_por_dia = 8.0
+        tempo_medio_obra = 1.5
+        velocidade_media_kmh = 30.0
         
         if modo_limite == "Quantidade Fixa de Obras":
             obras_por_periodo = st.number_input(f"Máximo de Obras por {tipo_periodo}", min_value=1, value=10, step=1)
@@ -803,7 +801,6 @@ def view_roteirizador():
                 df_tasks_alocadas = df_tasks_alocadas[df_tasks_alocadas['TIPO NOTA'].astype(str).isin(tipos_selecionados)]
 
             todas_cols = df_tasks_alocadas.columns.tolist()
-            # Inclusão da coluna de Minutos no balão padrão
             cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA', 'ZONA_RISCO'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
@@ -889,7 +886,6 @@ def view_roteirizador():
                 
                 progresso_texto.text(f"🗺️ Roteirizando {b_name} | {tipo_periodo} {periodo_atual} | Puxando mapa real...")
                 
-                # RECURSO #3: Tempo real de direção via satélite OSRM
                 rota_geom, duracao_seg = obter_rota_ruas(curr_lat, curr_lon, nearest_row['LATITUDE'], nearest_row['LONGITUDE'], velocidade_media_kmh)
                 api_calls += 1
                 
