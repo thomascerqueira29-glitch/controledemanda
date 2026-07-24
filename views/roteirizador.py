@@ -153,7 +153,7 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{doc_name}</name>
-  <Style id="linha-rota"><LineStyle><color>ffcf2802</color><width>4</width></LineStyle></Style>
+  <Style id="linha-rota"><LineStyle><color>ff00ffff</color><width>5</width></LineStyle></Style>
   
   <Style id="icon-blue">
     <IconStyle><color>ffd18802</color><scale>1.1</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
@@ -283,7 +283,6 @@ def view_roteirizador():
     if st.session_state.roteamento_concluido and not st.session_state.df_routed.empty:
         st.markdown("## 🎯 Resultados da Roteirização Corporativa")
         
-        # O data_editor permite edição em tempo real (Ajuste Fino)
         st.markdown("### ✍️ Ajuste Fino Manual (Painel do Despachante)")
         st.info("Dê um **duplo clique** nas células abaixo para alterar o responsável ou a ordem das obras. Suas edições sairão direto nos downloads finais.")
         
@@ -291,14 +290,13 @@ def view_roteirizador():
             st.session_state.df_routed,
             use_container_width=True,
             column_config={
-                "ROTA_GEOMETRIA": None, # Esconde o código geográfico gigante para não poluir a tela
+                "ROTA_GEOMETRIA": None, 
                 "LATITUDE": st.column_config.NumberColumn(disabled=True),
                 "LONGITUDE": st.column_config.NumberColumn(disabled=True),
                 "DISTANCIA_PONTO_ANTERIOR_KM": st.column_config.NumberColumn(disabled=True)
             }
         )
         
-        # Atualiza a base para os downloads usando a versão editada pelo usuário
         df_routed = df_editado_ui.copy()
         
         bases_records = st.session_state.bases_records
@@ -307,7 +305,6 @@ def view_roteirizador():
         col_prioridade = st.session_state.col_prioridade
         colunas_originais = st.session_state.colunas_originais
         
-        # Filtra registros não operacionais para métricas
         df_real_tasks = df_routed[~df_routed['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
         
         k1, k2, k3, k4 = st.columns(4)
@@ -334,7 +331,7 @@ def view_roteirizador():
 
         st.markdown("#### 🗺️ Visualização Geográfica do Plano")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        cores = ['blue', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
+        cores = ['#f1c40f', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
         
         marker_cluster = MarkerCluster(name="Obras (Agrupadas)").add_to(mapa)
         
@@ -399,7 +396,7 @@ def view_roteirizador():
             zip_xl.writestr(nome_pbi, csv_pbi)
             planilhas_geradas.append(nome_pbi)
             
-            # 3. Layout SAP (Blindado: Remove Pausa Almoço e Retorno)
+            # 3. Layout SAP
             sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
             if sap_cols:
                 nome_sap = f"Layout_Importacao_SAP_{data_atual}.xlsx"
@@ -744,7 +741,6 @@ def view_roteirizador():
             
             while not unvisited.empty:
                 
-                # ------ LÓGICA DA PAUSA PARA ALMOÇO AUTOMÁTICA ------
                 if modo_limite == "Carga Horária (Tempo Estimado)" and tempo_acumulado_periodo >= 4.0 and not almoco_inserido:
                     progresso_texto.text(f"🍔 Programando parada de almoço para {b_name}...")
                     routed_data.append({
@@ -765,7 +761,6 @@ def view_roteirizador():
                     ordem_absoluta += 1
                     almoco_inserido = True
 
-                # ====== LÓGICA DE FURAR A FILA (PRIORIDADE) ======
                 unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
                 
                 if not unvisited_prio.empty:
