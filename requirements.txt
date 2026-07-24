@@ -15,7 +15,8 @@ greenlet>=3.0.0
 streamlit-geolocation
 playwright
 ezdxf
-geopandas
 shapely
 bcrypt
 python-dotenv
+reportlab
+requests
