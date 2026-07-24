@@ -951,7 +951,6 @@ def view_roteirizador():
         df_final_route = pd.DataFrame(routed_data)
         
         # --- CÁLCULO DA DISTÂNCIA DO PRÓXIMO PONTO ---
-        # Ele agrupa por equipe e período, e copia a "distância anterior" da linha de baixo para a linha atual.
         df_final_route['DISTANCIA_PROXIMO_PONTO_KM'] = df_final_route.groupby(['BASE_ATRIBUIDA', 'PERIODO'])['DISTANCIA_PONTO_ANTERIOR_KM'].shift(-1).fillna(0.0)
         
         st.session_state.df_routed = df_final_route
