@@ -680,9 +680,12 @@ def view_roteirizador():
     df_tasks = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE'])
     df_tasks = df_tasks[(df_tasks['LATITUDE'] != 0.0) & (df_tasks['LONGITUDE'] != 0.0)]
     
-    if 'NOME DO SOLICITANTE' in df_tasks.columns:
-        df_tasks = df_tasks.dropna(subset=['NOME DO SOLICITANTE'])
-        df_tasks = df_tasks[df_tasks['NOME DO SOLICITANTE'].astype(str).str.strip() != '']
+    # Verifica e limpa os campos de nomes nulos/vazios
+    for col_nome in ['NOME', 'NOME DO SOLICITANTE', 'CLIENTE']:
+        if col_nome in df_tasks.columns:
+            df_tasks = df_tasks.dropna(subset=[col_nome])
+            df_tasks = df_tasks[df_tasks[col_nome].astype(str).str.strip() != '']
+            
     if 'STATUS SAP' in df_tasks.columns:
         df_tasks = df_tasks[~df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])]
 
@@ -697,7 +700,7 @@ def view_roteirizador():
         df_tasks['PRIORIDADE'] = 'Não'
 
     if total_orig - len(df_tasks) > 0:
-        st.warning(f"⚠️ {total_orig - len(df_tasks)} obras com erros sistêmicos ou de Status foram ignoradas. Restam **{len(df_tasks)} válidas.**")
+        st.warning(f"⚠️ {total_orig - len(df_tasks)} obras com erros sistêmicos ou de Status (incluindo campos de Nome vazios) foram ignoradas. Restam **{len(df_tasks)} válidas.**")
 
     if df_tasks.empty: return
 
@@ -821,11 +824,8 @@ def view_roteirizador():
             # --- PADRÃO DE COLUNAS CONFORME IMAGEM DO USUÁRIO ---
             cols_desejadas = ['PROTOCOLO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'INFORMAÇÕES EXTRAS', 'LATITUDE', 'LONGITUDE']
             
-            # Como o sistema aplica normalize_cols no upload (tirando acentos e cedilhas) 
-            # os nomes devem ser procurados na versão normalizada
             cols_desejadas_norm = normalize_cols(cols_desejadas)
             
-            # Pega as colunas da lista acima que realmente existem na base de dados
             cols_padrao = [c for c in cols_desejadas_norm if c in todas_cols]
             
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
