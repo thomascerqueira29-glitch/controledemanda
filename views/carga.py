@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import time
 import io
-from database import save_notas_to_db # Ajustado para o caminho correto do seu projeto
+from database import save_notas_to_db
 
 def view_carga():
     # =====================================================================
@@ -14,11 +14,10 @@ def view_carga():
 
     # Definição das colunas da regra Strict ATUALIZADA PARA O NOVO TEMPLATE
     colunas_oficiais = [
-        'ID SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
-        'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 
-        'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 
-        'ENDEREÇO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'PONTO DE REFERENCIA', 
-        'TIPO LIGACAO'
+        'ID SISCO', 'PAT', 'STATUS SAP', 'STATUS LIST', 'NOME', 'ENDEREÇO', 
+        'INFORMAÇÕES EXTRAS', 'PROTOCOLO', 'TIPO NOTA', 'LOCALIDADE', 'REGIONAL', 
+        'MUNICIPIO', 'Descrição', 'INICIO AVARIA', 'LATITUDE', 'LONGITUDE', 
+        'STATUS ATUAL (LEVANTAMENTO)'
     ]
 
     # Gera o arquivo de modelo em memória na hora
@@ -35,7 +34,7 @@ def view_carga():
         st.download_button(
             label="📥 Baixar Modelo de Planilha",
             data=buffer.getvalue(),
-            file_name="Template_Obras_Oficial.xlsx",
+            file_name="template_bot_2.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
@@ -65,7 +64,7 @@ def view_carga():
                     progress_bar.progress(30, text="⚙️ Processando matriz de dados...")
                     
                     if uploaded_file.name.endswith('.csv'):
-                        df_new = pd.read_csv(uploaded_file, encoding='utf-8', sep=';') # Considera o padrão de exportação brasileiro
+                        df_new = pd.read_csv(uploaded_file, encoding='utf-8', sep=';')
                     else:
                         df_new = pd.read_excel(uploaded_file)
                     
@@ -82,6 +81,11 @@ def view_carga():
                         st.warning("Dica: Baixe o Modelo de Planilha acima e cole seus dados nele para garantir compatibilidade.")
                     else:
                         progress_bar.progress(85, text="💾 Salvando registros no Banco de Dados Oficial...")
+                        
+                        # Trava de segurança para a tela de Governança
+                        if 'LEVANTADOR' not in df_new.columns:
+                            df_new['LEVANTADOR'] = "SEM LEVANTADOR"
+                            
                         save_notas_to_db(df_new)
                         
                         progress_bar.progress(100, text="✅ Importação concluída!")
