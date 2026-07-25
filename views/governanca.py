@@ -1,14 +1,10 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import io
-import html
-from datetime import datetime
-from database import load_core_data, save_notas_to_db, vectorized_haversine, SEM_LEVANTADOR, STATUS_PRODUTIVIDADE
+from database import load_core_data, save_notas_to_db
 
 def view_governanca():
     st.markdown("### 🔎 Busca e Governança")
-    st.markdown("Gerencie a fila, exporte dados e edite a base oficial de obras de forma centralizada.")
+    st.markdown("Explore, filtre e edite a base oficial de obras de forma centralizada.")
 
     # =====================================================================
     # 1. CARREGAMENTO DOS DADOS E SEGURANÇA (RLS)
@@ -23,124 +19,15 @@ def view_governanca():
         usuario_limpo = usuario_atual.strip().upper()
         df_notas = df_notas[df_notas['LEVANTADOR'].str.strip().str.upper() == usuario_limpo]
         df_equipes_db = df_equipes_db[df_equipes_db['Levantador'].str.strip().str.upper() == usuario_limpo]
-        resumo_levantadores = resumo_levantadores[resumo_levantadores['Levantador'].str.strip().str.upper() == usuario_limpo]
         todos_levantadores = [usuario_limpo]
         st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
 
-    if df_notas.empty and resumo_levantadores.empty:
-        st.warning("O banco de dados está vazio. Faça a importação na Carga de Lotes.")
+    if df_notas.empty:
+        st.warning("O banco de dados de notas está vazio. Faça a importação na aba correspondente.")
         return
 
     # =====================================================================
-    # 2. GESTÃO DE FILA E EXPORTAÇÃO
-    # =====================================================================
-    st.markdown("#### ⚡ Gestão de Fila")
-    with st.container(border=True):
-        c_sel, c_inf = st.columns([3, 1])
-        
-        if perfil_atual == "LEVANTADOR":
-            lev_sel = usuario_atual.upper()
-            c_sel.markdown(f"**Técnico Ativo:**<br>{lev_sel}", unsafe_allow_html=True)
-        else:
-            lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed", key="sel_tech_gov")
-            
-        if st.session_state.get('last_lev_gov') != lev_sel:
-            st.session_state.show_demanda_gov = False; st.session_state.last_lev_gov = lev_sel
-            
-        obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
-        cor_badge = "#e8f4f8" if obras_do_lev >= 50 else "#fce8e8"
-        c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
-        
-        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-        
-        if st.session_state.get('perfil_usuario') == "ADMIN":
-            if st.button("📋 Gerar Demanda", use_container_width=True, type="primary", key="btn_gerar2_gov"): st.session_state.show_demanda_gov = True
-        else: 
-            st.success(f"✅ Demanda Sincronizada.")
-            if st.button("📋 Gerar Minha Demanda", use_container_width=True, type="primary", key="btn_gerar_lev_gov"): st.session_state.show_demanda_gov = True
-            
-        tech_muns = df_notas[(df_notas['LEVANTADOR'] == lev_sel) & (df_notas['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
-        tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
-        muns_str = ", ".join(tech_muns) if tech_muns else "Nenhuma cidade ativa."
-        
-        st.markdown(f"""
-        <div style='margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border-left: 4px solid #1A4F7C;'>
-            <p style='margin: 0; font-size: 11px; color: #666; font-weight: bold; text-transform: uppercase;'>📍 Área de Atuação (Obras Alocadas)</p>
-            <p style='margin: 5px 0 0 0; font-size: 13px; color: #222;'>{muns_str}</p>
-        </div>
-        """, unsafe_allow_html=True)
-            
-    if st.session_state.get('show_demanda_gov', False):
-        st.markdown("---")
-        df_demanda = df_notas[(df_notas['LEVANTADOR'] == lev_sel) & (df_notas['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
-        
-        if len(df_demanda) > 0:
-            df_exp = df_demanda.copy()
-            
-            # Matriz exata para o Export - ADAPTADA PARA O NOVO TEMPLATE
-            colunas_exigidas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
-            
-            for col in colunas_exigidas:
-                if col not in df_exp.columns:
-                    if col == 'ENDEREÇO' and 'ENDERECO' in df_exp.columns: df_exp['ENDEREÇO'] = df_exp['ENDERECO']
-                    elif col == 'INSTALACAO' and 'INSTALAÇÃO' in df_exp.columns: df_exp['INSTALACAO'] = df_exp['INSTALAÇÃO']
-                    elif col == 'TIPO LIGACAO' and 'TIPO LIGAÇÃO' in df_exp.columns: df_exp['TIPO LIGACAO'] = df_exp['TIPO LIGAÇÃO']
-                    else: df_exp[col] = '' 
-            
-            df_exp = df_exp[colunas_exigidas]
-            
-            # Inteligência do Nome
-            muns_unicos = df_exp['MUNICIPIO'].dropna().replace(['', 'NAN', 'NONE'], pd.NA).dropna().unique()
-            if len(muns_unicos) == 1: mun_nome = str(muns_unicos[0]).strip().upper()
-            elif len(muns_unicos) > 1: mun_nome = f"{str(muns_unicos[0]).strip().upper()} E OUTROS"
-            else: mun_nome = "DEMANDA"
-            
-            data_hoje = datetime.now().strftime('%d.%m.%Y')
-            lev_nome = str(lev_sel).strip().upper()
-            base_filename = f"{mun_nome} - {data_hoje} ({lev_nome})"
-            
-            # KML Seguro
-            kml_str = f'''<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n  <Document>\n    <name>{base_filename}.xlsx</name>\n    <Style id="icon-1899-0288D1-normal">\n      <IconStyle>\n        <color>ffd18802</color>\n        <scale>1</scale>\n        <Icon>\n          <href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href>\n        </Icon>\n        <hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/>\n      </IconStyle>\n      <LabelStyle>\n        <scale>0</scale>\n      </LabelStyle>\n    </Style>\n    <Style id="icon-1899-0288D1-highlight">\n      <IconStyle>\n        <color>ffd18802</color>\n        <scale>1</scale>\n        <Icon>\n          <href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href>\n        </Icon>\n        <hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/>\n      </IconStyle>\n      <LabelStyle>\n        <scale>1</scale>\n      </LabelStyle>\n    </Style>\n    <StyleMap id="icon-1899-0288D1">\n      <Pair>\n        <key>normal</key>\n        <styleUrl>#icon-1899-0288D1-normal</styleUrl>\n      </Pair>\n      <Pair>\n        <key>highlight</key>\n        <styleUrl>#icon-1899-0288D1-highlight</styleUrl>\n      </Pair>\n    </StyleMap>\n'''
-            for _, r in df_exp.iterrows():
-                lon_raw = str(r.get('LONGITUDE', '')).replace(',','.')
-                lat_raw = str(r.get('LATITUDE', '')).replace(',','.')
-                
-                try:
-                    lon_val = float(lon_raw)
-                    lat_val = float(lat_raw)
-                    coords_kml = f"{lon_val},{lat_val},0"
-                except: continue 
-                
-                desc_parts = []
-                ext_data_parts = []
-                for col in colunas_exigidas:
-                    val = str(r.get(col, '')).strip()
-                    if col != 'NOME': desc_parts.append(f"{col}: {val}")
-                    ext_data_parts.append(f'<Data name="{col}">\n          <value>{html.escape(val)}</value>\n        </Data>')
-                    
-                desc_cdata = "<br>".join(desc_parts)
-                ext_data_str = "\n        ".join(ext_data_parts)
-                nome_solic = html.escape(str(r.get('NOME', '')))
-                
-                kml_str += f'''    <Placemark>\n      <name>{nome_solic}</name>\n      <description><![CDATA[{desc_cdata}]]></description>\n      <styleUrl>#icon-1899-0288D1</styleUrl>\n      <ExtendedData>\n        {ext_data_str}\n      </ExtendedData>\n      <Point>\n        <coordinates>\n          {coords_kml}\n        </coordinates>\n      </Point>\n    </Placemark>\n'''
-            kml_str += '''  </Document>\n</kml>'''
-            
-            # Excel Buffer
-            buf = io.BytesIO()
-            df_exp.to_excel(buf, index=False, engine='openpyxl')
-            
-            st.info(f"⚡ **{len(df_exp)} obras processadas** para exportação. (O Excel conterá 100% da carga. O KML mapeará apenas locais com coordenadas válidas).")
-            
-            c_b1, c_b2, c_b3 = st.columns([2.5, 2.5, 4])
-            c_b1.download_button("📥 Planilha (Excel)", data=buf.getvalue(), file_name=f"{base_filename}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="dl_xl_gov")
-            c_b2.download_button("🗺️ Mapa (KML)", data=kml_str.encode('utf-8'), file_name=f"{base_filename}.kml", mime="application/vnd.google-earth.kml+xml", use_container_width=True, key="dl_kml_gov")
-            
-            if c_b3.button("Fechar Ferramenta", use_container_width=True, key="btn_fechar_gov"): st.session_state.show_demanda_gov = False; st.rerun()
-
-    st.markdown("---")
-
-    # =====================================================================
-    # 3. MÓDULO DE EXPLORAÇÃO E GOVERNANÇA (EDITOR DE BASE)
+    # 2. MÓDULO DE EXPLORAÇÃO E GOVERNANÇA (EDITOR DE BASE)
     # =====================================================================
     st.markdown("#### 🔍 Explorador e Edição da Base de Dados")
     
