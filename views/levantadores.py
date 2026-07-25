@@ -18,7 +18,6 @@ def view_levantadores():
     # =================================================================
     # 2. PADRONIZAÇÃO ABSOLUTA DE COLUNAS
     # =================================================================
-    # Transforma tudo em maiúsculo e tira espaços para evitar conflitos
     df_eq.columns = [str(c).upper().strip() for c in df_eq.columns]
     
     df_eq = df_eq.rename(columns={
@@ -29,7 +28,6 @@ def view_levantadores():
     
     df_eq = df_eq.loc[:, ~df_eq.columns.duplicated()]
     
-    # Colunas exigidas baseadas na nova planilha oficial
     colunas_oficiais = ['EQUIPE', 'COLABORADOR', 'LONGITUDE', 'LATITUDE', 'MUNICIPIO', 'REGIONAL']
     for col in colunas_oficiais:
         if col not in df_eq.columns: 
@@ -38,15 +36,12 @@ def view_levantadores():
             else:
                 df_eq[col] = ""
                 
-    # Filtra mantendo apenas as colunas oficiais na ordem correta
     df_eq = df_eq[colunas_oficiais]
 
-    # Limpa dados vazios para a visualização na tabela interativa
     df_levs = df_eq[['COLABORADOR', 'EQUIPE', 'MUNICIPIO']].copy()
     df_levs = df_levs[df_levs['COLABORADOR'].str.strip() != ""]
     df_levs = df_levs.drop_duplicates(subset=['COLABORADOR'])
     
-    # Lista de municípios únicos já existentes no banco para o dropdown
     op_mun = [""] + sorted([str(x).upper() for x in df_eq['MUNICIPIO'].dropna().unique() if str(x).strip() != ''])
     
     st.markdown("Altere a base (Município) do técnico diretamente na tabela e clique em **Atualizar Bases**.")
@@ -65,21 +60,20 @@ def view_levantadores():
     )
     
     if st.button("💾 Atualizar Bases", type="primary"):
-        # Mapeia as alterações feitas na tabela interativa para o DataFrame principal
         mapeamento_mun = df_ed.set_index('COLABORADOR')['MUNICIPIO'].to_dict()
         df_eq['MUNICIPIO'] = df_eq['COLABORADOR'].map(mapeamento_mun).fillna(df_eq['MUNICIPIO'])
         
         with sqlite3.connect(DB_PATH, timeout=20) as conn: 
             df_eq.to_sql('equipes', conn, if_exists='replace', index=False)
             
-        load_core_data.clear() # Limpa o cache para o Painel Executivo refletir na mesma hora
+        load_core_data.clear()
         st.success("✅ Bases atualizadas com sucesso!")
         st.rerun()
 
     st.markdown("---")
     
     # =================================================================
-    # 4. CADASTRO INDIVIDUAL E CARGA EM LOTE (NOVO)
+    # 4. CADASTRO INDIVIDUAL E CARGA EM LOTE (COM REPLACE LIMPO)
     # =================================================================
     col_cad, col_lote = st.columns([1, 1.2])
     
@@ -114,9 +108,8 @@ def view_levantadores():
 
     with col_lote:
         st.markdown("#### 📂 Substituir Base Completa")
-        st.info("Envie uma planilha preenchida para **apagar a base atual inteira** e inserir uma nova lista limpa de colaboradores.")
+        st.info("⚠️ O envio de uma nova planilha irá **substituir totalmente** a base anterior de equipes, garantindo que não haja acúmulo de dados antigos.")
         
-        # Gera o arquivo de modelo em memória na hora para o botão de download
         df_template_eq = pd.DataFrame(columns=colunas_oficiais)
         buf_template = io.BytesIO()
         with pd.ExcelWriter(buf_template, engine='openpyxl') as writer:
@@ -134,28 +127,26 @@ def view_levantadores():
         arquivo_up = st.file_uploader("Suba a planilha (.xlsx)", type=['xlsx'], label_visibility="collapsed")
         
         if arquivo_up:
-            if st.button("🚨 Deletar Antiga e Salvar Nova", type="primary", use_container_width=True):
+            if st.button("🚀 Enviar e Substituir Base de Equipes", type="primary", use_container_width=True):
                 try:
                     df_novo_eq = pd.read_excel(arquivo_up)
                     df_novo_eq.columns = [str(c).upper().strip() for c in df_novo_eq.columns]
                     
-                    # Verifica se as colunas obrigatórias existem
                     faltantes = [c for c in colunas_oficiais if c not in df_novo_eq.columns]
                     if faltantes:
                         st.error(f"❌ O arquivo não possui as colunas obrigatórias: {', '.join(faltantes)}")
                     else:
                         df_novo_eq = df_novo_eq[colunas_oficiais]
-                        # Garante que números fiquem numéricos e o resto preenchido corretamente
                         df_novo_eq['LATITUDE'] = pd.to_numeric(df_novo_eq['LATITUDE'], errors='coerce').fillna(0.0)
                         df_novo_eq['LONGITUDE'] = pd.to_numeric(df_novo_eq['LONGITUDE'], errors='coerce').fillna(0.0)
                         df_novo_eq = df_novo_eq.fillna("")
                         
-                        # Substitui a tabela do banco de dados (if_exists='replace')
+                        # Substituição limpa e definitiva no banco (if_exists='replace')
                         with sqlite3.connect(DB_PATH, timeout=20) as conn: 
                             df_novo_eq.to_sql('equipes', conn, if_exists='replace', index=False)
                         
                         load_core_data.clear()
-                        st.success("✅ Nova base oficial de equipes inserida com sucesso!")
+                        st.success(f"🎉 Sucesso! A base anterior foi substituída. A nova lista com {len(df_novo_eq)} colaboradores está ativa.")
                         st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao processar a carga em lote: {e}")
