@@ -17,9 +17,11 @@ def view_governanca():
     # Proteção em Nível de Linha (Se for Levantador, ele só vê e edita o dele)
     if perfil_atual == "LEVANTADOR" and usuario_atual:
         usuario_limpo = usuario_atual.strip().upper()
-        df_notas = df_notas[df_notas['LEVANTADOR'].str.strip().str.upper() == usuario_limpo]
-        df_equipes_db = df_equipes_db[df_equipes_db['Levantador'].str.strip().str.upper() == usuario_limpo]
-        todos_levantadores = [usuario_limpo]
+        
+        col_lev_db = next((c for c in df_notas.columns if str(c).strip().upper() in ['LEVANTADOR', 'EQUIPE']), None)
+        if col_lev_db:
+            df_notas = df_notas[df_notas[col_lev_db].str.strip().str.upper() == usuario_limpo]
+            
         st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
 
     if df_notas.empty:
@@ -31,13 +33,12 @@ def view_governanca():
     # =====================================================================
     st.markdown("#### 🔍 Explorador e Edição da Base de Dados")
     
-    # ATUALIZADO PARA O NOVO TEMPLATE
+    # ATUALIZADO RIGOROSAMENTE PARA O NOVO TEMPLATE BOT
     colunas_template = [
-        'ID SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
-        'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 
-        'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 
-        'ENDEREÇO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'PONTO DE REFERENCIA', 
-        'TIPO LIGACAO'
+        'ID SISCO', 'PAT', 'STATUS SAP', 'STATUS LIST', 'NOME', 'ENDEREÇO', 
+        'INFORMAÇÕES EXTRAS', 'PROTOCOLO', 'TIPO NOTA', 'LOCALIDADE', 'REGIONAL', 
+        'MUNICIPIO', 'Descrição', 'INICIO AVARIA', 'LATITUDE', 'LONGITUDE', 
+        'STATUS ATUAL (LEVANTAMENTO)', 'LEVANTADOR'
     ]
     
     for col in colunas_template:
@@ -46,15 +47,13 @@ def view_governanca():
     cols_extras = [c for c in df_notas.columns if c not in colunas_template]
     df_notas = df_notas[colunas_template + cols_extras]
 
-    colunas_data = ['DATA CRIAÇAO SISCO', 'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST']
-    for col in colunas_data:
-        if col in df_notas.columns:
-            df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.date
-
     # Filtros da Tabela
     regioes = ["TODAS"] + sorted(list(set([str(x) for x in df_notas['REGIONAL'].unique() if pd.notna(x)])))
     municipios = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['MUNICIPIO'].unique() if pd.notna(x)])))
-    levantadores = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['LEVANTADOR'].unique() if pd.notna(x)])))
+    
+    col_lev_filtro = next((c for c in df_notas.columns if str(c).strip().upper() in ['LEVANTADOR', 'EQUIPE']), None)
+    levantadores = ["TODOS"] + sorted(list(set([str(x) for x in df_notas[col_lev_filtro].unique() if pd.notna(x)]))) if col_lev_filtro else ["TODOS"]
+    
     status_sap = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS SAP'].unique() if pd.notna(x)])))
     status_list_op = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS LIST'].unique() if pd.notna(x)])))
 
@@ -73,7 +72,7 @@ def view_governanca():
         busca_livre = c_busca.text_input("Busca Rápida", placeholder="🔍 Pesquise por ID SISCO, Protocolo ou Nome...", label_visibility="collapsed", key="search_gov")
         
         todas_cols = df_notas.columns.tolist()
-        cols_padrao = ['ID SISCO', 'PROTOCOLO', 'LEVANTADOR', 'STATUS LIST', 'STATUS SAP', 'REGIONAL', 'MUNICIPIO', 'DATA CRIAÇAO SISCO']
+        cols_padrao = ['ID SISCO', 'PROTOCOLO', 'LEVANTADOR', 'STATUS LIST', 'STATUS SAP', 'REGIONAL', 'MUNICIPIO', 'TIPO NOTA']
         cols_padrao = [c for c in cols_padrao if c in todas_cols]
         
         colunas_selecionadas = c_cols.multiselect("Colunas Visíveis", todas_cols, default=cols_padrao, placeholder="Escolha as colunas...", key="ms_cols_gov")
@@ -89,7 +88,7 @@ def view_governanca():
     
     if filtro_reg != "TODAS": df_filtrado = df_filtrado[df_filtrado['REGIONAL'].astype(str) == filtro_reg]
     if filtro_mun != "TODOS": df_filtrado = df_filtrado[df_filtrado['MUNICIPIO'].astype(str) == filtro_mun]
-    if filtro_lev != "TODOS": df_filtrado = df_filtrado[df_filtrado['LEVANTADOR'].astype(str) == filtro_lev]
+    if filtro_lev != "TODOS" and col_lev_filtro: df_filtrado = df_filtrado[df_filtrado[col_lev_filtro].astype(str) == filtro_lev]
     if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'].astype(str) == filtro_sap]
     if filtro_list != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].astype(str) == filtro_list]
     
@@ -107,9 +106,6 @@ def view_governanca():
     df_para_editar = df_filtrado[colunas_selecionadas].copy()
     
     config_colunas = {}
-    for col in colunas_data:
-        if col in colunas_selecionadas: config_colunas[col] = st.column_config.DateColumn(col, format="DD/MM/YYYY")
-            
     if 'STATUS LIST' in colunas_selecionadas:
         opcoes_status = sorted(list(set([str(x) for x in df_notas['STATUS LIST'].unique() if pd.notna(x) and x.strip() != ""])))
         config_colunas['STATUS LIST'] = st.column_config.SelectboxColumn("STATUS LIST", help="Altere o status clicando na seta", options=opcoes_status)
@@ -139,10 +135,6 @@ def view_governanca():
                     novas_linhas = df_editado.loc[novos_indices]
                     novas_linhas = novas_linhas.reindex(columns=df_notas.columns)
                     df_notas = pd.concat([df_notas, novas_linhas])
-                
-                for col in colunas_data:
-                    if col in df_notas.columns:
-                        df_notas[col] = pd.to_datetime(df_notas[col], errors='coerce').dt.strftime('%d/%m/%Y').fillna("")
                 
                 save_notas_to_db(df_notas)
                 st.success("✅ Edições salvas com sucesso no banco de dados!")
