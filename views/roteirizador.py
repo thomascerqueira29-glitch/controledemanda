@@ -59,6 +59,40 @@ def normalizar_municipios(series_mun):
     s = s.str.replace(r'Ç', 'C', regex=True)
     return s.str.split('-').str[0].str.strip()
 
+def atualizar_status_via_arquivo(df_principal, arquivo_status):
+    """
+    Lê a planilha extraída do SharePoint, vai direto na Coluna E (índice 4),
+    e atualiza a coluna STATUS LIST da base principal.
+    """
+    try:
+        df_status = pd.read_excel(arquivo_status)
+        
+        # Garante que o arquivo tenha pelo menos 5 colunas (A até E)
+        if df_status.shape[1] >= 5:
+            # Pega o nome exato da Coluna A (Índice 0) e Coluna E (Índice 4)
+            chave_nome = df_status.columns[0]
+            status_nome = df_status.columns[4]
+            
+            # Limpa espaços e transforma em texto para garantir o cruzamento exato
+            df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
+            df_status_map = df_status.set_index(chave_nome)[status_nome].to_dict()
+            
+            if 'PROTOCOLO' in df_principal.columns:
+                df_principal['PROTOCOLO_STR'] = df_principal['PROTOCOLO'].astype(str).str.strip()
+                # Cruza os dados: se achar na Coluna E, atualiza. Se não achar, mantém o que estava.
+                df_principal['STATUS LIST'] = df_principal['PROTOCOLO_STR'].map(df_status_map).fillna(df_principal.get('STATUS LIST', 'SEM INFORMAÇÕES'))
+                df_principal = df_principal.drop(columns=['PROTOCOLO_STR'])
+                st.success(f"✅ Atualização Rápida: {len(df_status_map)} status lidos da Coluna E aplicados com sucesso!")
+            else:
+                st.warning("⚠️ Coluna 'PROTOCOLO' não encontrada na base principal para fazer o cruzamento.")
+        else:
+            st.warning("⚠️ O arquivo de status enviado possui menos de 5 colunas. Não foi possível localizar a Coluna E.")
+            
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo de atualização rápida: {e}")
+        
+    return df_principal
+
 # ==========================================
 # FUNÇÕES MATEMÁTICAS E IA (VRP / TSP 2-Opt)
 # ==========================================
@@ -88,7 +122,6 @@ def kmeans_clustering(coords, k, max_iters=100):
     return labels, centroids
 
 def otimizar_rota_tsp_2opt(lista_obras, start_lat, start_lon):
-    """Algoritmo de TSP que desembaraça as rotas de um dia para evitar cruzamento de linhas"""
     if len(lista_obras) <= 2: return lista_obras
     coords = [(start_lat, start_lon)] + [(r['LATITUDE'], r['LONGITUDE']) for r in lista_obras]
     best_route = list(range(1, len(coords)))
@@ -333,7 +366,6 @@ def view_roteirizador():
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
         cores = ['#f1c40f', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
         
-        # INOVAÇÃO #3: Mapa de Calor (Heatmap)
         heat_data = [[r['LATITUDE'], r['LONGITUDE']] for _, r in df_real_tasks.iterrows()]
         HeatMap(heat_data, name="🔥 Mapa de Calor (Demandas)", radius=15, blur=10).add_to(mapa)
         
@@ -400,7 +432,6 @@ def view_roteirizador():
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
                 
-                # Coleta clima da base para inserir na OS
                 clima_base = obter_clima_seguro(df_base.iloc[0]['LATITUDE'], df_base.iloc[0]['LONGITUDE'])
                 
                 for periodo in df_base['PERIODO'].unique():
@@ -422,7 +453,6 @@ def view_roteirizador():
                             romaneio_periodo[mat] = romaneio_periodo.get(mat, 0) + qtd
                             romaneio_data.append({'LEVANTADOR / EQUIPE': base, f'{tipo_periodo.upper()}': periodo, 'MATERIAL': mat, 'QUANTIDADE': qtd})
                             
-                    # Gera a Ordem de Serviço em HTML para PDF
                     os_html = gerar_os_html(base, f"{tipo_periodo} {periodo}", df_periodo_real, romaneio_periodo, clima_base)
                     nome_seg_os = re.sub(r'[^A-Za-z0-9_]', '', str(base).replace(" ", "_"))
                     zip_xl.writestr(f"Ordens_Servico_Imprimir/OS_{nome_seg_os}_{tipo_periodo}{periodo}.html", os_html.encode('utf-8'))
@@ -513,15 +543,12 @@ def view_roteirizador():
             if not df_equipes_db.empty:
                 df_equipes_db.columns = normalize_cols(df_equipes_db.columns)
                 
-                # --- [CORREÇÃO APLICADA AQUI] ---
-                # Garante que colunas de nome, equipe ou técnico virem "LEVANTADOR" 
                 if 'LEVANTADOR' not in df_equipes_db.columns:
                     for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
                         if p_nome in df_equipes_db.columns:
                             df_equipes_db = df_equipes_db.rename(columns={p_nome: 'LEVANTADOR'})
                             break
                             
-                # Confirma se agora temos a coluna antes de tentar usá-la
                 if 'LEVANTADOR' in df_equipes_db.columns:
                     if 'RESIDENCIA' in df_equipes_db.columns:
                         muns_unicos = df_equipes_db['RESIDENCIA'].dropna().unique()
@@ -546,7 +573,6 @@ def view_roteirizador():
                             st.warning("⚠️ Alguns levantadores foram ignorados pois o município de residência deles não pôde ser localizado.")
                 else:
                     st.error("❌ A coluna 'LEVANTADOR' (ou NOME, TECNICO, EQUIPE, COLABORADOR) não foi encontrada no Banco de Dados.")
-                # --------------------------------
         else:
             base_file = st.file_uploader("Suba a planilha Levantadores_MA", type=["xlsx", "xls"])
             if base_file:
@@ -585,7 +611,11 @@ def view_roteirizador():
 
     with col_up_2:
         st.markdown("### 📁 2. Upload de Demandas (Obras)")
-        task_files = st.file_uploader("Selecione a(s) planilha(s) de Obras", type=["xlsx", "xls"], accept_multiple_files=True)
+        task_files = st.file_uploader("1️⃣ Base Principal (Planilha de Obras Antiga/Original)", type=["xlsx", "xls"], accept_multiple_files=True)
+        
+        st.markdown("##### 🔄 Atualização Rápida de Status (Opcional)")
+        status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint (Para atualizar apenas a Coluna E)", type=["xlsx", "xls"])
+        
         if not task_files: st.info("Aguardando upload para habilitar a configuração."); return
 
         try:
@@ -598,6 +628,10 @@ def view_roteirizador():
             df_tasks = pd.concat(dfs, ignore_index=True)
         except Exception as e:
             st.error(f"Erro ao unificar as planilhas: {e}"); return
+
+        # APLICA A ATUALIZAÇÃO RÁPIDA ANTES DOS FILTROS
+        if status_file:
+            df_tasks = atualizar_status_via_arquivo(df_tasks, status_file)
 
     if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
         st.error("❌ A planilha de Obras precisa ter LATITUDE e LONGITUDE."); return
@@ -617,6 +651,7 @@ def view_roteirizador():
     if 'STATUS SAP' in df_tasks.columns:
         df_tasks = df_tasks[~df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])]
 
+    # O SISTEMA VAI FILTRAR COM BASE NO NOVO STATUS ATUALIZADO PELO SHAREPOINT
     if 'STATUS LIST' in df_tasks.columns:
         status_validos = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
         df_tasks = df_tasks[df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(status_validos)]
@@ -745,7 +780,6 @@ def view_roteirizador():
                 qtd_dia = 0
                 curr_lat, curr_lon = base_lat, base_lon
                 
-                # FASE 1: Montagem do Lote do Dia (Greedy para respeitar limites de tempo)
                 while not unvisited.empty:
                     unvisited_prio = unvisited[unvisited['PRIORIDADE'] == 'Sim']
                     if not unvisited_prio.empty:
@@ -760,7 +794,6 @@ def view_roteirizador():
                     nearest_row = unvisited.loc[nearest_idx]
                     dist_km = round(dists.min(), 2)
                     
-                    # INOVAÇÃO #3: Penalidade Rural (Velocidade Dinâmica)
                     is_rural = False
                     if 'LOCALIDADE' in nearest_row and str(nearest_row['LOCALIDADE']).upper() == 'RURAL': is_rural = True
                     if 'TIPO NOTA' in nearest_row and str(nearest_row['TIPO NOTA']).upper() == 'UNR': is_rural = True
@@ -783,7 +816,6 @@ def view_roteirizador():
                 
                 progresso_texto.text(f"🧠 Otimizando sequência do {tipo_periodo} {periodo_atual} para {b_name} (TSP 2-Opt)...")
                 
-                # FASE 2: Otimização TSP (2-Opt) para desembaraçar as rotas normais
                 last_prio_lat, last_prio_lon = base_lat, base_lon
                 if len(dia_obras_prio) > 0:
                     last_prio_lat, last_prio_lon = dia_obras_prio[-1]['LATITUDE'], dia_obras_prio[-1]['LONGITUDE']
@@ -791,7 +823,6 @@ def view_roteirizador():
                 dia_obras_norm = otimizar_rota_tsp_2opt(dia_obras_norm, last_prio_lat, last_prio_lon)
                 dia_final = dia_obras_prio + dia_obras_norm
                 
-                # FASE 3: Chamada Final OSRM
                 start_lat, start_lon = base_lat, base_lon
                 almoco_inserido = False
                 tempo_acumulado_rota = 0.0
@@ -846,7 +877,6 @@ def view_roteirizador():
                     else: tempo_restante_texto.markdown("✅ **Processamento Concluído! Montando arquivos...**")
                     time.sleep(1.2)
                     
-                # Retorno ao fim do período
                 progresso_texto.text(f"🏠 Encerrando pacote de {b_name}, traçando retorno final...")
                 rota_retorno, dur_ret_seg = obter_rota_ruas(start_lat, start_lon, base_lat, base_lon, velocidade_media_kmh)
                 api_calls += 1
