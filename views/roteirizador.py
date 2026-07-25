@@ -67,19 +67,15 @@ def atualizar_status_via_arquivo(df_principal, arquivo_status):
     try:
         df_status = pd.read_excel(arquivo_status)
         
-        # Garante que o arquivo tenha pelo menos 5 colunas (A até E)
         if df_status.shape[1] >= 5:
-            # Pega o nome exato da Coluna A (Índice 0) e Coluna E (Índice 4)
             chave_nome = df_status.columns[0]
             status_nome = df_status.columns[4]
             
-            # Limpa espaços e transforma em texto para garantir o cruzamento exato
             df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
             df_status_map = df_status.set_index(chave_nome)[status_nome].to_dict()
             
             if 'PROTOCOLO' in df_principal.columns:
                 df_principal['PROTOCOLO_STR'] = df_principal['PROTOCOLO'].astype(str).str.strip()
-                # Cruza os dados: se achar na Coluna E, atualiza. Se não achar, mantém o que estava.
                 df_principal['STATUS LIST'] = df_principal['PROTOCOLO_STR'].map(df_status_map).fillna(df_principal.get('STATUS LIST', 'SEM INFORMAÇÕES'))
                 df_principal = df_principal.drop(columns=['PROTOCOLO_STR'])
                 st.success(f"✅ Atualização Rápida: {len(df_status_map)} status lidos da Coluna E aplicados com sucesso!")
@@ -254,11 +250,22 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{doc_name}</name>
-  <Style id="linha-rota"><LineStyle><color>ff00ffff</color><width>5</width></LineStyle></Style>
-  <Style id="icon-blue"><IconStyle><color>ffd18802</color><scale>1.1</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>0.9</scale></LabelStyle></Style>
-  <Style id="icon-red"><IconStyle><color>ff0000ff</color><scale>1.3</scale><Icon><href>https://www.gstatic.com/mapspro/images/stock/503-wht-blank_maps.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale></LabelStyle></Style>
-  <Style id="icon-green"><IconStyle><color>ff00ff00</color><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle></Style>
-  <Style id="icon-yellow"><IconStyle><color>ff00ffff</color><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/dining.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle><LabelStyle><scale>1.0</scale></LabelStyle></Style>
+  
+  <!-- Estilos de Linha: Contorno preto grosso por baixo, amarelo no centro por cima -->
+  <Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle></Style>
+  <Style id="linha-rota-centro"><LineStyle><color>ff00ffff</color><width>4</width></LineStyle></Style>
+  
+  <!-- Estilos de Pinos (Links Nativos do Google para garantir a cor exata no celular) -->
+  <Style id="icon-blue">
+    <IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>0.9</scale></LabelStyle>
+  </Style>
+  <Style id="icon-red">
+    <IconStyle><scale>1.3</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/red-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
+    <LabelStyle><scale>1.0</scale></LabelStyle>
+  </Style>
+  <Style id="icon-green"><IconStyle><scale>1.2</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/homegardenbusiness.png</href></Icon></IconStyle></Style>
+  <Style id="icon-yellow"><IconStyle><scale>1.3</scale><Icon><href>https://maps.google.com/mapfiles/kml/shapes/dining.png</href></Icon><LabelStyle><scale>1.0</scale></LabelStyle></IconStyle></Style>
 '''
     for base_nome in df_rota['BASE_ATRIBUIDA'].unique():
         df_base = df_rota[df_rota['BASE_ATRIBUIDA'] == base_nome]
@@ -300,7 +307,9 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                     else:
                         coords_linha_kml += f"          {lon},{lat},0\n"
 
-                kml += f'        <Placemark><name>Traçado do Roteiro</name><styleUrl>#linha-rota</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n{coords_linha_kml}            </coordinates></LineString></Placemark>\n      </Folder>\n' 
+                # DESENHA A LINHA DUAS VEZES (Primeiro o contorno grosso preto, depois o centro fino colorido)
+                kml += f'        <Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n{coords_linha_kml}            </coordinates></LineString></Placemark>\n' 
+                kml += f'        <Placemark><name>Traçado Rota</name><styleUrl>#linha-rota-centro</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n{coords_linha_kml}            </coordinates></LineString></Placemark>\n      </Folder>\n' 
             kml += '    </Folder>\n' 
         kml += '  </Folder>\n' 
     kml += '</Document>\n</kml>'
@@ -364,7 +373,7 @@ def view_roteirizador():
 
         st.markdown("#### 🗺️ Visualização Geográfica do Plano")
         mapa = folium.Map(location=[df_routed['LATITUDE'].mean(), df_routed['LONGITUDE'].mean()], zoom_start=8) if not df_routed.empty else folium.Map(location=[-5.2, -45.0], zoom_start=7)
-        cores = ['#f1c40f', 'green', 'purple', 'orange', 'darkred', 'cadetblue', 'darkgreen', 'darkblue']
+        cores = ['#f1c40f', '#00b894', '#9b59b6', '#e67e22', '#e74c3c', '#1abc9c', '#27ae60', '#2980b9']
         
         heat_data = [[r['LATITUDE'], r['LONGITUDE']] for _, r in df_real_tasks.iterrows()]
         HeatMap(heat_data, name="🔥 Mapa de Calor (Demandas)", radius=15, blur=10).add_to(mapa)
@@ -387,13 +396,17 @@ def view_roteirizador():
                     if isinstance(r.get('ROTA_GEOMETRIA'), list):
                         for lon, lat in r['ROTA_GEOMETRIA']: pontos_linha_folium.append([lat, lon]) 
                             
-                folium.PolyLine(pontos_linha_folium, color=cor_rota, weight=3, opacity=0.8).add_to(fg_linhas)
+                # Contorno Preto (Grosso) + Linha Colorida (Fina) no mapa de prévia Folium
+                folium.PolyLine(pontos_linha_folium, color='black', weight=7, opacity=0.9).add_to(fg_linhas)
+                folium.PolyLine(pontos_linha_folium, color=cor_rota, weight=3, opacity=1.0).add_to(fg_linhas)
                 fg_linhas.add_to(mapa)
                 
                 for _, r in df_periodo.iterrows():
                     if r['PROTOCOLO'] in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                     icone = identificar_icone_folium(r, df_routed.columns)
-                    cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else cor_rota
+                    
+                    # Obriga visualização restrita: Obras prioritárias em vermelho, o restante em azul.
+                    cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else 'blue'
                     
                     info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Próximo Ponto:</b> {r.get('DISTANCIA_PROXIMO_PONTO_KM', 0)} KM<br><b>Tempo Estimado:</b> {r.get('TEMPO_VIAGEM_MINUTOS', 0)} Min<br>"
                     for c in colunas_exibir:
@@ -629,7 +642,6 @@ def view_roteirizador():
         except Exception as e:
             st.error(f"Erro ao unificar as planilhas: {e}"); return
 
-        # APLICA A ATUALIZAÇÃO RÁPIDA ANTES DOS FILTROS
         if status_file:
             df_tasks = atualizar_status_via_arquivo(df_tasks, status_file)
 
@@ -651,7 +663,6 @@ def view_roteirizador():
     if 'STATUS SAP' in df_tasks.columns:
         df_tasks = df_tasks[~df_tasks['STATUS SAP'].astype(str).str.strip().str.upper().isin(['CANC', 'FINL'])]
 
-    # O SISTEMA VAI FILTRAR COM BASE NO NOVO STATUS ATUALIZADO PELO SHAREPOINT
     if 'STATUS LIST' in df_tasks.columns:
         status_validos = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
         df_tasks = df_tasks[df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(status_validos)]
@@ -735,7 +746,7 @@ def view_roteirizador():
             cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
-            c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** serão roteirizadas primeiro por padrão.")
+            c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** serão roteirizadas primeiro por padrão e receberão um pino vermelho.")
             col_prioridade = "TIPO NOTA"
 
     # === INÍCIO DO PROCESSAMENTO BIFÁSICO (TSP + OSRM) ===
@@ -743,7 +754,6 @@ def view_roteirizador():
         if df_tasks_alocadas.empty:
             st.error("Selecione equipes e regras compatíveis com a planilha primeiro."); return
 
-        # APLICA A REGRA AUTOMÁTICA DE PRIORIDADE
         tipos_prioritarios = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
         if 'TIPO NOTA' in df_tasks_alocadas.columns:
             df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas['TIPO NOTA'].apply(
