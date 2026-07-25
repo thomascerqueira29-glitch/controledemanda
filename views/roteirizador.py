@@ -512,27 +512,41 @@ def view_roteirizador():
             _, df_equipes_db, _, _, _, _, _, _ = load_core_data()
             if not df_equipes_db.empty:
                 df_equipes_db.columns = normalize_cols(df_equipes_db.columns)
-                if 'RESIDENCIA' in df_equipes_db.columns:
-                    muns_unicos = df_equipes_db['RESIDENCIA'].dropna().unique()
-                    mapa_coords = {}
-                    with st.spinner("🌍 Mapeando coordenadas dos municípios-base (Satélite)..."):
-                        for mun in muns_unicos:
-                            if str(mun).strip() != "":
-                                lat, lon = obter_coordenadas_municipio_cached(mun)
-                                mapa_coords[mun] = (lat, lon)
-                    df_equipes_db['LATITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[0])
-                    df_equipes_db['LONGITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[1])
-                else:
-                    df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
-                    df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                
+                # --- [CORREÇÃO APLICADA AQUI] ---
+                # Garante que colunas de nome, equipe ou técnico virem "LEVANTADOR" 
+                if 'LEVANTADOR' not in df_equipes_db.columns:
+                    for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
+                        if p_nome in df_equipes_db.columns:
+                            df_equipes_db = df_equipes_db.rename(columns={p_nome: 'LEVANTADOR'})
+                            break
+                            
+                # Confirma se agora temos a coluna antes de tentar usá-la
+                if 'LEVANTADOR' in df_equipes_db.columns:
+                    if 'RESIDENCIA' in df_equipes_db.columns:
+                        muns_unicos = df_equipes_db['RESIDENCIA'].dropna().unique()
+                        mapa_coords = {}
+                        with st.spinner("🌍 Mapeando coordenadas dos municípios-base (Satélite)..."):
+                            for mun in muns_unicos:
+                                if str(mun).strip() != "":
+                                    lat, lon = obter_coordenadas_municipio_cached(mun)
+                                    mapa_coords[mun] = (lat, lon)
+                        df_equipes_db['LATITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[0])
+                        df_equipes_db['LONGITUDE'] = df_equipes_db['RESIDENCIA'].map(lambda x: mapa_coords.get(x, (np.nan, np.nan))[1])
+                    else:
+                        df_equipes_db['LATITUDE'] = pd.to_numeric(df_equipes_db.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                        df_equipes_db['LONGITUDE'] = pd.to_numeric(df_equipes_db.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
 
-                lista_lev = sorted([str(x) for x in df_equipes_db['LEVANTADOR'].dropna().unique().tolist()])
-                levs_selecionados = st.multiselect("Selecione as Equipes que irão a campo:", lista_lev)
-                if levs_selecionados:
-                    df_bases = df_equipes_db[df_equipes_db['LEVANTADOR'].isin(levs_selecionados)].copy()
-                    df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
-                    if len(df_bases) < len(levs_selecionados):
-                        st.warning("⚠️ Alguns levantadores foram ignorados pois o município de residência deles não pôde ser localizado.")
+                    lista_lev = sorted([str(x) for x in df_equipes_db['LEVANTADOR'].dropna().unique().tolist()])
+                    levs_selecionados = st.multiselect("Selecione as Equipes que irão a campo:", lista_lev)
+                    if levs_selecionados:
+                        df_bases = df_equipes_db[df_equipes_db['LEVANTADOR'].isin(levs_selecionados)].copy()
+                        df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                        if len(df_bases) < len(levs_selecionados):
+                            st.warning("⚠️ Alguns levantadores foram ignorados pois o município de residência deles não pôde ser localizado.")
+                else:
+                    st.error("❌ A coluna 'LEVANTADOR' (ou NOME, TECNICO, EQUIPE, COLABORADOR) não foi encontrada no Banco de Dados.")
+                # --------------------------------
         else:
             base_file = st.file_uploader("Suba a planilha Levantadores_MA", type=["xlsx", "xls"])
             if base_file:
