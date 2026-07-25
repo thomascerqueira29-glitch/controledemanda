@@ -139,14 +139,6 @@ def obter_coordenadas_municipio_cached(municipio):
     except: pass
     return np.nan, np.nan
 
-@st.cache_data(show_spinner=False)
-def obter_clima_seguro(lat, lon):
-    try:
-        r = requests.get(f"https://wttr.in/{lat},{lon}?format=%C+%t", timeout=2)
-        if r.status_code == 200: return r.text.strip()
-    except: pass
-    return "Dados Climáticos Indisponíveis"
-
 def obter_rota_ruas(lat1, lon1, lat2, lon2, vel_fallback_kmh=30):
     try:
         url = f"http://router.project-osrm.org/route/v1/driving/{lon1:.6f},{lat1:.6f};{lon2:.6f},{lat2:.6f}?overview=full&geometries=geojson"
@@ -156,16 +148,6 @@ def obter_rota_ruas(lat1, lon1, lat2, lon2, vel_fallback_kmh=30):
     except: pass
     dist_km = haversine_vectorized(lat1, lon1, lat2, lon2)
     return [[lon1, lat1], [lon2, lat2]], (dist_km / vel_fallback_kmh) * 3600
-
-def calcular_materiais_necessarios(tipo_nota):
-    tipo = str(tipo_nota).upper()
-    if 'NOVA' in tipo or 'LIGACAO' in tipo or 'UNI' in tipo or 'UNR' in tipo:
-        return {'Medidor Monofásico': 1, 'Cabo Multiplexado (m)': 15, 'Conector Cunha': 2, 'Armação Secundária': 1, 'Fita Isolante': 1}
-    elif 'MANUT' in tipo or 'REPARO' in tipo:
-        return {'Cabo Multiplexado (m)': 5, 'Conector Cunha': 4, 'Fita Isolante': 1, 'Emenda': 2}
-    elif 'INSP' in tipo or 'VISTORIA' in tipo or 'PRE ANALISE' in tipo or 'PRÉ ANÁLISE' in tipo:
-        return {'Lacre de Segurança': 2, 'Lacre de Medidor': 1}
-    return {'Kit Ferramentas / Miscelâneas': 1}
 
 def identificar_icone_folium(row, colunas):
     tipo_str = str(row.get('TIPO LIGACAO', '')) + str(row.get('SERVICO', '')) + str(row.get('TIPO NOTA', ''))
@@ -177,42 +159,29 @@ def identificar_icone_folium(row, colunas):
     if 'INSP' in tipo_str or 'VISTORIA' in tipo_str: return 'eye-open'
     return 'info-sign'
 
-def gerar_os_html(base, periodo, df_periodo, romaneio, clima, tipo_equipe):
-    linhas_tabela = ""
-    for _, r in df_periodo.iterrows():
-        linhas_tabela += f"<tr><td>{r.get('ORDEM','')}</td><td>{r.get('PROTOCOLO','')}</td><td>{r.get('TIPO NOTA','')}</td><td>{r.get('ENDEREÇO','')}</td></tr>"
-    mat_tabela = "".join([f"<tr><td>{mat}</td><td>{qtd}</td></tr>" for mat, qtd in romaneio.items()])
-    tag_temp = " (EQUIPE DE APOIO / TEMPORÁRIA)" if tipo_equipe == 'TEMPORARIA' else ""
-    return f"""
-    <html><head><meta charset="UTF-8"><style>
-        body {{ font-family: Arial, sans-serif; padding: 20px; }}
-        table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12px; }}
-        th, td {{ border: 1px solid #000; padding: 8px; text-align: left; }}
-        th {{ background-color: #f2f2f2; }}
-        .header {{ border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }}
-    </style></head><body>
-        <div class="header">
-            <h2>Ordem de Serviço Diária (Roteiro Otimizado)</h2>
-            <p><b>Equipe:</b> {base}{tag_temp} | <b>Período:</b> {periodo} | <b>Condição Climática Prevista:</b> {clima}</p>
-        </div>
-        <h3>1. Roteiro de Paradas</h3>
-        <table><tr><th>Ordem</th><th>Protocolo</th><th>Serviço</th><th>Endereço</th></tr>{linhas_tabela}</table>
-        <h3>2. Romaneio de Carga (Almoxarifado)</h3>
-        <table><tr><th>Material Necessário</th><th>Quantidade Calculada</th></tr>{mat_tabela}</table>
-        <div style="display: flex; justify-content: space-around; margin-top: 60px;">
-            <div style="text-align: center; border-top: 1px solid #000; width: 40%; padding-top: 5px;">Assinatura do Despachante</div>
-            <div style="text-align: center; border-top: 1px solid #000; width: 40%; padding-top: 5px;">Assinatura do Técnico</div>
-        </div>
-    </body></html>
-    """
-
 def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
     df_export = df.copy()
-    if 'ROTA_GEOMETRIA' in df_export.columns: df_export = df_export.drop(columns=['ROTA_GEOMETRIA'])
+    
+    # 1. Filtra as linhas artificiais criadas pelo roteirizador
+    if 'PROTOCOLO' in df_export.columns:
+        df_export = df_export[~df_export['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
+        
+    if 'ROTA_GEOMETRIA' in df_export.columns: 
+        df_export = df_export.drop(columns=['ROTA_GEOMETRIA'])
+        
+    # 2. Exclui colunas indesejadas
+    colunas_remover = ['STATUS LIST', 'INICIO AVARIA', 'STATUS ATUAL (LEVANTAMENTO)', 'DESCRICAO']
+    for col in colunas_remover:
+        if col in df_export.columns:
+            df_export = df_export.drop(columns=[col])
+
+    # 3. Organiza a ordem para preservar o formato original + colunas de IA geradas
     if colunas_originais:
         cols_atuais = df_export.columns.tolist()
+        cols_originais_validas = [c for c in colunas_originais if c in cols_atuais]
         cols_novas_geradas = [c for c in cols_atuais if c not in colunas_originais]
-        df_export = df_export[[c for c in colunas_originais if c in cols_atuais] + cols_novas_geradas]
+        df_export = df_export[cols_originais_validas + cols_novas_geradas]
+        
     buf_xl = io.BytesIO()
     with pd.ExcelWriter(buf_xl, engine='openpyxl') as writer:
         df_export.to_excel(writer, index=False, sheet_name='Roteiro')
@@ -224,7 +193,9 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
                 if ws.cell(row=row_idx, column=prio_flag_idx).value == "Sim":
                     ws.cell(row=row_idx, column=prio_flag_idx).font = red_font
                     if col_prioridade != "Nenhuma" and col_prioridade in df_export.columns:
-                        ws.cell(row=row_idx, column=df_export.columns.get_loc(col_prioridade) + 1).font = red_font
+                        try:
+                            ws.cell(row=row_idx, column=df_export.columns.get_loc(col_prioridade) + 1).font = red_font
+                        except: pass
     return buf_xl.getvalue()
 
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
@@ -395,69 +366,40 @@ def view_roteirizador():
         
         buf_zip_xl = io.BytesIO()
         with zipfile.ZipFile(buf_zip_xl, 'w', zipfile.ZIP_DEFLATED) as zip_xl:
-            # 1. Roteiro Geral & PowerBI
+            # 1. Roteiro Geral 
             zip_xl.writestr(f"Roteiro_Geral_{data_atual}.xlsx", gerar_excel_bytes(df_routed, col_prioridade, colunas_originais))
             planilhas_geradas = [f"Roteiro_Geral_{data_atual}.xlsx"]
-            
-            cols_atuais_bi = df_routed.columns.tolist()
-            cols_novas_bi = [c for c in cols_atuais_bi if c not in colunas_originais]
-            zip_xl.writestr(f"Base_Dashboards_PowerBI_{data_atual}.csv", df_routed[[c for c in colunas_originais if c in cols_atuais_bi] + cols_novas_bi].to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig'))
-            planilhas_geradas.append(f"Base_Dashboards_PowerBI_{data_atual}.csv")
-            
-            # 2. Layout SAP
-            sap_cols = [c for c in ['PROTOCOLO', 'ORDEM', 'BASE_ATRIBUIDA', 'TIPO LIGACAO', 'STATUS SAP'] if c in df_real_tasks.columns]
-            if sap_cols:
-                df_sap = df_real_tasks[sap_cols].copy()
-                df_sap['NOVO_STATUS_ATUALIZACAO'] = ''
-                zip_xl.writestr(f"Layout_Importacao_SAP_{data_atual}.xlsx", gerar_excel_bytes(df_sap, "Nenhuma"))
-                planilhas_geradas.append(f"Layout_Importacao_SAP_{data_atual}.xlsx")
 
-            # 3. Expectativa, Romaneio e OS em HTML (PDF)
-            resumo_data, romaneio_data = [], []
+            # 2. Resumo de Produtividade dos Levantadores (Novo Arquivo Solicitado)
+            resumo_levantadores = []
             
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
-                base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base), None)
-                clima_base = obter_clima_seguro(df_base.iloc[0]['LATITUDE'], df_base.iloc[0]['LONGITUDE'])
+                df_base_real = df_base[~df_base['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
                 
-                for periodo in df_base['PERIODO'].unique():
-                    df_periodo = df_base[df_base['PERIODO'] == periodo]
-                    df_periodo_real = df_periodo[~df_periodo['PROTOCOLO'].isin(['RETORNO_BASE', 'PAUSA_ALMOCO'])]
-                    
-                    qtd_obras = len(df_periodo_real)
-                    qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
-                    
-                    resumo_data.append({
-                        'LEVANTADOR': base, 'TIPO EQUIPE': base_ref.get('TIPO_EQUIPE', 'PRINCIPAL'), 
-                        f'{tipo_periodo.upper()}': periodo, 'OBRAS ROTEIRIZADAS': qtd_obras,
-                        'OBRAS PRIORITARIAS': qtd_prio, 'KM TOTAL PROJETADO': round(df_periodo['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2),
-                        'LINK GPS (GOOGLE MAPS)': "https://www.google.com/maps/dir/" + "/".join([f"{lat},{lon}" for lat, lon in df_periodo[['LATITUDE', 'LONGITUDE']].values.tolist()])
-                    })
-                    
-                    romaneio_periodo = {}
-                    for _, r in df_periodo_real.iterrows():
-                        for mat, qtd in calcular_materiais_necessarios(r.get('TIPO NOTA', 'Misto')).items():
-                            romaneio_periodo[mat] = romaneio_periodo.get(mat, 0) + qtd
-                            romaneio_data.append({'LEVANTADOR / EQUIPE': base, f'{tipo_periodo.upper()}': periodo, 'MATERIAL': mat, 'QUANTIDADE': qtd})
-                            
-                    os_html = gerar_os_html(base, f"{tipo_periodo} {periodo}", df_periodo_real, romaneio_periodo, clima_base, base_ref.get('TIPO_EQUIPE', 'PRINCIPAL'))
-                    nome_seg_os = re.sub(r'[^A-Za-z0-9_]', '', str(base).replace(" ", "_"))
-                    zip_xl.writestr(f"Ordens_Servico_Imprimir/OS_{nome_seg_os}_{tipo_periodo}{periodo}.html", os_html.encode('utf-8'))
+                base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base), None)
+                tipo_eq = base_ref.get('TIPO_EQUIPE', 'PRINCIPAL') if base_ref else 'DESCONHECIDO'
+                
+                qtd_comum = len(df_base_real[df_base_real['PRIORIDADE'] == 'Não']) if 'PRIORIDADE' in df_base_real.columns else len(df_base_real)
+                qtd_prio = len(df_base_real[df_base_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_base_real.columns else 0
+                total_km = df_base['DISTANCIA_PONTO_ANTERIOR_KM'].sum()
+                
+                resumo_levantadores.append({
+                    'LEVANTADOR': base,
+                    'TIPO EQUIPE': tipo_eq,
+                    'OBRAS COMUNS': qtd_comum,
+                    'OBRAS PRIORITARIAS': qtd_prio,
+                    'TOTAL OBRAS': qtd_comum + qtd_prio,
+                    'KM TOTAL PREVISTO': round(total_km, 2)
+                })
 
-            buf_resumo = io.BytesIO()
-            with pd.ExcelWriter(buf_resumo, engine='openpyxl') as writer:
-                pd.DataFrame(resumo_data).to_excel(writer, index=False, sheet_name='Resumo')
-            zip_xl.writestr(f"Expectativa_{'Semanal' if tipo_periodo == 'Semana' else 'Diaria'}_{data_atual}.xlsx", buf_resumo.getvalue())
-            planilhas_geradas.append(f"Expectativa_{'Semanal' if tipo_periodo == 'Semana' else 'Diaria'}_{data_atual}.xlsx")
+            buf_resumo_lev = io.BytesIO()
+            with pd.ExcelWriter(buf_resumo_lev, engine='openpyxl') as writer:
+                pd.DataFrame(resumo_levantadores).to_excel(writer, index=False, sheet_name='Resumo')
+            zip_xl.writestr(f"Resumo_Levantadores_{data_atual}.xlsx", buf_resumo_lev.getvalue())
+            planilhas_geradas.append(f"Resumo_Levantadores_{data_atual}.xlsx")
             
-            if romaneio_data:
-                buf_romaneio = io.BytesIO()
-                with pd.ExcelWriter(buf_romaneio, engine='openpyxl') as writer:
-                    pd.DataFrame(romaneio_data).groupby(['LEVANTADOR / EQUIPE', f'{tipo_periodo.upper()}', 'MATERIAL'])['QUANTIDADE'].sum().reset_index().to_excel(writer, index=False, sheet_name='Almoxarifado')
-                zip_xl.writestr(f"Romaneio_Materiais_{data_atual}.xlsx", buf_romaneio.getvalue())
-                planilhas_geradas.append(f"Romaneio_Materiais_{data_atual}.xlsx")
-
-            # 4. Planilhas Individuais
+            # 3. Planilhas Individuais
             for base_nome in df_routed['BASE_ATRIBUIDA'].unique():
                 df_lev = df_routed[df_routed['BASE_ATRIBUIDA'] == base_nome].copy()
                 nome_seguro = re.sub(r'[^A-Za-z0-9_]', '', str(base_nome).replace(" ", "_"))
@@ -483,10 +425,9 @@ def view_roteirizador():
         with st.expander("📄 Ver lista de arquivos gerados (Conteúdo dos ZIPs)"):
             st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
             st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
-            st.markdown("**Ordens de Serviço (Para Impressão):** Geradas em HTML dentro do ZIP.")
 
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
-        col_b1.download_button("🌐 1. Planilhas, BI, OS e Romaneio (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
+        col_b1.download_button("🌐 1. Planilhas Roteirizadas (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
         col_b2.download_button("🗺️ 2. Baixar Mapas (KML ZIP)", data=zip_kml_bytes, file_name=f"Mapas_KML_{data_atual}.zip", mime="application/zip", use_container_width=True)
         if col_b3.button("🧹 Zerar Roteirizador", type="primary", use_container_width=True):
             limpar_roteirizador()
@@ -603,7 +544,6 @@ def view_roteirizador():
         st.markdown("### 📁 2. Upload de Demandas (Obras)")
         task_files = st.file_uploader("1️⃣ Base Principal (Planilha de Obras Antiga/Original)", type=["xlsx", "xls"], accept_multiple_files=True)
         
-        # --- ATUALIZAÇÃO DO BLOCO DE STATUS ---
         st.markdown("##### 🔄 Atualização Rápida de Status (Opcional)")
         status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint", type=["xlsx", "xls"])
         
@@ -614,7 +554,6 @@ def view_roteirizador():
             try:
                 df_status_upload = pd.read_excel(status_file)
                 cols_status = df_status_upload.columns.tolist()
-                # Deixa a Coluna E (índice 4) selecionada por padrão se a planilha for grande o suficiente, senão deixa a primeira
                 def_idx = 4 if len(cols_status) >= 5 else 0
                 coluna_status_selecionada = st.selectbox("📌 Qual coluna contém o Status Atualizado?", cols_status, index=def_idx)
             except Exception as e:
@@ -676,7 +615,6 @@ def view_roteirizador():
         except Exception as e:
             st.error(f"Erro ao unificar as planilhas: {e}"); return
 
-        # Executa a nova função que lê pelo nome da coluna em vez do índice cravado
         if not df_status_upload.empty and coluna_status_selecionada:
             df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
 
@@ -899,10 +837,8 @@ def view_roteirizador():
                     tempo_viagem_h = (dist_km / velocidade_media_kmh) * (1.6 if is_rural else 1.0)
                     tempo_necessario = tempo_viagem_h + tempo_medio_obra
                     
-                    # Estima também o retorno da obra até a base para evitar que a viagem final quebre o limite
                     dist_retorno_est = haversine_vectorized(nearest_row['LATITUDE'], nearest_row['LONGITUDE'], base_lat, base_lon)
                     
-                    # Checa todos os limites antes de prosseguir
                     if modo_limite == "Quantidade Fixa de Obras" and qtd_dia >= obras_por_periodo: break
                     if modo_limite != "Quantidade Fixa de Obras" and tempo_dia + tempo_necessario > horas_por_dia and qtd_dia > 0: break
                     if (km_dia + dist_km + dist_retorno_est) > limite_km_diario and qtd_dia > 0: break
