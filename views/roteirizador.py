@@ -774,10 +774,10 @@ def view_roteirizador():
                             if m_limpo not in mun_to_main: mun_to_main[m_limpo] = []
                             mun_to_main[m_limpo].append(b['LEVANTADOR'])
             
-            df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'])
-            
             def allocate_by_mun_divided(df_sub, map_dict):
+                if df_sub.empty: return df_sub
                 df_sub = df_sub.copy()
+                df_sub['MUN_LIMPO'] = normalizar_municipios(df_sub['MUNICIPIO'])
                 df_sub['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
                 for mun, group in df_sub.groupby('MUN_LIMPO'):
                     bases_disp = map_dict.get(mun, [])
@@ -785,12 +785,12 @@ def view_roteirizador():
                         n_bases = len(bases_disp)
                         assigned = [bases_disp[i % n_bases] for i in range(len(group))]
                         df_sub.loc[group.index, 'BASE_ATRIBUIDA'] = assigned
-                return df_sub
+                return df_sub.drop(columns=['MUN_LIMPO'])
                 
             df_prio = allocate_by_mun_divided(df_prio, mun_to_main)
             df_comum = allocate_by_mun_divided(df_comum, mun_to_all)
             
-            df_tasks = pd.concat([df_prio, df_comum]).drop(columns=['MUN_LIMPO'])
+            df_tasks = pd.concat([df_prio, df_comum])
 
         df_unallocated = df_tasks[df_tasks['BASE_ATRIBUIDA'] == "NÃO ALOCADO"]
         df_tasks_alocadas = df_tasks[df_tasks['BASE_ATRIBUIDA'] != "NÃO ALOCADO"].copy()
@@ -819,8 +819,14 @@ def view_roteirizador():
             todas_cols = df_tasks_alocadas.columns.tolist()
             
             # --- PADRÃO DE COLUNAS CONFORME IMAGEM DO USUÁRIO ---
-            cols_desejadas = ['PROTOCOLO', 'NOME', 'ENDERECO', 'MUNICIPIO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE']
-            cols_padrao = [c for c in cols_desejadas if c in todas_cols]
+            cols_desejadas = ['PROTOCOLO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'INFORMAÇÕES EXTRAS', 'LATITUDE', 'LONGITUDE']
+            
+            # Como o sistema aplica normalize_cols no upload (tirando acentos e cedilhas) 
+            # os nomes devem ser procurados na versão normalizada
+            cols_desejadas_norm = normalize_cols(cols_desejadas)
+            
+            # Pega as colunas da lista acima que realmente existem na base de dados
+            cols_padrao = [c for c in cols_desejadas_norm if c in todas_cols]
             
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
