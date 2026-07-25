@@ -509,6 +509,9 @@ def view_roteirizador():
         tipo_periodo = st.radio("Como agrupar o roteiro?", ["Dia", "Semana"], horizontal=True)
         modo_limite = st.radio("Critério limitador da equipe:", ["Quantidade Fixa de Obras", "Carga Horária (Tempo Real via Satélite)"])
         
+        # --- NOVO: LIMITADOR DE KM COM SLIDER ---
+        limite_km_diario = st.slider(f"Limite Máximo de KM por {tipo_periodo}", min_value=0, max_value=500, value=500, step=5)
+        
         obras_por_periodo = 10
         horas_por_dia = 8.0
         tempo_medio_obra = 1.5
@@ -600,7 +603,7 @@ def view_roteirizador():
                     st.error(f"Erro ao ler a planilha: {e}")
 
         st.markdown("##### Regra de Atribuição Territorial")
-        tipo_atribuicao = st.radio("Regra", ["Clusterização Inteligente por IA (K-Means VRP)", "Por Proximidade Geográfica das Coordenadas (Ignora texto)", "Por Municípios Atendidos (Lê texto da planilha)"], label_visibility="collapsed")
+        tipo_atribuicao = st.radio("Regra", ["Clusterização Inteligente por IA (K-Means VRP)", "Por Proximidade Geográfica das Coordenadas (Ignora texto)", "Por Municípios Atendidos (Lê texto da planilha)"], index=2, label_visibility="collapsed")
 
     with col_up_2:
         st.markdown("### 📁 2. Upload de Demandas (Obras)")
@@ -680,7 +683,6 @@ def view_roteirizador():
     df_tasks = df_tasks.dropna(subset=['LATITUDE', 'LONGITUDE'])
     df_tasks = df_tasks[(df_tasks['LATITUDE'] != 0.0) & (df_tasks['LONGITUDE'] != 0.0)]
     
-    # Verifica e limpa os campos de nomes nulos/vazios
     for col_nome in ['NOME', 'NOME DO SOLICITANTE', 'CLIENTE']:
         if col_nome in df_tasks.columns:
             df_tasks = df_tasks.dropna(subset=[col_nome])
@@ -821,11 +823,8 @@ def view_roteirizador():
 
             todas_cols = df_tasks_alocadas.columns.tolist()
             
-            # --- PADRÃO DE COLUNAS CONFORME IMAGEM DO USUÁRIO ---
             cols_desejadas = ['PROTOCOLO', 'NOME', 'ENDEREÇO', 'MUNICIPIO', 'INFORMAÇÕES EXTRAS', 'LATITUDE', 'LONGITUDE']
-            
             cols_desejadas_norm = normalize_cols(cols_desejadas)
-            
             cols_padrao = [c for c in cols_desejadas_norm if c in todas_cols]
             
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
@@ -867,6 +866,7 @@ def view_roteirizador():
                 dia_obras_norm = []
                 tempo_dia = 0.0
                 qtd_dia = 0
+                km_dia = 0.0
                 curr_lat, curr_lon = base_lat, base_lon
                 
                 while not unvisited.empty:
@@ -890,8 +890,13 @@ def view_roteirizador():
                     tempo_viagem_h = (dist_km / velocidade_media_kmh) * (1.6 if is_rural else 1.0)
                     tempo_necessario = tempo_viagem_h + tempo_medio_obra
                     
+                    # Estima também o retorno da obra até a base para evitar que a viagem final quebre o limite
+                    dist_retorno_est = haversine_vectorized(nearest_row['LATITUDE'], nearest_row['LONGITUDE'], base_lat, base_lon)
+                    
+                    # Checa todos os limites antes de prosseguir
                     if modo_limite == "Quantidade Fixa de Obras" and qtd_dia >= obras_por_periodo: break
                     if modo_limite != "Quantidade Fixa de Obras" and tempo_dia + tempo_necessario > horas_por_dia and qtd_dia > 0: break
+                    if (km_dia + dist_km + dist_retorno_est) > limite_km_diario and qtd_dia > 0: break
                         
                     if is_prio: dia_obras_prio.append(nearest_row.to_dict())
                     else: dia_obras_norm.append(nearest_row.to_dict())
@@ -899,6 +904,7 @@ def view_roteirizador():
                     curr_lat, curr_lon = nearest_row['LATITUDE'], nearest_row['LONGITUDE']
                     unvisited = unvisited.drop(nearest_idx)
                     tempo_dia += tempo_necessario
+                    km_dia += dist_km
                     qtd_dia += 1
                     
                 if len(dia_obras_prio) == 0 and len(dia_obras_norm) == 0: break
