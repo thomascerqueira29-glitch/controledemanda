@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np  # 🔄 CORREÇÃO: Biblioteca importada aqui!
 import plotly.express as px
 
 # Importa as ferramentas essenciais
