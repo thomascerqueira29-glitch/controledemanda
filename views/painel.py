@@ -18,74 +18,86 @@ def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
     </div>
     """
 
-def calcular_saude_dados(df):
-    if df.empty or 'LATITUDE' not in df.columns or 'LONGITUDE' not in df.columns: return 0.0
-    has_lat = df['LATITUDE'].astype(str).str.strip().replace(['nan', 'None', '', '<NA>', '0', '0.0'], np.nan).notna()
-    has_lon = df['LONGITUDE'].astype(str).str.strip().replace(['nan', 'None', '', '<NA>', '0', '0.0'], np.nan).notna()
-    return (has_lat & has_lon).mean() * 100
-
 def view_painel_executivo():
     """Painel Executivo Focado em KPIs e Gráficos"""
     st.markdown("### 📈 Visão Global de Produtividade")
     
     # Sincronização Automática: Comunicação Direta com Governança (Lê em tempo real)
-    df_notas_db, df_equipes_db, resumo_levantadores, levantadores_criticos, _, _, _, _ = load_core_data()
+    df_notas_db, df_equipes_db, _, _, _, _, _, _ = load_core_data()
     
     perfil_atual = st.session_state.get("perfil_usuario")
     usuario_atual = st.session_state.get("usuario")
     
+    # Filtro RLS: Se for um técnico logado, ele só verá os números das obras atribuídas a ele
     if perfil_atual == "LEVANTADOR" and usuario_atual:
         usuario_limpo = usuario_atual.strip().upper()
-        df_notas_db = df_notas_db[df_notas_db['LEVANTADOR'].str.strip().str.upper() == usuario_limpo]
-        df_equipes_db = df_equipes_db[df_equipes_db['Levantador'].str.strip().str.upper() == usuario_limpo]
+        
+        # Filtra a base de notas
+        col_lev_db = next((c for c in df_notas_db.columns if str(c).strip().upper() in ['LEVANTADOR', 'EQUIPE']), None)
+        if col_lev_db:
+            df_notas_db = df_notas_db[df_notas_db[col_lev_db].str.strip().str.upper() == usuario_limpo]
+            
+        # Filtra a base de equipes
+        col_colab_eq = next((c for c in df_equipes_db.columns if str(c).strip().upper() in ['COLABORADOR', 'LEVANTADOR']), None)
+        if col_colab_eq:
+            df_equipes_db = df_equipes_db[df_equipes_db[col_colab_eq].str.strip().str.upper() == usuario_limpo]
+            
         st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
     
     if len(df_notas_db) == 0:
         st.warning("Nenhum dado encontrado para exibição nos filtros atuais ou banco vazio.")
         return
 
-    # --- CÁLCULO DOS KPIS ---
+    # ==========================================
+    # CÁLCULO DOS KPIS ESPECÍFICOS (4 CARDS)
+    # ==========================================
+    
+    # 1. Quantidade total de obras da aba governança
     total_obras = len(df_notas_db)
     
-    # Busca dinâmica da coluna EQUIPE (Planilha Levantadores_bot)
+    # 2. Quantidade total de levantadores (Base Levantadores_base)
     qtd_equipes = 0
     if not df_equipes_db.empty:
-        col_equipe = next((c for c in df_equipes_db.columns if str(c).strip().upper() == 'EQUIPE'), None)
-        col_levantador = next((c for c in df_equipes_db.columns if str(c).strip().upper() in ['LEVANTADOR', 'NOME', 'TECNICO']), None)
-        
-        if col_equipe:
-            qtd_equipes = df_equipes_db[col_equipe].replace([SEM_LEVANTADOR, '', 'nan', 'None'], pd.NA).dropna().nunique()
-        elif col_levantador:
-            qtd_equipes = df_equipes_db[col_levantador].replace([SEM_LEVANTADOR, '', 'nan', 'None'], pd.NA).dropna().nunique()
+        col_colaborador = next((c for c in df_equipes_db.columns if str(c).strip().upper() in ['COLABORADOR', 'LEVANTADOR', 'NOME', 'TECNICO']), None)
+        if col_colaborador:
+            qtd_equipes = df_equipes_db[col_colaborador].replace([SEM_LEVANTADOR, '', 'nan', 'None'], pd.NA).dropna().nunique()
 
-    # Identificação da coluna Levantador no DB de notas (Pode estar vazia dependendo do template)
-    coluna_levantador_db = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['LEVANTADOR', 'EQUIPE']), None)
-    if coluna_levantador_db:
-        fila_count = len(df_notas_db[df_notas_db[coluna_levantador_db] == SEM_LEVANTADOR])
-    else:
-        fila_count = total_obras
+    # 3. Quantidade de obras dos tipos CCF, DIF, MGD, MTP, ASC, SID
+    tipos_alvo = ['CCF', 'DIF', 'MGD', 'MTP', 'ASC', 'SID']
+    coluna_tipo_nota = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['TIPO NOTA', 'TIPO DE NOTA', 'TIPO LIGACAO', 'TIPO LIGAÇÃO']), None)
+    
+    qtd_tipos_especificos = 0
+    if coluna_tipo_nota:
+        mask_tipos = df_notas_db[coluna_tipo_nota].astype(str).str.strip().str.upper().isin(tipos_alvo)
+        qtd_tipos_especificos = mask_tipos.sum()
 
-    qtd_risco = len(levantadores_criticos) if levantadores_criticos else 0
-    taxa_dados = calcular_saude_dados(df_notas_db)
+    # 4. Quantidade de obras em 'Pre Analise' ou 'Liberado para Levantamentos'
+    status_alvo = ['PRE ANALISE', 'PRÉ ANÁLISE', 'PRÉ ANALISE', 'PRE ANÁLISE', 'LIBERADO PARA LEVANTAMENTOS', 'LIBERADO PARA LEVANTAMENTO']
+    # Busca dinamicamente por Status Atual ou Status List
+    coluna_status = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['STATUS ATUAL (LEVANTAMENTO)', 'STATUS LIST']), None)
+    
+    qtd_status_especifico = 0
+    if coluna_status:
+        mask_status = df_notas_db[coluna_status].astype(str).str.strip().str.upper().isin(status_alvo)
+        qtd_status_especifico = mask_status.sum()
 
-    # --- RENDERIZAÇÃO DOS KPIS ---
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.markdown(kpi_card("Obras", total_obras, "Em execução / Cadastradas", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
-    k2.markdown(kpi_card("Equipes", qtd_equipes, "Ativas em campo", "👥", "#8B5CF6"), unsafe_allow_html=True)
-    k3.markdown(kpi_card("Fila", fila_count, "Aguardando alocação", "⏳", "#F59E0B"), unsafe_allow_html=True)
-    k4.markdown(kpi_card("Risco", qtd_risco, "Abaixo da meta", "🚨", "#EF4444" if qtd_risco > 0 else "#10B981"), unsafe_allow_html=True)
-    k5.markdown(kpi_card("Data Quality", f"{taxa_dados:.1f}%", "Precisão Geoespacial", "🎯", "#EC4899"), unsafe_allow_html=True)
+    # --- RENDERIZAÇÃO DOS 4 CARDS ---
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(kpi_card("Obras Totais", total_obras, "Base da Governança", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
+    k2.markdown(kpi_card("Levantadores", qtd_equipes, "Ativos na Planilha Base", "👥", "#8B5CF6"), unsafe_allow_html=True)
+    k3.markdown(kpi_card("Obras Prioritárias", qtd_tipos_especificos, "CCF, DIF, MGD, MTP, ASC, SID", "🎯", "#F59E0B"), unsafe_allow_html=True)
+    k4.markdown(kpi_card("Pré-Análise / Liberado", qtd_status_especifico, "Status Atual da Demanda", "⚡", "#10B981"), unsafe_allow_html=True)
     
     st.markdown("<br><hr>", unsafe_allow_html=True)
     
-    # Lixos genéricos para limpar os gráficos
+    # Lixos genéricos para limpar os gráficos (ignorar strings vazias)
     lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None', '<NA>']
     
     # --- LINHA 1 DE GRÁFICOS (Município e Tipo de Nota) ---
     c_g1, c_g2 = st.columns([1.5, 1])
     
     with c_g1:
-        # Primeiro Gráfico: Obras por Município
+        # Gráfico 1: Obras por Município
         coluna_municipio = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['MUNICIPIO', 'MUNICÍPIO']), None)
         if coluna_municipio:
             df_mun = df_notas_db.copy()
@@ -103,8 +115,7 @@ def view_painel_executivo():
                 st.plotly_chart(fig1, use_container_width=True)
             
     with c_g2:
-        # Segundo Gráfico: Obras por Tipo de Nota (Busca Inteligente da Coluna I)
-        coluna_tipo_nota = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['TIPO NOTA', 'TIPO DE NOTA', 'TIPO LIGACAO', 'TIPO LIGAÇÃO']), None)
+        # Gráfico 2: Obras por Tipo de Nota
         if coluna_tipo_nota:
             df_tipo = df_notas_db.copy()
             df_tipo = df_tipo[~df_tipo[coluna_tipo_nota].astype(str).str.strip().isin(lixos)]
@@ -125,16 +136,15 @@ def view_painel_executivo():
     st.markdown("<br>", unsafe_allow_html=True)
     
     # --- LINHA 2 DE GRÁFICOS (Status List - Largura Total) ---
-    coluna_status_list = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['STATUS LIST']), None)
-    if coluna_status_list:
+    if coluna_status:
         df_status = df_notas_db.copy()
-        df_status = df_status[~df_status[coluna_status_list].astype(str).str.strip().isin(lixos)]
-        status_count = df_status.groupby(coluna_status_list).size().reset_index(name='Qtd_Obras')
+        df_status = df_status[~df_status[coluna_status].astype(str).str.strip().isin(lixos)]
+        status_count = df_status.groupby(coluna_status).size().reset_index(name='Qtd_Obras')
         
         if not status_count.empty:
             fig3 = px.bar(
                 status_count.sort_values('Qtd_Obras', ascending=False), 
-                x=coluna_status_list, y='Qtd_Obras', title="Volume de Obras por Status List", 
+                x=coluna_status, y='Qtd_Obras', title=f"Volume de Obras por Status: {coluna_status.title()}", 
                 text='Qtd_Obras', color_discrete_sequence=['#F59E0B']
             )
             fig3.update_traces(textposition='outside', textfont=dict(size=13, color='black'))
