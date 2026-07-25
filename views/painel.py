@@ -14,7 +14,7 @@ def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
             <span style="font-size: 14px; font-weight: 800; color: #444; text-transform: uppercase; letter-spacing: 0.5px;">{title}</span>
             <span style="font-size: 20px;">{icon}</span>
         </div>
-        <h2 style="margin: 0; color: #111; font-size: 38px; font-weight: 800; line-height: 1.1;">{value}</h2>
+        <h2 style="margin: 0; color: #111; font-size: 34px; font-weight: 800; line-height: 1.2; white-space: nowrap;">{value}</h2>
         {f'<p style="margin: 8px 0 0 0; font-size: 13px; font-weight: 600; color: #6c757d;">{subtitle}</p>' if subtitle else ''}
     </div>
     """
@@ -80,21 +80,27 @@ def view_painel_executivo():
         
     qtd_tipos_especificos = int(mask_tipos.sum())
 
-    # KPI 4: Varredura de Status (Pré-Análise / Liberado para Levantamento)
+    # KPI 4: Varredura Divivida (Pré-Análise x Liberado)
     # Busca em qualquer coluna que tenha a palavra "STATUS"
     colunas_de_status = [c for c in df_notas_db.columns if 'STATUS' in str(c).upper()]
-    mask_status = pd.Series(False, index=df_notas_db.index)
+    
+    mask_pre = pd.Series(False, index=df_notas_db.index)
+    mask_lib = pd.Series(False, index=df_notas_db.index)
     
     for col in colunas_de_status:
         # Normaliza a string (Maiúscula e sem acento para garantir o Match)
         s_norm = df_notas_db[col].astype(str).str.strip().str.upper()
-        s_norm = s_norm.str.replace('Á', 'A').str.replace('É', 'E').str.replace('Í', 'I').str.replace('Ó', 'O').str.replace('Ú', 'U').str.replace('Â', 'A').str.replace('Ê', 'E')
+        s_norm = s_norm.str.replace('Á', 'A').str.replace('É', 'E').str.replace('Í', 'I').str.replace('Ó', 'O').str.replace('Ú', 'U').str.replace('Â', 'A').str.replace('Ê', 'E').str.replace('Ç', 'C')
         
-        # Adiciona à contagem se encontrar as palavras-chave
-        mask_status = mask_status | s_norm.str.contains('PRE ANALISE', na=False)
-        mask_status = mask_status | s_norm.str.contains('LIBERADO', na=False)
+        # Faz as duas contagens separadamente
+        mask_pre = mask_pre | s_norm.str.contains('PRE ANALISE', na=False)
+        mask_lib = mask_lib | s_norm.str.contains('LIBERADO', na=False)
         
-    qtd_status_especifico = int(mask_status.sum())
+    qtd_pre_analise = int(mask_pre.sum())
+    qtd_liberado = int(mask_lib.sum())
+    
+    # Monta a string visual que será inserida no card
+    valor_dividido = f"<span style='color: #F59E0B;'>{qtd_pre_analise}</span><span style='font-size: 14px; color: #666;'> PA</span> <span style='color: #ddd; font-weight: 300;'>|</span> <span style='color: #10B981;'>{qtd_liberado}</span><span style='font-size: 14px; color: #666;'> LIB</span>"
 
     # =====================================================================
     # 3. RENDERIZAÇÃO DOS 4 CARDS (Garantindo 4 colunas)
@@ -103,7 +109,9 @@ def view_painel_executivo():
     k1.markdown(kpi_card("Obras Totais", total_obras, "Base da Governança", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
     k2.markdown(kpi_card("Levantadores", qtd_equipes, "Ativos na Planilha Base", "👥", "#8B5CF6"), unsafe_allow_html=True)
     k3.markdown(kpi_card("Obras Prioritárias", qtd_tipos_especificos, "CCF, DIF, MGD, MTP, ASC, SID", "🎯", "#F59E0B"), unsafe_allow_html=True)
-    k4.markdown(kpi_card("Pré-Análise / Liberado", qtd_status_especifico, "Aguardando Vistoria", "⚡", "#10B981"), unsafe_allow_html=True)
+    
+    # Aplica o valor dividido e o título STATUS SISCO
+    k4.markdown(kpi_card("Status Sisco", valor_dividido, "Pré-Análise / Liberado", "⚡", "#10B981"), unsafe_allow_html=True)
     
     st.markdown("<br><hr>", unsafe_allow_html=True)
 
