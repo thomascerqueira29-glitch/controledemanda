@@ -32,7 +32,7 @@ def limpar_roteirizador():
     st.session_state.bases_records = []
     st.session_state.tipo_periodo = "Dia"
     st.session_state.colunas_exibir = []
-    st.session_state.col_prioridade = "Nenhuma"
+    st.session_state.col_prioridade = "TIPO NOTA"
     st.session_state.colunas_originais = []
     st.rerun()
 
@@ -321,7 +321,7 @@ def view_roteirizador():
     if "colunas_exibir" not in st.session_state:
         st.session_state.colunas_exibir = []
     if "col_prioridade" not in st.session_state:
-        st.session_state.col_prioridade = "Nenhuma"
+        st.session_state.col_prioridade = "TIPO NOTA"
     if "colunas_originais" not in st.session_state:
         st.session_state.colunas_originais = []
 
@@ -735,20 +735,22 @@ def view_roteirizador():
             cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
-            col_prioridade = c_ex2.selectbox("Coluna que define a URGÊNCIA (Sinal Vermelho)", ["Nenhuma"] + todas_cols)
-            valores_prioridade = []
-            if col_prioridade != "Nenhuma":
-                opcoes_validas_prioridade = sorted(df_tasks_alocadas[col_prioridade].astype(str).dropna().unique().tolist())
-                valores_prioridade = c_ex2.multiselect("Quais valores indicam Urgência? (Filtrado por Equipe)", opcoes_validas_prioridade)
+            c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** serão roteirizadas primeiro por padrão.")
+            col_prioridade = "TIPO NOTA"
 
     # === INÍCIO DO PROCESSAMENTO BIFÁSICO (TSP + OSRM) ===
     if st.button("🚀 Iniciar Motor de Roteirização (Processo em Nuvem)", type="primary", use_container_width=True):
         if df_tasks_alocadas.empty:
             st.error("Selecione equipes e regras compatíveis com a planilha primeiro."); return
 
-        if col_prioridade != "Nenhuma" and len(valores_prioridade) > 0:
-            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas[col_prioridade].apply(lambda x: 'Sim' if str(x) in valores_prioridade else 'Não')
-        else: df_tasks_alocadas['PRIORIDADE'] = 'Não'
+        # APLICA A REGRA AUTOMÁTICA DE PRIORIDADE
+        tipos_prioritarios = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
+        if 'TIPO NOTA' in df_tasks_alocadas.columns:
+            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas['TIPO NOTA'].apply(
+                lambda x: 'Sim' if str(x).strip().upper() in tipos_prioritarios else 'Não'
+            )
+        else:
+            df_tasks_alocadas['PRIORIDADE'] = 'Não'
 
         progresso_texto = st.empty()
         barra_progresso = st.progress(0)
