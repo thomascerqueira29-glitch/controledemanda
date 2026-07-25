@@ -8,7 +8,7 @@ from database import load_core_data, save_notas_to_db, vectorized_haversine, SEM
 
 def view_governanca():
     st.markdown("### 🔎 Busca e Governança")
-    st.markdown("Gerencie a fila, aloque demandas, exporte dados e edite a base oficial de obras de forma centralizada.")
+    st.markdown("Gerencie a fila, exporte dados e edite a base oficial de obras de forma centralizada.")
 
     # =====================================================================
     # 1. CARREGAMENTO DOS DADOS E SEGURANÇA (RLS)
@@ -32,100 +32,43 @@ def view_governanca():
         return
 
     # =====================================================================
-    # 2. MÓDULO DE DESEMPENHO E GESTÃO DE FILA (INJETADO)
+    # 2. GESTÃO DE FILA E EXPORTAÇÃO
     # =====================================================================
-    col_t1, col_t2 = st.columns([1.5, 1])
-    with col_t1:
-        st.markdown("#### 📋 Desempenho e Alocação")
+    st.markdown("#### ⚡ Gestão de Fila")
+    with st.container(border=True):
+        c_sel, c_inf = st.columns([3, 1])
         
-        col_mun_eq = 'Município' if 'Município' in df_equipes_db.columns else 'MUNICIPIO'
-        
-        if not df_equipes_db.empty and col_mun_eq in df_equipes_db.columns and 'Levantador' in df_equipes_db.columns:
-            muns_atribuidos = df_equipes_db[df_equipes_db['Levantador'] != SEM_LEVANTADOR].groupby('Levantador')[col_mun_eq].apply(
-                lambda x: len(set([str(m).title() for m in x if pd.notna(m) and str(m).strip() != '']))
-            ).reset_index(name='Area_Atuacao')
-            
-            resumo_view = pd.merge(resumo_levantadores, muns_atribuidos, on='Levantador', how='left')
-            resumo_view['Area_Atuacao'] = resumo_view['Area_Atuacao'].fillna(0).astype(int)
+        if perfil_atual == "LEVANTADOR":
+            lev_sel = usuario_atual.upper()
+            c_sel.markdown(f"**Técnico Ativo:**<br>{lev_sel}", unsafe_allow_html=True)
         else:
-            resumo_view = resumo_levantadores.copy()
-            resumo_view['Area_Atuacao'] = 0
-
-        st.dataframe(
-            resumo_view[['Levantador', 'Equipe', 'Area_Atuacao', 'Total_Obras_Real']].sort_values('Total_Obras_Real', ascending=False), 
-            use_container_width=True, hide_index=True, height=280, 
-            column_config={
-                "Levantador": "Técnico", 
-                "Equipe": "Equipe", 
-                "Area_Atuacao": st.column_config.NumberColumn("📍 Qtd Municípios", format="%d"),
-                "Total_Obras_Real": st.column_config.ProgressColumn("Carga (Meta: 50)", format="%d", min_value=0, max_value=50)
-            }
-        )
+            lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed", key="sel_tech_gov")
+            
+        if st.session_state.get('last_lev_gov') != lev_sel:
+            st.session_state.show_demanda_gov = False; st.session_state.last_lev_gov = lev_sel
+            
+        obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
+        cor_badge = "#e8f4f8" if obras_do_lev >= 50 else "#fce8e8"
+        c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
         
-    with col_t2:
-        st.markdown("#### ⚡ Gestão de Fila")
-        with st.container(border=True):
-            c_sel, c_inf = st.columns([3, 1])
+        st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+        
+        if st.session_state.get('perfil_usuario') == "ADMIN":
+            if st.button("📋 Gerar Demanda", use_container_width=True, type="primary", key="btn_gerar2_gov"): st.session_state.show_demanda_gov = True
+        else: 
+            st.success(f"✅ Demanda Sincronizada.")
+            if st.button("📋 Gerar Minha Demanda", use_container_width=True, type="primary", key="btn_gerar_lev_gov"): st.session_state.show_demanda_gov = True
             
-            if perfil_atual == "LEVANTADOR":
-                lev_sel = usuario_atual.upper()
-                c_sel.markdown(f"**Técnico Ativo:**<br>{lev_sel}", unsafe_allow_html=True)
-            else:
-                lev_sel = c_sel.selectbox("Selecione o Técnico:", todos_levantadores, label_visibility="collapsed", key="sel_tech_gov")
-                
-            if st.session_state.get('last_lev_gov') != lev_sel:
-                st.session_state.assign_step_gov = 0; st.session_state.show_demanda_gov = False; st.session_state.last_lev_gov = lev_sel
-                
-            obras_do_lev = int(resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel]['Total_Obras_Real'].iloc[0]) if not resumo_levantadores[resumo_levantadores['Levantador'] == lev_sel].empty else 0
-            cor_badge = "#e8f4f8" if obras_do_lev >= 50 else "#fce8e8"
-            c_inf.markdown(f"<div style='text-align:center; background:{cor_badge}; border-radius:5px; padding:6px;'><b style='font-size:18px;'>{obras_do_lev}</b><br><small style='font-size:10px; font-weight:bold;'>OBRAS</small></div>", unsafe_allow_html=True)
-            
-            st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-            
-            if st.session_state.get('perfil_usuario') == "ADMIN":
-                if obras_do_lev < 50:
-                    if st.session_state.get('assign_step_gov', 0) == 0:
-                        if st.button(f"➕ Atribuir {50 - obras_do_lev} Obras", use_container_width=True, type="primary", key="btn_atr_gov"): st.session_state.assign_step_gov = 1; st.rerun()
-                    elif st.session_state.assign_step_gov == 1:
-                        st.info("Confirmar geo-atribuição?")
-                        c_a, c_b = st.columns(2)
-                        if c_a.button("✅ Sim", use_container_width=True, type="primary", key="btn_sim_gov"):
-                            df_livres = df_notas[(df_notas['LEVANTADOR'] == SEM_LEVANTADOR) & (df_notas['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))].copy()
-                            if len(df_livres) == 0: st.error("Fila Vazia!"); st.session_state.assign_step_gov = 0
-                            else:
-                                tr = df_equipes_db[df_equipes_db['Levantador'] == lev_sel]
-                                r_lat = mapa_lat.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Latitude']).replace(',','.'))
-                                r_lon = mapa_lon.get(str(tr['Residencia'].iloc[0]).strip().upper(), np.nan) if 'Residencia' in tr.columns and pd.notna(tr['Residencia'].iloc[0]) else float(str(tr.iloc[0]['Longitude']).replace(',','.'))
-                                
-                                df_livres['L_Lat'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lat), errors='coerce')
-                                df_livres['L_Lon'] = pd.to_numeric(df_livres['MUNICIPIO'].map(mapa_lon), errors='coerce')
-                                df_livres['D_KM'] = vectorized_haversine(r_lat, r_lon, df_livres['L_Lat'], df_livres['L_Lon'])
-                                
-                                att = df_livres.sort_values('D_KM').head(50 - obras_do_lev).index
-                                df_update = df_notas.copy()
-                                df_update.loc[att, 'LEVANTADOR'] = lev_sel
-                                if save_notas_to_db(df_update): st.success("Vinculado!"); st.session_state.assign_step_gov = 2; load_core_data.clear(); st.rerun()
-                        if c_b.button("❌ Não", use_container_width=True, key="btn_nao_gov"): st.session_state.assign_step_gov = 0; st.rerun()
-                    elif st.session_state.assign_step_gov == 2:
-                        st.success("✅ Atribuição Concluída.")
-                        if st.button("📋 Gerar Demanda", use_container_width=True, type="primary", key="btn_gerar1_gov"): st.session_state.show_demanda_gov = True; st.session_state.assign_step_gov = 0; st.rerun()
-                else:
-                    st.success("✅ Meta Atingida.")
-                    if st.button("📋 Gerar Demanda", use_container_width=True, type="primary", key="btn_gerar2_gov"): st.session_state.show_demanda_gov = True
-            else: 
-                st.success(f"✅ Demanda Sincronizada.")
-                if st.button("📋 Gerar Minha Demanda", use_container_width=True, type="primary", key="btn_gerar_lev_gov"): st.session_state.show_demanda_gov = True
-                
-            tech_muns = df_notas[(df_notas['LEVANTADOR'] == lev_sel) & (df_notas['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
-            tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
-            muns_str = ", ".join(tech_muns) if tech_muns else "Nenhuma cidade ativa."
-            
-            st.markdown(f"""
-            <div style='margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border-left: 4px solid #1A4F7C;'>
-                <p style='margin: 0; font-size: 11px; color: #666; font-weight: bold; text-transform: uppercase;'>📍 Área de Atuação (Obras Alocadas)</p>
-                <p style='margin: 5px 0 0 0; font-size: 13px; color: #222;'>{muns_str}</p>
-            </div>
-            """, unsafe_allow_html=True)
+        tech_muns = df_notas[(df_notas['LEVANTADOR'] == lev_sel) & (df_notas['STATUS LIST'].isin(STATUS_PRODUTIVIDADE))]['MUNICIPIO'].unique()
+        tech_muns = [str(m).strip().title() for m in tech_muns if str(m).strip().upper() not in ['NAN', 'NONE', '', '<NA>']]
+        muns_str = ", ".join(tech_muns) if tech_muns else "Nenhuma cidade ativa."
+        
+        st.markdown(f"""
+        <div style='margin-top: 15px; padding: 12px; background-color: #f8f9fa; border-radius: 6px; border-left: 4px solid #1A4F7C;'>
+            <p style='margin: 0; font-size: 11px; color: #666; font-weight: bold; text-transform: uppercase;'>📍 Área de Atuação (Obras Alocadas)</p>
+            <p style='margin: 5px 0 0 0; font-size: 13px; color: #222;'>{muns_str}</p>
+        </div>
+        """, unsafe_allow_html=True)
             
     if st.session_state.get('show_demanda_gov', False):
         st.markdown("---")
@@ -134,8 +77,8 @@ def view_governanca():
         if len(df_demanda) > 0:
             df_exp = df_demanda.copy()
             
-            # Matriz exata para o Export
-            colunas_exigidas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
+            # Matriz exata para o Export - ADAPTADA PARA O NOVO TEMPLATE
+            colunas_exigidas = ['PROTOCOLO', 'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 'PONTO DE REFERENCIA', 'TIPO LIGACAO']
             
             for col in colunas_exigidas:
                 if col not in df_exp.columns:
@@ -172,12 +115,12 @@ def view_governanca():
                 ext_data_parts = []
                 for col in colunas_exigidas:
                     val = str(r.get(col, '')).strip()
-                    if col != 'NOME DO SOLICITANTE': desc_parts.append(f"{col}: {val}")
+                    if col != 'NOME': desc_parts.append(f"{col}: {val}")
                     ext_data_parts.append(f'<Data name="{col}">\n          <value>{html.escape(val)}</value>\n        </Data>')
                     
                 desc_cdata = "<br>".join(desc_parts)
                 ext_data_str = "\n        ".join(ext_data_parts)
-                nome_solic = html.escape(str(r.get('NOME DO SOLICITANTE', '')))
+                nome_solic = html.escape(str(r.get('NOME', '')))
                 
                 kml_str += f'''    <Placemark>\n      <name>{nome_solic}</name>\n      <description><![CDATA[{desc_cdata}]]></description>\n      <styleUrl>#icon-1899-0288D1</styleUrl>\n      <ExtendedData>\n        {ext_data_str}\n      </ExtendedData>\n      <Point>\n        <coordinates>\n          {coords_kml}\n        </coordinates>\n      </Point>\n    </Placemark>\n'''
             kml_str += '''  </Document>\n</kml>'''
@@ -201,13 +144,13 @@ def view_governanca():
     # =====================================================================
     st.markdown("#### 🔍 Explorador e Edição da Base de Dados")
     
+    # ATUALIZADO PARA O NOVO TEMPLATE
     colunas_template = [
-        'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
-        'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
+        'ID SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
         'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 
-        'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 
-        'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 
-        'PONTO DE REFERENCIA', 'TIPO LIGACAO'
+        'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 
+        'ENDEREÇO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'PONTO DE REFERENCIA', 
+        'TIPO LIGACAO'
     ]
     
     for col in colunas_template:
@@ -268,7 +211,7 @@ def view_governanca():
         df_filtrado = df_filtrado[
             df_filtrado['ID SISCO'].astype(str).str.lower().str.contains(termo) |
             df_filtrado['PROTOCOLO'].astype(str).str.lower().str.contains(termo) |
-            df_filtrado['NOME DO SOLICITANTE'].astype(str).str.lower().str.contains(termo)
+            df_filtrado['NOME'].astype(str).str.lower().str.contains(termo)
         ]
 
     st.caption(f"**Total Encontrado na Base:** {len(df_filtrado)} registros filtrados.")
