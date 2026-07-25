@@ -60,33 +60,24 @@ def normalizar_municipios(series_mun):
     return s.str.split('-').str[0].str.strip()
 
 def atualizar_status_via_arquivo(df_principal, arquivo_status):
-    """
-    Lê a planilha extraída do SharePoint, vai direto na Coluna E (índice 4),
-    e atualiza a coluna STATUS LIST da base principal.
-    """
     try:
         df_status = pd.read_excel(arquivo_status)
-        
         if df_status.shape[1] >= 5:
             chave_nome = df_status.columns[0]
             status_nome = df_status.columns[4]
-            
             df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
             df_status_map = df_status.set_index(chave_nome)[status_nome].to_dict()
-            
             if 'PROTOCOLO' in df_principal.columns:
                 df_principal['PROTOCOLO_STR'] = df_principal['PROTOCOLO'].astype(str).str.strip()
                 df_principal['STATUS LIST'] = df_principal['PROTOCOLO_STR'].map(df_status_map).fillna(df_principal.get('STATUS LIST', 'SEM INFORMAÇÕES'))
                 df_principal = df_principal.drop(columns=['PROTOCOLO_STR'])
                 st.success(f"✅ Atualização Rápida: {len(df_status_map)} status lidos da Coluna E aplicados com sucesso!")
             else:
-                st.warning("⚠️ Coluna 'PROTOCOLO' não encontrada na base principal para fazer o cruzamento.")
+                st.warning("⚠️ Coluna 'PROTOCOLO' não encontrada na base principal.")
         else:
-            st.warning("⚠️ O arquivo de status enviado possui menos de 5 colunas. Não foi possível localizar a Coluna E.")
-            
+            st.warning("⚠️ O arquivo de status enviado possui menos de 5 colunas.")
     except Exception as e:
         st.error(f"Erro ao ler o arquivo de atualização rápida: {e}")
-        
     return df_principal
 
 # ==========================================
@@ -121,13 +112,11 @@ def otimizar_rota_tsp_2opt(lista_obras, start_lat, start_lon):
     if len(lista_obras) <= 2: return lista_obras
     coords = [(start_lat, start_lon)] + [(r['LATITUDE'], r['LONGITUDE']) for r in lista_obras]
     best_route = list(range(1, len(coords)))
-    
     def calc_dist(route):
         d = haversine_vectorized(coords[0][0], coords[0][1], coords[route[0]][0], coords[route[0]][1])
         for i in range(len(route)-1):
             d += haversine_vectorized(coords[route[i]][0], coords[route[i]][1], coords[route[i+1]][0], coords[route[i+1]][1])
         return d
-
     best_dist = calc_dist(best_route)
     improved = True
     iters = 0
@@ -193,11 +182,12 @@ def identificar_icone_folium(row, colunas):
     if 'INSP' in tipo_str or 'VISTORIA' in tipo_str: return 'eye-open'
     return 'info-sign'
 
-def gerar_os_html(base, periodo, df_periodo, romaneio, clima):
+def gerar_os_html(base, periodo, df_periodo, romaneio, clima, tipo_equipe):
     linhas_tabela = ""
     for _, r in df_periodo.iterrows():
         linhas_tabela += f"<tr><td>{r.get('ORDEM','')}</td><td>{r.get('PROTOCOLO','')}</td><td>{r.get('TIPO NOTA','')}</td><td>{r.get('ENDEREÇO','')}</td></tr>"
     mat_tabela = "".join([f"<tr><td>{mat}</td><td>{qtd}</td></tr>" for mat, qtd in romaneio.items()])
+    tag_temp = " (EQUIPE DE APOIO / TEMPORÁRIA)" if tipo_equipe == 'TEMPORARIA' else ""
     return f"""
     <html><head><meta charset="UTF-8"><style>
         body {{ font-family: Arial, sans-serif; padding: 20px; }}
@@ -208,7 +198,7 @@ def gerar_os_html(base, periodo, df_periodo, romaneio, clima):
     </style></head><body>
         <div class="header">
             <h2>Ordem de Serviço Diária (Roteiro Otimizado)</h2>
-            <p><b>Equipe:</b> {base} | <b>Período:</b> {periodo} | <b>Condição Climática Prevista:</b> {clima}</p>
+            <p><b>Equipe:</b> {base}{tag_temp} | <b>Período:</b> {periodo} | <b>Condição Climática Prevista:</b> {clima}</p>
         </div>
         <h3>1. Roteiro de Paradas</h3>
         <table><tr><th>Ordem</th><th>Protocolo</th><th>Serviço</th><th>Endereço</th></tr>{linhas_tabela}</table>
@@ -221,9 +211,6 @@ def gerar_os_html(base, periodo, df_periodo, romaneio, clima):
     </body></html>
     """
 
-# ==========================================
-# GERAÇÃO DE ARQUIVOS (EXCEL E KML ESTRUTURADO)
-# ==========================================
 def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
     df_export = df.copy()
     if 'ROTA_GEOMETRIA' in df_export.columns: df_export = df_export.drop(columns=['ROTA_GEOMETRIA'])
@@ -250,12 +237,8 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{doc_name}</name>
-  
-  <!-- Estilos de Linha: Contorno preto grosso por baixo, amarelo no centro por cima -->
   <Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle></Style>
   <Style id="linha-rota-centro"><LineStyle><color>ff00ffff</color><width>4</width></LineStyle></Style>
-  
-  <!-- Estilos de Pinos (Links Nativos do Google para garantir a cor exata no celular) -->
   <Style id="icon-blue">
     <IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
     <LabelStyle><scale>0.9</scale></LabelStyle>
@@ -307,7 +290,6 @@ def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
                     else:
                         coords_linha_kml += f"          {lon},{lat},0\n"
 
-                # DESENHA A LINHA DUAS VEZES (Primeiro o contorno grosso preto, depois o centro fino colorido)
                 kml += f'        <Placemark><name>Contorno Rota</name><styleUrl>#linha-rota-contorno</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n{coords_linha_kml}            </coordinates></LineString></Placemark>\n' 
                 kml += f'        <Placemark><name>Traçado Rota</name><styleUrl>#linha-rota-centro</styleUrl><LineString><tessellate>1</tessellate><coordinates>\n{coords_linha_kml}            </coordinates></LineString></Placemark>\n      </Folder>\n' 
             kml += '    </Folder>\n' 
@@ -359,7 +341,6 @@ def view_roteirizador():
         k3.metric("🛣️ KM Total Projetado", f"{df_routed['DISTANCIA_PONTO_ANTERIOR_KM'].sum():.1f} km")
         k4.metric("🚨 Prioridades", len(df_real_tasks[df_real_tasks['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_real_tasks else 0)
 
-        # --- DASHBOARDS DE PRODUTIVIDADE E HEATMAP ---
         st.markdown("---")
         st.markdown("### 📊 Dashboards de Produtividade")
         c_dash1, c_dash2 = st.columns(2)
@@ -396,7 +377,6 @@ def view_roteirizador():
                     if isinstance(r.get('ROTA_GEOMETRIA'), list):
                         for lon, lat in r['ROTA_GEOMETRIA']: pontos_linha_folium.append([lat, lon]) 
                             
-                # Contorno Preto (Grosso) + Linha Colorida (Fina) no mapa de prévia Folium
                 folium.PolyLine(pontos_linha_folium, color='black', weight=7, opacity=0.9).add_to(fg_linhas)
                 folium.PolyLine(pontos_linha_folium, color=cor_rota, weight=3, opacity=1.0).add_to(fg_linhas)
                 fg_linhas.add_to(mapa)
@@ -404,8 +384,6 @@ def view_roteirizador():
                 for _, r in df_periodo.iterrows():
                     if r['PROTOCOLO'] in ['RETORNO_BASE', 'PAUSA_ALMOCO']: continue
                     icone = identificar_icone_folium(r, df_routed.columns)
-                    
-                    # Obriga visualização restrita: Obras prioritárias em vermelho, o restante em azul.
                     cor_icone = 'red' if r.get('PRIORIDADE') == "Sim" else 'blue'
                     
                     info_html = f"<b>Ordem:</b> {r.get('ORDEM', 0)} | <b>{tipo_periodo}:</b> {r.get('PERIODO', 0)}<br><b>Distância Próximo Ponto:</b> {r.get('DISTANCIA_PROXIMO_PONTO_KM', 0)} KM<br><b>Tempo Estimado:</b> {r.get('TEMPO_VIAGEM_MINUTOS', 0)} Min<br>"
@@ -444,7 +422,7 @@ def view_roteirizador():
             
             for base in df_routed['BASE_ATRIBUIDA'].unique():
                 df_base = df_routed[df_routed['BASE_ATRIBUIDA'] == base]
-                
+                base_ref = next((b for b in bases_records if b['LEVANTADOR'] == base), None)
                 clima_base = obter_clima_seguro(df_base.iloc[0]['LATITUDE'], df_base.iloc[0]['LONGITUDE'])
                 
                 for periodo in df_base['PERIODO'].unique():
@@ -455,7 +433,8 @@ def view_roteirizador():
                     qtd_prio = len(df_periodo_real[df_periodo_real['PRIORIDADE'] == 'Sim']) if 'PRIORIDADE' in df_periodo_real.columns else 0
                     
                     resumo_data.append({
-                        'LEVANTADOR': base, f'{tipo_periodo.upper()}': periodo, 'OBRAS ROTEIRIZADAS': qtd_obras,
+                        'LEVANTADOR': base, 'TIPO EQUIPE': base_ref.get('TIPO_EQUIPE', 'PRINCIPAL'), 
+                        f'{tipo_periodo.upper()}': periodo, 'OBRAS ROTEIRIZADAS': qtd_obras,
                         'OBRAS PRIORITARIAS': qtd_prio, 'KM TOTAL PROJETADO': round(df_periodo['DISTANCIA_PONTO_ANTERIOR_KM'].sum(), 2),
                         'LINK GPS (GOOGLE MAPS)': "https://www.google.com/maps/dir/" + "/".join([f"{lat},{lon}" for lat, lon in df_periodo[['LATITUDE', 'LONGITUDE']].values.tolist()])
                     })
@@ -466,7 +445,7 @@ def view_roteirizador():
                             romaneio_periodo[mat] = romaneio_periodo.get(mat, 0) + qtd
                             romaneio_data.append({'LEVANTADOR / EQUIPE': base, f'{tipo_periodo.upper()}': periodo, 'MATERIAL': mat, 'QUANTIDADE': qtd})
                             
-                    os_html = gerar_os_html(base, f"{tipo_periodo} {periodo}", df_periodo_real, romaneio_periodo, clima_base)
+                    os_html = gerar_os_html(base, f"{tipo_periodo} {periodo}", df_periodo_real, romaneio_periodo, clima_base, base_ref.get('TIPO_EQUIPE', 'PRINCIPAL'))
                     nome_seg_os = re.sub(r'[^A-Za-z0-9_]', '', str(base).replace(" ", "_"))
                     zip_xl.writestr(f"Ordens_Servico_Imprimir/OS_{nome_seg_os}_{tipo_periodo}{periodo}.html", os_html.encode('utf-8'))
 
@@ -509,7 +488,7 @@ def view_roteirizador():
         with st.expander("📄 Ver lista de arquivos gerados (Conteúdo dos ZIPs)"):
             st.markdown("**Planilhas Excel:** " + ", ".join(planilhas_geradas))
             st.markdown("**Mapas KML:** " + ", ".join(mapas_gerados))
-            st.markdown("**Ordens de Serviço (Para Impressão):** Geradas em HTML dentro do ZIP (Pasta Ordens_Servico_Imprimir).")
+            st.markdown("**Ordens de Serviço (Para Impressão):** Geradas em HTML dentro do ZIP.")
 
         col_b1, col_b2, col_b3 = st.columns([1, 1, 1])
         col_b1.download_button("🌐 1. Planilhas, BI, OS e Romaneio (ZIP)", data=zip_xl_bytes, file_name=f"Dados_Estruturados_Roteiro_{data_atual}.zip", mime="application/zip", use_container_width=True)
@@ -555,7 +534,6 @@ def view_roteirizador():
             _, df_equipes_db, _, _, _, _, _, _ = load_core_data()
             if not df_equipes_db.empty:
                 df_equipes_db.columns = normalize_cols(df_equipes_db.columns)
-                
                 if 'LEVANTADOR' not in df_equipes_db.columns:
                     for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
                         if p_nome in df_equipes_db.columns:
@@ -582,26 +560,27 @@ def view_roteirizador():
                     if levs_selecionados:
                         df_bases = df_equipes_db[df_equipes_db['LEVANTADOR'].isin(levs_selecionados)].copy()
                         df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                        df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
                         if len(df_bases) < len(levs_selecionados):
-                            st.warning("⚠️ Alguns levantadores foram ignorados pois o município de residência deles não pôde ser localizado.")
+                            st.warning("⚠️ Alguns levantadores principais foram ignorados pois o município não foi localizado.")
                 else:
-                    st.error("❌ A coluna 'LEVANTADOR' (ou NOME, TECNICO, EQUIPE, COLABORADOR) não foi encontrada no Banco de Dados.")
+                    st.error("❌ A coluna 'LEVANTADOR' não foi encontrada no Banco de Dados.")
         else:
             base_file = st.file_uploader("Suba a planilha Levantadores_MA", type=["xlsx", "xls"])
             if base_file:
                 try:
-                    df_bases_temp = pd.read_excel(base_file)
-                    df_bases_temp.columns = normalize_cols(df_bases_temp.columns)
-                    if 'LEVANTADOR' not in df_bases_temp.columns:
+                    df_bases_temp_ui = pd.read_excel(base_file)
+                    df_bases_temp_ui.columns = normalize_cols(df_bases_temp_ui.columns)
+                    if 'LEVANTADOR' not in df_bases_temp_ui.columns:
                         for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
-                            if p_nome in df_bases_temp.columns:
-                                df_bases_temp = df_bases_temp.rename(columns={p_nome: 'LEVANTADOR'})
+                            if p_nome in df_bases_temp_ui.columns:
+                                df_bases_temp_ui = df_bases_temp_ui.rename(columns={p_nome: 'LEVANTADOR'})
                                 break
-                    if 'LEVANTADOR' in df_bases_temp.columns:
-                        opcoes_levs = sorted([str(x) for x in df_bases_temp['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
-                        levs_selecionados = st.multiselect("Selecione as Equipes:", opcoes_levs)
+                    if 'LEVANTADOR' in df_bases_temp_ui.columns:
+                        opcoes_levs = sorted([str(x) for x in df_bases_temp_ui['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
+                        levs_selecionados = st.multiselect("Selecione as Equipes Principais:", opcoes_levs)
                         if levs_selecionados:
-                            df_bases = df_bases_temp[df_bases_temp['LEVANTADOR'].isin(levs_selecionados)].copy()
+                            df_bases = df_bases_temp_ui[df_bases_temp_ui['LEVANTADOR'].isin(levs_selecionados)].copy()
                             if 'RESIDENCIA' in df_bases.columns:
                                 muns_unicos = df_bases['RESIDENCIA'].dropna().unique()
                                 mapa_coords = {}
@@ -616,6 +595,7 @@ def view_roteirizador():
                                 df_bases['LONGITUDE'] = pd.to_numeric(df_bases.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
                                 
                             df_bases = df_bases.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                            df_bases['TIPO_EQUIPE'] = 'PRINCIPAL'
                 except Exception as e:
                     st.error(f"Erro ao ler a planilha: {e}")
 
@@ -627,8 +607,52 @@ def view_roteirizador():
         task_files = st.file_uploader("1️⃣ Base Principal (Planilha de Obras Antiga/Original)", type=["xlsx", "xls"], accept_multiple_files=True)
         
         st.markdown("##### 🔄 Atualização Rápida de Status (Opcional)")
-        status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint (Para atualizar apenas a Coluna E)", type=["xlsx", "xls"])
+        status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint (Atualiza a Coluna E)", type=["xlsx", "xls"])
         
+        # --- NOVO: BLOCO DOS TEMPORÁRIOS ---
+        st.markdown("##### 🧑‍🤝‍🧑 3. Equipes de Apoio (Temporários - Opcional)")
+        st.caption("Recebem APENAS obras comuns. O volume de trabalho é dividido nas mesmas regiões das equipes principais.")
+        temp_bases_files = st.file_uploader("Suba a(s) planilha(s) de Levantadores Temporários", type=["xlsx", "xls"], accept_multiple_files=True)
+        
+        df_bases_temp = pd.DataFrame()
+        if temp_bases_files:
+            try:
+                dfs_temp = []
+                for f in temp_bases_files:
+                    df_t = pd.read_excel(f)
+                    df_t.columns = normalize_cols(df_t.columns)
+                    if 'LEVANTADOR' not in df_t.columns:
+                        for p_nome in ['NOME', 'TECNICO', 'EQUIPE', 'COLABORADOR']:
+                            if p_nome in df_t.columns:
+                                df_t = df_t.rename(columns={p_nome: 'LEVANTADOR'})
+                                break
+                    dfs_temp.append(df_t)
+                df_bases_temp_full = pd.concat(dfs_temp, ignore_index=True)
+                
+                if 'LEVANTADOR' in df_bases_temp_full.columns:
+                    opcoes_levs_temp = sorted([str(x) for x in df_bases_temp_full['LEVANTADOR'].dropna().unique().tolist() if str(x).upper().strip() != 'SEM LEVANTADOR'])
+                    levs_temp_selecionados = st.multiselect("Selecione as Equipes Temporárias:", opcoes_levs_temp, key="ms_temp")
+                    
+                    if levs_temp_selecionados:
+                        df_bases_temp = df_bases_temp_full[df_bases_temp_full['LEVANTADOR'].isin(levs_temp_selecionados)].copy()
+                        if 'RESIDENCIA' in df_bases_temp.columns:
+                            muns_unicos_temp = df_bases_temp['RESIDENCIA'].dropna().unique()
+                            mapa_coords_temp = {}
+                            with st.spinner("🌍 Mapeando bases dos temporários..."):
+                                for mun in muns_unicos_temp:
+                                    lat, lon = obter_coordenadas_municipio_cached(mun)
+                                    mapa_coords_temp[mun] = (lat, lon)
+                            df_bases_temp['LATITUDE'] = df_bases_temp['RESIDENCIA'].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[0])
+                            df_bases_temp['LONGITUDE'] = df_bases_temp['RESIDENCIA'].map(lambda x: mapa_coords_temp.get(x, (np.nan, np.nan))[1])
+                        else:
+                            df_bases_temp['LATITUDE'] = pd.to_numeric(df_bases_temp.get('LATITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                            df_bases_temp['LONGITUDE'] = pd.to_numeric(df_bases_temp.get('LONGITUDE', pd.Series()).astype(str).str.replace(',', '.'), errors='coerce')
+                        
+                        df_bases_temp = df_bases_temp.dropna(subset=['LATITUDE', 'LONGITUDE'])
+                        df_bases_temp['TIPO_EQUIPE'] = 'TEMPORARIA'
+            except Exception as e:
+                st.error(f"Erro ao ler temporários: {e}")
+
         if not task_files: st.info("Aguardando upload para habilitar a configuração."); return
 
         try:
@@ -650,7 +674,7 @@ def view_roteirizador():
 
     st.markdown("---")
     
-    # === LIMPEZA AUTOMÁTICA DE DADOS ===
+    # === LIMPEZA E MARCAÇÃO DE PRIORIDADES ===
     total_orig = len(df_tasks)
     df_tasks['LATITUDE'] = pd.to_numeric(df_tasks['LATITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
     df_tasks['LONGITUDE'] = pd.to_numeric(df_tasks['LONGITUDE'].astype(str).str.replace(',', '.'), errors='coerce')
@@ -667,58 +691,112 @@ def view_roteirizador():
         status_validos = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
         df_tasks = df_tasks[df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(status_validos)]
 
+    # Marca as prioridades LOGO DEPOIS da limpeza para usar na separação territorial
+    tipos_prioritarios = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
+    if 'TIPO NOTA' in df_tasks.columns:
+        df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x).strip().upper() in tipos_prioritarios else 'Não')
+    else:
+        df_tasks['PRIORIDADE'] = 'Não'
+
     if total_orig - len(df_tasks) > 0:
         st.warning(f"⚠️ {total_orig - len(df_tasks)} obras com erros sistêmicos ou de Status foram ignoradas. Restam **{len(df_tasks)} válidas.**")
 
     if df_tasks.empty: return
 
-    # === PRÉ-ALOCAÇÃO TERRITORIAL (VRP) ===
+    # === PRÉ-ALOCAÇÃO TERRITORIAL EXCLUSIVA ===
     df_tasks_alocadas = pd.DataFrame()
-    bases_records = []
+    bases_principais_records = df_bases.to_dict('records') if not df_bases.empty else []
+    bases_temporarias_records = df_bases_temp.to_dict('records') if not df_bases_temp.empty else []
+    todas_bases_records = bases_principais_records + bases_temporarias_records
     
-    if not df_bases.empty:
-        bases_records = df_bases.to_dict('records')
+    if len(todas_bases_records) > 0:
         df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
         
+        # Separa a carga de trabalho: Prioridades (apenas Principais) x Comuns (Todas as Equipes)
+        df_prio = df_tasks[df_tasks['PRIORIDADE'] == 'Sim'].copy()
+        df_comum = df_tasks[df_tasks['PRIORIDADE'] == 'Não'].copy()
+        
         if tipo_atribuicao == "Clusterização Inteligente por IA (K-Means VRP)":
-            lev_names = list(set([b['LEVANTADOR'] for b in bases_records]))
-            k = len(lev_names)
-            if k > 0 and len(df_tasks) >= k:
-                coords = df_tasks[['LATITUDE', 'LONGITUDE']].values
-                labels, centroids = kmeans_clustering(coords, k)
-                base_coords = {b['LEVANTADOR']: (float(b['LATITUDE']), float(b['LONGITUDE'])) for b in bases_records if pd.notna(b.get('LATITUDE'))}
-                used_bases = set()
-                
-                for i, centroid in enumerate(centroids):
-                    best_base = None
-                    min_dist = float('inf')
-                    for b_name, (b_lat, b_lon) in base_coords.items():
-                        if b_name in used_bases: continue
-                        dist = haversine_vectorized(centroid[0], centroid[1], b_lat, b_lon)
-                        if dist < min_dist: min_dist, best_base = dist, b_name
-                    if best_base:
-                        used_bases.add(best_base)
-                        df_tasks.loc[labels == i, 'BASE_ATRIBUIDA'] = best_base
+            def allocate_kmeans(df_subset, base_list):
+                if df_subset.empty or not base_list: return df_subset
+                k = len(base_list)
+                if k > 0 and len(df_subset) >= k:
+                    coords = df_subset[['LATITUDE', 'LONGITUDE']].values
+                    labels, centroids = kmeans_clustering(coords, k)
+                    base_coords = {b['LEVANTADOR']: (float(b['LATITUDE']), float(b['LONGITUDE'])) for b in base_list if pd.notna(b.get('LATITUDE'))}
+                    used_bases = set()
+                    
+                    for i, centroid in enumerate(centroids):
+                        best_base = None
+                        min_dist = float('inf')
+                        for b_name, (b_lat, b_lon) in base_coords.items():
+                            if b_name in used_bases: continue
+                            dist = haversine_vectorized(centroid[0], centroid[1], b_lat, b_lon)
+                            if dist < min_dist: min_dist, best_base = dist, b_name
+                        if best_base:
+                            used_bases.add(best_base)
+                            df_subset.loc[df_subset.index[labels == i], 'BASE_ATRIBUIDA'] = best_base
+                else:
+                    # Se houver menos obras que equipes, roda por proximidade para não quebrar a IA
+                    for idx, row in df_subset.iterrows():
+                        best_dist, best_b = float('inf'), "NÃO ALOCADO"
+                        for b in base_list:
+                            d = haversine_vectorized(row['LATITUDE'], row['LONGITUDE'], float(b['LATITUDE']), float(b['LONGITUDE']))
+                            if d < best_dist: best_dist, best_b = d, b['LEVANTADOR']
+                        df_subset.loc[idx, 'BASE_ATRIBUIDA'] = best_b
+                return df_subset
+
+            # Distribuição segregada
+            df_prio = allocate_kmeans(df_prio, bases_principais_records)
+            df_comum = allocate_kmeans(df_comum, todas_bases_records)
+            df_tasks = pd.concat([df_prio, df_comum])
 
         elif tipo_atribuicao == "Por Proximidade Geográfica das Coordenadas (Ignora texto)":
-            def get_nearest_base(lat, lon):
+            def get_nearest_base(lat, lon, base_list):
+                if not base_list: return "NÃO ALOCADO"
                 min_dist, best_base = float('inf'), None
-                for b in bases_records:
+                for b in base_list:
                     if pd.notna(b.get('LATITUDE')):
                         d = haversine_vectorized(lat, lon, float(b['LATITUDE']), float(b['LONGITUDE']))
                         if d < min_dist: min_dist, best_base = d, b['LEVANTADOR']
-                return best_base
-            df_tasks['BASE_ATRIBUIDA'] = df_tasks.apply(lambda r: get_nearest_base(r['LATITUDE'], r['LONGITUDE']), axis=1)
+                return best_base if best_base else "NÃO ALOCADO"
+                
+            df_prio['BASE_ATRIBUIDA'] = df_prio.apply(lambda r: get_nearest_base(r['LATITUDE'], r['LONGITUDE'], bases_principais_records), axis=1)
+            df_comum['BASE_ATRIBUIDA'] = df_comum.apply(lambda r: get_nearest_base(r['LATITUDE'], r['LONGITUDE'], todas_bases_records), axis=1)
+            df_tasks = pd.concat([df_prio, df_comum])
 
         elif tipo_atribuicao == "Por Municípios Atendidos (Lê texto da planilha)":
-            mun_to_lev = {}
-            for b in bases_records:
+            mun_to_main = {}
+            mun_to_all = {}
+            
+            for b in todas_bases_records:
                 for m in str(b.get('MUNICIPIO', '')).split(','):
                     m_limpo = normalizar_municipios(pd.Series([m])).iloc[0]
-                    if m_limpo: mun_to_lev[m_limpo] = b['LEVANTADOR']
+                    if m_limpo:
+                        if m_limpo not in mun_to_all: mun_to_all[m_limpo] = []
+                        mun_to_all[m_limpo].append(b['LEVANTADOR'])
+                        if b.get('TIPO_EQUIPE') == 'PRINCIPAL':
+                            if m_limpo not in mun_to_main: mun_to_main[m_limpo] = []
+                            mun_to_main[m_limpo].append(b['LEVANTADOR'])
+            
             df_tasks['MUN_LIMPO'] = normalizar_municipios(df_tasks['MUNICIPIO'])
-            df_tasks['BASE_ATRIBUIDA'] = df_tasks['MUN_LIMPO'].map(mun_to_lev).fillna("NÃO ALOCADO")
-            df_tasks = df_tasks.drop(columns=['MUN_LIMPO'])
+            
+            def allocate_by_mun_divided(df_sub, map_dict):
+                df_sub = df_sub.copy()
+                df_sub['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
+                for mun, group in df_sub.groupby('MUN_LIMPO'):
+                    bases_disp = map_dict.get(mun, [])
+                    if bases_disp:
+                        n_bases = len(bases_disp)
+                        # Divisão no formato Round-Robin para garantir lotes justos e sem repetição
+                        assigned = [bases_disp[i % n_bases] for i in range(len(group))]
+                        df_sub.loc[group.index, 'BASE_ATRIBUIDA'] = assigned
+                return df_sub
+                
+            df_prio = allocate_by_mun_divided(df_prio, mun_to_main)
+            df_comum = allocate_by_mun_divided(df_comum, mun_to_all)
+            
+            df_tasks = pd.concat([df_prio, df_comum]).drop(columns=['MUN_LIMPO'])
 
         df_unallocated = df_tasks[df_tasks['BASE_ATRIBUIDA'] == "NÃO ALOCADO"]
         df_tasks_alocadas = df_tasks[df_tasks['BASE_ATRIBUIDA'] != "NÃO ALOCADO"].copy()
@@ -728,11 +806,13 @@ def view_roteirizador():
             return
 
         if not df_unallocated.empty:
-            st.warning(f"⚠️ {len(df_unallocated)} obras carregadas ficaram sem Levantador pois não pertencem à área das equipes selecionadas.")
+            st.warning(f"⚠️ {len(df_unallocated)} obras carregadas ficaram sem Levantador. Motivos possíveis: Não pertencem à região das equipes ou são prioritárias e não havia equipe Principal alocada.")
+            
+        bases_records = todas_bases_records # Atualiza a variável master para o Engine.
 
-    # === CONFIGURAÇÃO DE EXIBIÇÃO E PRIORIDADES ===
+    # === CONFIGURAÇÃO DE EXIBIÇÃO ===
     if not df_tasks_alocadas.empty:
-        with st.expander("🛠️ 3. Configuração de Roteirização (Filtros e Prioridades)", expanded=True):
+        with st.expander("🛠️ 4. Configuração de Roteirização (Filtros)", expanded=True):
             c_ex1, c_ex2 = st.columns(2)
             
             if 'TIPO NOTA' in df_tasks_alocadas.columns:
@@ -746,21 +826,13 @@ def view_roteirizador():
             cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
-            c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** serão roteirizadas primeiro por padrão e receberão um pino vermelho.")
+            c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** recebem pino vermelho e são roteirizadas apenas para Equipes Principais.")
             col_prioridade = "TIPO NOTA"
 
     # === INÍCIO DO PROCESSAMENTO BIFÁSICO (TSP + OSRM) ===
     if st.button("🚀 Iniciar Motor de Roteirização (Processo em Nuvem)", type="primary", use_container_width=True):
         if df_tasks_alocadas.empty:
             st.error("Selecione equipes e regras compatíveis com a planilha primeiro."); return
-
-        tipos_prioritarios = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
-        if 'TIPO NOTA' in df_tasks_alocadas.columns:
-            df_tasks_alocadas['PRIORIDADE'] = df_tasks_alocadas['TIPO NOTA'].apply(
-                lambda x: 'Sim' if str(x).strip().upper() in tipos_prioritarios else 'Não'
-            )
-        else:
-            df_tasks_alocadas['PRIORIDADE'] = 'Não'
 
         progresso_texto = st.empty()
         barra_progresso = st.progress(0)
@@ -773,10 +845,11 @@ def view_roteirizador():
         obras_sobra_total = 0
 
         routed_data = []
+        df_todas_bases_ativas = pd.DataFrame(bases_records)
         levantadores_unicos = list(set([b['LEVANTADOR'] for b in bases_records]))
 
         for b_name in levantadores_unicos:
-            base_ref = df_bases[df_bases['LEVANTADOR'] == b_name].iloc[0]
+            base_ref = df_todas_bases_ativas[df_todas_bases_ativas['LEVANTADOR'] == b_name].iloc[0]
             if pd.isna(base_ref.get('LATITUDE')): continue
             
             base_lat, base_lon = float(base_ref['LATITUDE']), float(base_ref['LONGITUDE'])
