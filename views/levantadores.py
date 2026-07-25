@@ -14,13 +14,36 @@ def view_levantadores():
     with sqlite3.connect(DB_PATH, timeout=10) as conn: 
         df_eq = pd.read_sql("SELECT * FROM equipes", conn)
     
-    # 2. Garante que a estrutura está alinhada ao novo template (levantadores_base.xlsx)
+    # =================================================================
+    # 2. PADRONIZAÇÃO ABSOLUTA DE COLUNAS (Evita o OperationalError)
+    # =================================================================
+    
+    # Transforma tudo em maiúsculo e tira espaços para evitar conflito (ex: 'Equipe' vs 'EQUIPE')
+    df_eq.columns = [str(c).upper().strip() for c in df_eq.columns]
+    
+    # Renomeia colunas do padrão antigo para o novo, reaproveitando os dados já cadastrados
+    df_eq = df_eq.rename(columns={
+        'LEVANTADOR': 'COLABORADOR',
+        'RESIDENCIA': 'MUNICIPIO',
+        'MUNICÍPIO': 'MUNICIPIO'
+    })
+    
+    # Remove possíveis colunas duplicadas que tenham sido geradas na renomeação
+    df_eq = df_eq.loc[:, ~df_eq.columns.duplicated()]
+    
+    # Garante que todas as colunas oficiais existam
     colunas_oficiais = ['COLABORADOR', 'EQUIPE', 'MUNICIPIO', 'REGIONAL', 'LATITUDE', 'LONGITUDE']
     for col in colunas_oficiais:
         if col not in df_eq.columns: 
-            df_eq[col] = ""
-        
-    # Limpa dados vazios e remove duplicidades para a visualização
+            if col in ['LATITUDE', 'LONGITUDE']:
+                df_eq[col] = 0.0
+            else:
+                df_eq[col] = ""
+                
+    # Filtra para manter APENAS as colunas oficiais (Isso limpa qualquer "lixo" antigo do banco)
+    df_eq = df_eq[colunas_oficiais]
+
+    # Limpa dados vazios e remove duplicidades para a visualização na tela
     df_levs = df_eq[['COLABORADOR', 'EQUIPE', 'MUNICIPIO']].copy()
     df_levs = df_levs[df_levs['COLABORADOR'].str.strip() != ""]
     df_levs = df_levs.drop_duplicates(subset=['COLABORADOR'])
@@ -47,8 +70,8 @@ def view_levantadores():
         mapeamento_mun = df_ed.set_index('COLABORADOR')['MUNICIPIO'].to_dict()
         df_eq['MUNICIPIO'] = df_eq['COLABORADOR'].map(mapeamento_mun).fillna(df_eq['MUNICIPIO'])
         
-        # Salva usando Pandas de forma segura (evita OperationalError de SQL)
-        with sqlite3.connect(DB_PATH, timeout=10) as conn: 
+        # Salva usando Pandas de forma segura (a tabela recriada agora tem a estrutura perfeita)
+        with sqlite3.connect(DB_PATH, timeout=20) as conn: 
             df_eq.to_sql('equipes', conn, if_exists='replace', index=False)
             
         load_core_data.clear() # Limpa o cache para o Painel refletir na mesma hora
@@ -58,7 +81,7 @@ def view_levantadores():
     st.markdown("---")
     st.markdown("#### ➕ Cadastrar Novo Membro")
     
-    # 4. Formulário de Cadastro (Protegido contra erros de esquema)
+    # 4. Formulário de Cadastro
     with st.form("new_lev"):
         c1, c2, c3 = st.columns(3)
         nome = c1.text_input("Nome (Colaborador)", placeholder="Ex: JOÃO DA SILVA")
@@ -67,7 +90,7 @@ def view_levantadores():
         
         if st.form_submit_button("Cadastrar", type="primary"):
             if nome and eq and res:
-                # Cria a nova linha respeitando todas as colunas oficias do template
+                # Cria a nova linha respeitando todas as colunas oficiais do template
                 nova_linha = pd.DataFrame([{
                     'COLABORADOR': nome.upper().strip(),
                     'EQUIPE': eq.upper().strip(),
@@ -80,7 +103,7 @@ def view_levantadores():
                 # Concatena e salva com o Pandas
                 df_novo = pd.concat([df_eq, nova_linha], ignore_index=True)
                 
-                with sqlite3.connect(DB_PATH, timeout=10) as conn: 
+                with sqlite3.connect(DB_PATH, timeout=20) as conn: 
                     df_novo.to_sql('equipes', conn, if_exists='replace', index=False)
                     
                 load_core_data.clear()
