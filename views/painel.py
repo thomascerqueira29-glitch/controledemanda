@@ -21,10 +21,17 @@ def kpi_card(title, value, subtitle="", icon="📌", border_color="#1A4F7C"):
 
 def view_painel_executivo():
     """Painel Executivo Focado em KPIs e Gráficos com Sync em Tempo Real"""
-    st.markdown("### 📈 Visão Global de Produtividade")
+    
+    # Botão Anti-Cache: Força a leitura bruta do banco de dados
+    c_titulo, c_btn = st.columns([4, 1])
+    c_titulo.markdown("### 📈 Visão Global de Produtividade")
+    if c_btn.button("🔄 Recarregar Dados", use_container_width=True):
+        st.cache_data.clear()
+        st.cache_resource.clear()
+        st.rerun()
     
     # =====================================================================
-    # 1. LEITURA DIRETA DO BANCO (SEM CACHE) - 100% SINCRONIZADO
+    # 1. LEITURA DIRETA DO BANCO (SEM CACHE)
     # =====================================================================
     try:
         with sqlite3.connect(DB_PATH) as conn:
@@ -35,7 +42,7 @@ def view_painel_executivo():
         return
 
     if df_notas_db.empty:
-        st.warning("A base de obras está vazia. Importe um lote ou atualize a Governança.")
+        st.warning("A base de obras está vazia. Limpe a base na Governança e importe um lote novo.")
         return
 
     # Segurança RLS (Proteção por nível de usuário se um técnico logar)
@@ -59,58 +66,46 @@ def view_painel_executivo():
     # 2. CÁLCULO DOS 4 KPIS EXATOS (Varredura Inteligente)
     # =====================================================================
     
-    # KPI 1: Obras Totais (Exatamente as linhas da aba Governança)
     total_obras = len(df_notas_db)
     
-    # KPI 2: Quantidade de Levantadores (Aba Levantadores - planilha base)
     qtd_equipes = 0
     if not df_equipes_db.empty:
         col_colaborador = next((c for c in df_equipes_db.columns if str(c).strip().upper() in ['COLABORADOR', 'LEVANTADOR', 'NOME', 'TECNICO']), None)
         if col_colaborador:
             qtd_equipes = df_equipes_db[col_colaborador].replace([SEM_LEVANTADOR, '', 'nan', 'None'], pd.NA).dropna().nunique()
 
-    # KPI 3: Varredura de Obras Prioritárias (CCF, DIF, MGD, MTP, ASC, SID)
+    # KPI 3: Varredura de Obras Prioritárias
     tipos_alvo = ['CCF', 'DIF', 'MGD', 'MTP', 'ASC', 'SID']
     colunas_de_tipo = [c for c in df_notas_db.columns if 'TIPO' in str(c).upper()]
     mask_tipos = pd.Series(False, index=df_notas_db.index)
-    
     for col in colunas_de_tipo:
         s_norm = df_notas_db[col].astype(str).str.strip().str.upper()
         mask_tipos = mask_tipos | s_norm.isin(tipos_alvo)
-        
     qtd_tipos_especificos = int(mask_tipos.sum())
 
     # KPI 4: Varredura Divivida (Pré-Análise x Liberado)
-    # Busca em qualquer coluna que tenha a palavra "STATUS"
     colunas_de_status = [c for c in df_notas_db.columns if 'STATUS' in str(c).upper()]
-    
     mask_pre = pd.Series(False, index=df_notas_db.index)
     mask_lib = pd.Series(False, index=df_notas_db.index)
     
     for col in colunas_de_status:
-        # Normaliza a string (Maiúscula e sem acento para garantir o Match)
         s_norm = df_notas_db[col].astype(str).str.strip().str.upper()
         s_norm = s_norm.str.replace('Á', 'A').str.replace('É', 'E').str.replace('Í', 'I').str.replace('Ó', 'O').str.replace('Ú', 'U').str.replace('Â', 'A').str.replace('Ê', 'E').str.replace('Ç', 'C')
-        
-        # Faz as duas contagens separadamente
         mask_pre = mask_pre | s_norm.str.contains('PRE ANALISE', na=False)
         mask_lib = mask_lib | s_norm.str.contains('LIBERADO', na=False)
         
     qtd_pre_analise = int(mask_pre.sum())
     qtd_liberado = int(mask_lib.sum())
     
-    # Monta a string visual que será inserida no card
     valor_dividido = f"<span style='color: #F59E0B;'>{qtd_pre_analise}</span><span style='font-size: 14px; color: #666;'> PA</span> <span style='color: #ddd; font-weight: 300;'>|</span> <span style='color: #10B981;'>{qtd_liberado}</span><span style='font-size: 14px; color: #666;'> LIB</span>"
 
     # =====================================================================
-    # 3. RENDERIZAÇÃO DOS 4 CARDS (Garantindo 4 colunas)
+    # 3. RENDERIZAÇÃO DOS 4 CARDS
     # =====================================================================
     k1, k2, k3, k4 = st.columns(4)
     k1.markdown(kpi_card("Obras Totais", total_obras, "Base da Governança", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
     k2.markdown(kpi_card("Levantadores", qtd_equipes, "Ativos na Planilha Base", "👥", "#8B5CF6"), unsafe_allow_html=True)
     k3.markdown(kpi_card("Obras Prioritárias", qtd_tipos_especificos, "CCF, DIF, MGD, MTP, ASC, SID", "🎯", "#F59E0B"), unsafe_allow_html=True)
-    
-    # Aplica o valor dividido e o título STATUS SISCO
     k4.markdown(kpi_card("Status Sisco", valor_dividido, "Pré-Análise / Liberado", "⚡", "#10B981"), unsafe_allow_html=True)
     
     st.markdown("<br><hr>", unsafe_allow_html=True)
@@ -120,11 +115,9 @@ def view_painel_executivo():
     # =====================================================================
     lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None', '<NA>']
     
-    # --- LINHA 1 DE GRÁFICOS (1: Município | 2: Tipo de Nota) ---
     c_g1, c_g2 = st.columns([1.5, 1])
     
     with c_g1:
-        # Gráfico 1: Quantidade de obras totais por município
         coluna_municipio = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['MUNICIPIO', 'MUNICÍPIO']), None)
         if coluna_municipio:
             df_mun = df_notas_db.copy()
@@ -142,7 +135,6 @@ def view_painel_executivo():
                 st.plotly_chart(fig1, use_container_width=True)
             
     with c_g2:
-        # Gráfico 2: Quantidade de obras de acordo com TIPO NOTA
         coluna_tipo_nota = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['TIPO NOTA', 'TIPO DE NOTA', 'TIPO LIGACAO', 'TIPO LIGAÇÃO']), None)
         if coluna_tipo_nota:
             df_tipo = df_notas_db.copy()
@@ -163,8 +155,6 @@ def view_painel_executivo():
                 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- LINHA 2 DE GRÁFICOS (3: Status List - Largura Total) ---
-    # Prioridade para STATUS LIST no gráfico, como solicitado anteriormente
     coluna_status_grafico = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['STATUS LIST', 'STATUS ATUAL (LEVANTAMENTO)', 'STATUS SAP']), None)
     
     if coluna_status_grafico:
