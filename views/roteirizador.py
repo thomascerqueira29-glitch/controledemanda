@@ -59,25 +59,20 @@ def normalizar_municipios(series_mun):
     s = s.str.replace(r'Ç', 'C', regex=True)
     return s.str.split('-').str[0].str.strip()
 
-def atualizar_status_via_arquivo(df_principal, arquivo_status):
+def atualizar_status_via_df(df_principal, df_status, coluna_alvo):
     try:
-        df_status = pd.read_excel(arquivo_status)
-        if df_status.shape[1] >= 5:
-            chave_nome = df_status.columns[0]
-            status_nome = df_status.columns[4]
-            df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
-            df_status_map = df_status.set_index(chave_nome)[status_nome].to_dict()
-            if 'PROTOCOLO' in df_principal.columns:
-                df_principal['PROTOCOLO_STR'] = df_principal['PROTOCOLO'].astype(str).str.strip()
-                df_principal['STATUS LIST'] = df_principal['PROTOCOLO_STR'].map(df_status_map).fillna(df_principal.get('STATUS LIST', 'SEM INFORMAÇÕES'))
-                df_principal = df_principal.drop(columns=['PROTOCOLO_STR'])
-                st.success(f"✅ Atualização Rápida: {len(df_status_map)} status lidos da Coluna E aplicados com sucesso!")
-            else:
-                st.warning("⚠️ Coluna 'PROTOCOLO' não encontrada na base principal.")
+        chave_nome = df_status.columns[0] # Assume que a coluna 0 é o protocolo
+        df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
+        df_status_map = df_status.set_index(chave_nome)[coluna_alvo].to_dict()
+        if 'PROTOCOLO' in df_principal.columns:
+            df_principal['PROTOCOLO_STR'] = df_principal['PROTOCOLO'].astype(str).str.strip()
+            df_principal['STATUS LIST'] = df_principal['PROTOCOLO_STR'].map(df_status_map).fillna(df_principal.get('STATUS LIST', 'SEM INFORMAÇÕES'))
+            df_principal = df_principal.drop(columns=['PROTOCOLO_STR'])
+            st.success(f"✅ Atualização Rápida: {len(df_status_map)} status lidos da coluna '{coluna_alvo}' aplicados com sucesso!")
         else:
-            st.warning("⚠️ O arquivo de status enviado possui menos de 5 colunas.")
+            st.warning("⚠️ Coluna 'PROTOCOLO' não encontrada na base principal.")
     except Exception as e:
-        st.error(f"Erro ao ler o arquivo de atualização rápida: {e}")
+        st.error(f"Erro ao aplicar atualização rápida de status: {e}")
     return df_principal
 
 # ==========================================
@@ -509,7 +504,6 @@ def view_roteirizador():
         tipo_periodo = st.radio("Como agrupar o roteiro?", ["Dia", "Semana"], horizontal=True)
         modo_limite = st.radio("Critério limitador da equipe:", ["Quantidade Fixa de Obras", "Carga Horária (Tempo Real via Satélite)"])
         
-        # --- NOVO: LIMITADOR DE KM COM SLIDER ---
         limite_km_diario = st.slider(f"Limite Máximo de KM por {tipo_periodo}", min_value=0, max_value=500, value=500, step=5)
         
         obras_por_periodo = 10
@@ -609,8 +603,22 @@ def view_roteirizador():
         st.markdown("### 📁 2. Upload de Demandas (Obras)")
         task_files = st.file_uploader("1️⃣ Base Principal (Planilha de Obras Antiga/Original)", type=["xlsx", "xls"], accept_multiple_files=True)
         
+        # --- ATUALIZAÇÃO DO BLOCO DE STATUS ---
         st.markdown("##### 🔄 Atualização Rápida de Status (Opcional)")
-        status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint (Atualiza a Coluna E)", type=["xlsx", "xls"])
+        status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint", type=["xlsx", "xls"])
+        
+        df_status_upload = pd.DataFrame()
+        coluna_status_selecionada = None
+        
+        if status_file:
+            try:
+                df_status_upload = pd.read_excel(status_file)
+                cols_status = df_status_upload.columns.tolist()
+                # Deixa a Coluna E (índice 4) selecionada por padrão se a planilha for grande o suficiente, senão deixa a primeira
+                def_idx = 4 if len(cols_status) >= 5 else 0
+                coluna_status_selecionada = st.selectbox("📌 Qual coluna contém o Status Atualizado?", cols_status, index=def_idx)
+            except Exception as e:
+                st.error(f"Erro ao ler planilha de status: {e}")
         
         st.markdown("##### 🧑‍🤝‍🧑 3. Equipes de Apoio (Temporários - Opcional)")
         st.caption("Recebem APENAS obras comuns. O volume de trabalho é dividido nas mesmas regiões das equipes principais.")
@@ -668,8 +676,9 @@ def view_roteirizador():
         except Exception as e:
             st.error(f"Erro ao unificar as planilhas: {e}"); return
 
-        if status_file:
-            df_tasks = atualizar_status_via_arquivo(df_tasks, status_file)
+        # Executa a nova função que lê pelo nome da coluna em vez do índice cravado
+        if not df_status_upload.empty and coluna_status_selecionada:
+            df_tasks = atualizar_status_via_df(df_tasks, df_status_upload, coluna_status_selecionada)
 
     if 'LATITUDE' not in df_tasks.columns or 'LONGITUDE' not in df_tasks.columns:
         st.error("❌ A planilha de Obras precisa ter LATITUDE e LONGITUDE."); return
