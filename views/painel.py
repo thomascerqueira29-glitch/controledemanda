@@ -22,7 +22,10 @@ def view_painel_executivo():
     """Painel Executivo Focado em KPIs e Gráficos"""
     st.markdown("### 📈 Visão Global de Produtividade")
     
-    # Sincronização Automática: Comunicação Direta com Governança (Lê em tempo real)
+    # =================================================================
+    # 1. SINCRONIZAÇÃO EM TEMPO REAL COM A GOVERNANÇA (Limpa Cache)
+    # =================================================================
+    load_core_data.clear() # <- O segredo da sincronização instantânea!
     df_notas_db, df_equipes_db, _, _, _, _, _, _ = load_core_data()
     
     perfil_atual = st.session_state.get("perfil_usuario")
@@ -45,33 +48,33 @@ def view_painel_executivo():
         st.info(f"👁️ **Modo Foco (RLS Ativo):** Exibindo apenas a base e as obras atribuídas a você ({usuario_atual}).")
     
     if len(df_notas_db) == 0:
-        st.warning("Nenhum dado encontrado para exibição nos filtros atuais ou banco vazio.")
+        st.warning("Nenhum dado encontrado para exibição. Importe um lote ou atualize a Governança.")
         return
 
-    # ==========================================
-    # CÁLCULO DOS KPIS ESPECÍFICOS (4 CARDS)
-    # ==========================================
+    # =================================================================
+    # 2. CÁLCULO DOS 4 KPIS EXATOS (Baseados no Template Bot)
+    # =================================================================
     
-    # 1. Quantidade total de obras da aba governança
+    # KPI 1: Quantidade total e EXATA de obras que constam na aba governança
     total_obras = len(df_notas_db)
     
-    # 2. Quantidade total de levantadores (Base Levantadores_base)
+    # KPI 2: Quantidade total de levantadores ativos (Base Levantadores_base)
     qtd_equipes = 0
     if not df_equipes_db.empty:
         col_colaborador = next((c for c in df_equipes_db.columns if str(c).strip().upper() in ['COLABORADOR', 'LEVANTADOR', 'NOME', 'TECNICO']), None)
         if col_colaborador:
             qtd_equipes = df_equipes_db[col_colaborador].replace([SEM_LEVANTADOR, '', 'nan', 'None'], pd.NA).dropna().nunique()
 
-    # 3. Quantidade de obras dos tipos CCF, DIF, MGD, MTP, ASC, SID
+    # KPI 3: Quantidade de obras dos tipos CCF, DIF, MGD, MTP, ASC, SID
     tipos_alvo = ['CCF', 'DIF', 'MGD', 'MTP', 'ASC', 'SID']
     coluna_tipo_nota = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['TIPO NOTA', 'TIPO DE NOTA', 'TIPO LIGACAO', 'TIPO LIGAÇÃO']), None)
     
     qtd_tipos_especificos = 0
     if coluna_tipo_nota:
         mask_tipos = df_notas_db[coluna_tipo_nota].astype(str).str.strip().str.upper().isin(tipos_alvo)
-        qtd_tipos_especificos = mask_tipos.sum()
+        qtd_tipos_especificos = int(mask_tipos.sum())
 
-    # 4. Quantidade de obras em 'Pre Analise' ou 'Liberado para Levantamentos'
+    # KPI 4: Quantidade de obras em 'Pre Analise' ou 'Liberado para Levantamentos'
     status_alvo = ['PRE ANALISE', 'PRÉ ANÁLISE', 'PRÉ ANALISE', 'PRE ANÁLISE', 'LIBERADO PARA LEVANTAMENTOS', 'LIBERADO PARA LEVANTAMENTO']
     # Busca dinamicamente por Status Atual ou Status List
     coluna_status = next((col for col in df_notas_db.columns if str(col).strip().upper() in ['STATUS ATUAL (LEVANTAMENTO)', 'STATUS LIST']), None)
@@ -79,21 +82,25 @@ def view_painel_executivo():
     qtd_status_especifico = 0
     if coluna_status:
         mask_status = df_notas_db[coluna_status].astype(str).str.strip().str.upper().isin(status_alvo)
-        qtd_status_especifico = mask_status.sum()
+        qtd_status_especifico = int(mask_status.sum())
 
-    # --- RENDERIZAÇÃO DOS 4 CARDS ---
+    # =================================================================
+    # 3. RENDERIZAÇÃO DOS 4 CARDS
+    # =================================================================
     k1, k2, k3, k4 = st.columns(4)
     k1.markdown(kpi_card("Obras Totais", total_obras, "Base da Governança", "🏗️", "#1A4F7C"), unsafe_allow_html=True)
     k2.markdown(kpi_card("Levantadores", qtd_equipes, "Ativos na Planilha Base", "👥", "#8B5CF6"), unsafe_allow_html=True)
     k3.markdown(kpi_card("Obras Prioritárias", qtd_tipos_especificos, "CCF, DIF, MGD, MTP, ASC, SID", "🎯", "#F59E0B"), unsafe_allow_html=True)
-    k4.markdown(kpi_card("Pré-Análise / Liberado", qtd_status_especifico, "Status Atual da Demanda", "⚡", "#10B981"), unsafe_allow_html=True)
+    k4.markdown(kpi_card("Pré-Análise / Liberado", qtd_status_especifico, "Status da Demanda", "⚡", "#10B981"), unsafe_allow_html=True)
     
     st.markdown("<br><hr>", unsafe_allow_html=True)
     
-    # Lixos genéricos para limpar os gráficos (ignorar strings vazias)
+    # Lixos genéricos para não poluir os gráficos
     lixos = ['0', '0.0', 'nan', 'SEM LEVANTADOR', '', 'None', '<NA>']
     
-    # --- LINHA 1 DE GRÁFICOS (Município e Tipo de Nota) ---
+    # =================================================================
+    # 4. RENDERIZAÇÃO DOS GRÁFICOS (Município e Tipo de Nota)
+    # =================================================================
     c_g1, c_g2 = st.columns([1.5, 1])
     
     with c_g1:
@@ -135,7 +142,9 @@ def view_painel_executivo():
                 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # --- LINHA 2 DE GRÁFICOS (Status List - Largura Total) ---
+    # =================================================================
+    # 5. RENDERIZAÇÃO DO GRÁFICO (Status List - Largura Total)
+    # =================================================================
     if coluna_status:
         df_status = df_notas_db.copy()
         df_status = df_status[~df_status[coluna_status].astype(str).str.strip().isin(lixos)]
