@@ -33,7 +33,6 @@ def view_governanca():
     # =====================================================================
     st.markdown("#### 🔍 Explorador e Edição da Base de Dados")
     
-    # ATUALIZADO RIGOROSAMENTE PARA O NOVO TEMPLATE BOT
     colunas_template = [
         'ID SISCO', 'PAT', 'STATUS SAP', 'STATUS LIST', 'NOME', 'ENDEREÇO', 
         'INFORMAÇÕES EXTRAS', 'PROTOCOLO', 'TIPO NOTA', 'LOCALIDADE', 'REGIONAL', 
@@ -47,7 +46,7 @@ def view_governanca():
     cols_extras = [c for c in df_notas.columns if c not in colunas_template]
     df_notas = df_notas[colunas_template + cols_extras]
 
-    # Filtros da Tabela
+    # Listas para os Filtros
     regioes = ["TODAS"] + sorted(list(set([str(x) for x in df_notas['REGIONAL'].unique() if pd.notna(x)])))
     municipios = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['MUNICIPIO'].unique() if pd.notna(x)])))
     
@@ -56,14 +55,9 @@ def view_governanca():
     
     status_sap = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS SAP'].unique() if pd.notna(x)])))
     status_list_op = ["TODOS"] + sorted(list(set([str(x) for x in df_notas['STATUS LIST'].unique() if pd.notna(x)])))
-
-    if 'target_status_list' in st.session_state:
-        alvo = st.session_state.pop('target_status_list')
-        match = next((s for s in status_list_op if str(s).upper() == alvo), None)
-        st.session_state['filtro_list_widget'] = match if match else 'TODOS'
-
-    if st.session_state.get('filtro_lev_widget') and st.session_state['filtro_lev_widget'] not in levantadores:
-        st.session_state['filtro_lev_widget'] = "TODOS"
+    
+    col_tipo_nota_filtro = next((c for c in df_notas.columns if str(c).strip().upper() in ['TIPO NOTA', 'TIPO DE NOTA']), None)
+    tipo_nota_op = ["TODOS"] + sorted(list(set([str(x) for x in df_notas[col_tipo_nota_filtro].unique() if pd.notna(x)]))) if col_tipo_nota_filtro else ["TODOS"]
 
     with st.container(border=True):
         st.markdown("#### 🎯 Painel de Filtros da Base")
@@ -72,17 +66,20 @@ def view_governanca():
         busca_livre = c_busca.text_input("Busca Rápida", placeholder="🔍 Pesquise por ID SISCO, Protocolo ou Nome...", label_visibility="collapsed", key="search_gov")
         
         todas_cols = df_notas.columns.tolist()
-        cols_padrao = ['ID SISCO', 'PROTOCOLO', 'LEVANTADOR', 'STATUS LIST', 'STATUS SAP', 'REGIONAL', 'MUNICIPIO', 'TIPO NOTA']
-        cols_padrao = [c for c in cols_padrao if c in todas_cols]
+        
+        # Mantém TODAS as colunas marcadas como padrão inicialmente
+        cols_padrao = todas_cols
         
         colunas_selecionadas = c_cols.multiselect("Colunas Visíveis", todas_cols, default=cols_padrao, placeholder="Escolha as colunas...", key="ms_cols_gov")
         
-        c1, c2, c3, c4, c5 = st.columns(5)
+        # 6 colunas na linha inferior para acomodar Regional, Município, Levantador, Status SAP, Status List e Tipo Nota
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         filtro_reg = c1.selectbox("Regional", regioes, key="filtro_reg_widget")
         filtro_mun = c2.selectbox("Município", municipios, key="filtro_mun_widget")
         filtro_lev = c3.selectbox("Levantador", levantadores, key="filtro_lev_widget")
         filtro_sap = c4.selectbox("Status SAP", status_sap, key="filtro_sap_widget")
         filtro_list = c5.selectbox("Status List", status_list_op, key="filtro_list_widget")
+        filtro_tipo = c6.selectbox("Tipo Nota", tipo_nota_op, key="filtro_tipo_widget")
         
     df_filtrado = df_notas.copy()
     
@@ -91,6 +88,7 @@ def view_governanca():
     if filtro_lev != "TODOS" and col_lev_filtro: df_filtrado = df_filtrado[df_filtrado[col_lev_filtro].astype(str) == filtro_lev]
     if filtro_sap != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS SAP'].astype(str) == filtro_sap]
     if filtro_list != "TODOS": df_filtrado = df_filtrado[df_filtrado['STATUS LIST'].astype(str) == filtro_list]
+    if filtro_tipo != "TODOS" and col_tipo_nota_filtro: df_filtrado = df_filtrado[df_filtrado[col_tipo_nota_filtro].astype(str) == filtro_tipo]
     
     if busca_livre:
         termo = str(busca_livre).lower()
