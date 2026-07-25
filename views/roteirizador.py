@@ -61,7 +61,7 @@ def normalizar_municipios(series_mun):
 
 def atualizar_status_via_df(df_principal, df_status, coluna_alvo):
     try:
-        chave_nome = df_status.columns[0] # Assume que a coluna 0 é o protocolo
+        chave_nome = df_status.columns[0] 
         df_status[chave_nome] = df_status[chave_nome].astype(str).str.strip()
         df_status_map = df_status.set_index(chave_nome)[coluna_alvo].to_dict()
         if 'PROTOCOLO' in df_principal.columns:
@@ -199,12 +199,13 @@ def gerar_excel_bytes(df, col_prioridade, colunas_originais=None):
     return buf_xl.getvalue()
 
 def gerar_kml_agrupado(df_rota, bases_records, doc_name, cols_exibir):
+    # Alterada a cor da 'linha-rota-centro' para azul claro (Ciano): ffffcc00 no KML
     kml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
   <name>{doc_name}</name>
   <Style id="linha-rota-contorno"><LineStyle><color>ff000000</color><width>8</width></LineStyle></Style>
-  <Style id="linha-rota-centro"><LineStyle><color>ff00ffff</color><width>4</width></LineStyle></Style>
+  <Style id="linha-rota-centro"><LineStyle><color>ffffcc00</color><width>5</width></LineStyle></Style>
   <Style id="icon-blue">
     <IconStyle><scale>1.1</scale><Icon><href>http://maps.google.com/mapfiles/kml/paddle/blu-blank.png</href></Icon><hotSpot x="32" xunits="pixels" y="64" yunits="insetPixels"/></IconStyle>
     <LabelStyle><scale>0.9</scale></LabelStyle>
@@ -370,7 +371,7 @@ def view_roteirizador():
             zip_xl.writestr(f"Roteiro_Geral_{data_atual}.xlsx", gerar_excel_bytes(df_routed, col_prioridade, colunas_originais))
             planilhas_geradas = [f"Roteiro_Geral_{data_atual}.xlsx"]
 
-            # 2. Resumo de Produtividade dos Levantadores (Novo Arquivo Solicitado)
+            # 2. Resumo de Produtividade dos Levantadores
             resumo_levantadores = []
             
             for base in df_routed['BASE_ATRIBUIDA'].unique():
