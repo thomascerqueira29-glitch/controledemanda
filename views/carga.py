@@ -12,14 +12,13 @@ def view_carga():
     st.markdown("Carregue a sua base de obras atualizada. O sistema aceita formatos Excel (.xlsx) ou Texto Separado por Vírgulas (.csv).")
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Definição das colunas da regra Strict
+    # Definição das colunas da regra Strict ATUALIZADA PARA O NOVO TEMPLATE
     colunas_oficiais = [
-        'ID SISCO', 'STATUS SISCO', 'TIPO LIGACAO SISCO', 'DESCRIÇÃO SERVIÇO SISCO', 
-        'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
+        'ID SISCO', 'DATA CRIAÇAO SISCO', 'STATUS SAP', 'LEVANTADOR', 'STATUS LIST', 
         'DATA ENVIO A CAMPO - LIST', 'DATA DE LEVANTAMENTO LIST', 'PROTOCOLO', 
-        'CONTA CONTRATO', 'INSTALACAO', 'NOME DO SOLICITANTE', 'REGIONAL', 
-        'MUNICIPIO', 'ENDEREÇO', 'LOCALIDADE', 'LONGITUDE', 'LATITUDE', 
-        'PONTO DE REFERENCIA', 'TIPO LIGACAO', 'DATA DE VENCIMENTO'
+        'CONTA CONTRATO', 'INSTALACAO', 'NOME', 'REGIONAL', 'MUNICIPIO', 
+        'ENDEREÇO', 'LOCALIDADE', 'LATITUDE', 'LONGITUDE', 'PONTO DE REFERENCIA', 
+        'TIPO LIGACAO'
     ]
 
     # Gera o arquivo de modelo em memória na hora
