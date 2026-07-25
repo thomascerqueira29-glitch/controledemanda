@@ -609,7 +609,6 @@ def view_roteirizador():
         st.markdown("##### 🔄 Atualização Rápida de Status (Opcional)")
         status_file = st.file_uploader("2️⃣ Planilha Atualizada do SharePoint (Atualiza a Coluna E)", type=["xlsx", "xls"])
         
-        # --- NOVO: BLOCO DOS TEMPORÁRIOS ---
         st.markdown("##### 🧑‍🤝‍🧑 3. Equipes de Apoio (Temporários - Opcional)")
         st.caption("Recebem APENAS obras comuns. O volume de trabalho é dividido nas mesmas regiões das equipes principais.")
         temp_bases_files = st.file_uploader("Suba a(s) planilha(s) de Levantadores Temporários", type=["xlsx", "xls"], accept_multiple_files=True)
@@ -691,7 +690,6 @@ def view_roteirizador():
         status_validos = ['EM LEVANTAMENTO', '0', 'SEM INFORMAÇÕES', 'SEM INFORMACOES', 'CORREÇÃO DE LEVANTAMENTO', 'CORRECAO DE LEVANTAMENTO', 'PRÉ ANÁLISE', 'PRE ANALISE']
         df_tasks = df_tasks[df_tasks['STATUS LIST'].astype(str).str.strip().str.upper().isin(status_validos)]
 
-    # Marca as prioridades LOGO DEPOIS da limpeza para usar na separação territorial
     tipos_prioritarios = ["CCF", "DIF", "MGD", "MTP", "ASC", "SID"]
     if 'TIPO NOTA' in df_tasks.columns:
         df_tasks['PRIORIDADE'] = df_tasks['TIPO NOTA'].apply(lambda x: 'Sim' if str(x).strip().upper() in tipos_prioritarios else 'Não')
@@ -712,7 +710,6 @@ def view_roteirizador():
     if len(todas_bases_records) > 0:
         df_tasks['BASE_ATRIBUIDA'] = "NÃO ALOCADO"
         
-        # Separa a carga de trabalho: Prioridades (apenas Principais) x Comuns (Todas as Equipes)
         df_prio = df_tasks[df_tasks['PRIORIDADE'] == 'Sim'].copy()
         df_comum = df_tasks[df_tasks['PRIORIDADE'] == 'Não'].copy()
         
@@ -737,7 +734,6 @@ def view_roteirizador():
                             used_bases.add(best_base)
                             df_subset.loc[df_subset.index[labels == i], 'BASE_ATRIBUIDA'] = best_base
                 else:
-                    # Se houver menos obras que equipes, roda por proximidade para não quebrar a IA
                     for idx, row in df_subset.iterrows():
                         best_dist, best_b = float('inf'), "NÃO ALOCADO"
                         for b in base_list:
@@ -746,7 +742,6 @@ def view_roteirizador():
                         df_subset.loc[idx, 'BASE_ATRIBUIDA'] = best_b
                 return df_subset
 
-            # Distribuição segregada
             df_prio = allocate_kmeans(df_prio, bases_principais_records)
             df_comum = allocate_kmeans(df_comum, todas_bases_records)
             df_tasks = pd.concat([df_prio, df_comum])
@@ -788,7 +783,6 @@ def view_roteirizador():
                     bases_disp = map_dict.get(mun, [])
                     if bases_disp:
                         n_bases = len(bases_disp)
-                        # Divisão no formato Round-Robin para garantir lotes justos e sem repetição
                         assigned = [bases_disp[i % n_bases] for i in range(len(group))]
                         df_sub.loc[group.index, 'BASE_ATRIBUIDA'] = assigned
                 return df_sub
@@ -808,7 +802,7 @@ def view_roteirizador():
         if not df_unallocated.empty:
             st.warning(f"⚠️ {len(df_unallocated)} obras carregadas ficaram sem Levantador. Motivos possíveis: Não pertencem à região das equipes ou são prioritárias e não havia equipe Principal alocada.")
             
-        bases_records = todas_bases_records # Atualiza a variável master para o Engine.
+        bases_records = todas_bases_records 
 
     # === CONFIGURAÇÃO DE EXIBIÇÃO ===
     if not df_tasks_alocadas.empty:
@@ -823,7 +817,11 @@ def view_roteirizador():
                 df_tasks_alocadas = df_tasks_alocadas[df_tasks_alocadas['TIPO NOTA'].astype(str).isin(tipos_selecionados)]
 
             todas_cols = df_tasks_alocadas.columns.tolist()
-            cols_padrao = [c for c in ['PROTOCOLO', 'NOME DO SOLICITANTE', 'MUNICIPIO', 'TIPO LIGACAO', 'STATUS SAP', 'STATUS LIST', 'TIPO NOTA'] if c in todas_cols]
+            
+            # --- PADRÃO DE COLUNAS CONFORME IMAGEM DO USUÁRIO ---
+            cols_desejadas = ['PROTOCOLO', 'NOME', 'ENDERECO', 'MUNICIPIO', 'INFORMACOES EXTRAS', 'LATITUDE', 'LONGITUDE']
+            cols_padrao = [c for c in cols_desejadas if c in todas_cols]
+            
             colunas_exibir = c_ex1.multiselect("Colunas para aparecer no Balão do KML", todas_cols, default=cols_padrao)
             
             c_ex2.info("⚡ **Prioridade Automática Ativada:** Obras com TIPO NOTA igual a **CCF, DIF, MGD, MTP, ASC** ou **SID** recebem pino vermelho e são roteirizadas apenas para Equipes Principais.")
